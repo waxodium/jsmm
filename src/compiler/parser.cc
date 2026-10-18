@@ -8,6 +8,31 @@
 #include <stdexcept>
 #include <utility>
 
+namespace {
+
+std::uint32_t toUint32(double value) {
+  if (!std::isfinite(value) || value == 0.0) return 0;
+
+  constexpr double modulus = 4294967296.0;
+
+  double integer = std::fmod(std::trunc(value), modulus);
+  if (integer < 0.0) integer += modulus;
+
+  return static_cast<std::uint32_t>(integer);
+}
+
+std::int32_t toInt32(double value) {
+  const std::uint32_t bits = toUint32(value);
+
+  if (bits <= 0x7FFFFFFFU) return static_cast<std::int32_t>(bits);
+
+  return static_cast<std::int32_t>(static_cast<std::int64_t>(bits) - 0x100000000LL);
+}
+
+} // namespace
+
+// #####
+
 namespace rma::compiler {
 using edon::ecma::Token;
 using edon::ecma::TokenKind;
@@ -154,16 +179,25 @@ Value Parser::parsePrimary() {
 }
 
 Value Parser::parseUnary() {
+  if (eat("~")) {
+    const Value value = parseUnary();
+    if (!value.isNumber()) fail("unary '~' requires a number");
+
+    return Value(static_cast<double>(~toInt32(value.asNumber())));
+  }
+
   if (eat("+")) {
     Value value = parseUnary();
     if (!value.isNumber()) fail("unary '+' currently requires a number");
     return value;
   }
+
   if (eat("-")) {
     Value value = parseUnary();
     if (!value.isNumber()) fail("unary '-' requires a number");
     return Value(-value.asNumber());
   }
+
   return parsePrimary();
 }
 
@@ -196,21 +230,32 @@ Value Parser::applyBinary(const std::string &op, const Value &left, const Value 
   if (op == "/") return Value(a / b);
   if (op == "%") return Value(std::fmod(a, b));
   if (op == "**") return Value(std::pow(a, b));
-  if (op == "<<")
-    return Value(
-        static_cast<double>(static_cast<std::int32_t>(a) << (static_cast<unsigned>(b) & 31U)));
-  if (op == ">>")
-    return Value(
-        static_cast<double>(static_cast<std::int32_t>(a) >> (static_cast<unsigned>(b) & 31U)));
-  if (op == ">>>")
-    return Value(static_cast<double>(static_cast<std::uint32_t>(static_cast<std::int32_t>(a)) >>
-                                     (static_cast<unsigned>(b) & 31U)));
-  if (op == "&")
-    return Value(static_cast<double>(static_cast<std::int32_t>(a) & static_cast<std::int32_t>(b)));
-  if (op == "^")
-    return Value(static_cast<double>(static_cast<std::int32_t>(a) ^ static_cast<std::int32_t>(b)));
-  if (op == "|")
-    return Value(static_cast<double>(static_cast<std::int32_t>(a) | static_cast<std::int32_t>(b)));
+  if (op == "<<") {
+    const std::uint32_t lhs = toUint32(a);
+    const unsigned shift = toUint32(b) & 31U;
+    return Value(static_cast<double>(toInt32(static_cast<double>(lhs << shift))));
+  }
+
+  if (op == ">>") {
+    const std::int32_t lhs = toInt32(a);
+    const unsigned shift = toUint32(b) & 31U;
+    std::uint32_t result = static_cast<std::uint32_t>(lhs) >> shift;
+    if (shift != 0 && lhs < 0) result |= (~std::uint32_t{0}) << (32U - shift);
+
+    return Value(static_cast<double>(toInt32(static_cast<double>(result))));
+  }
+
+  if (op == ">>>") {
+    const std::uint32_t lhs = toUint32(a);
+    const unsigned shift = toUint32(b) & 31U;
+    return Value(static_cast<double>(lhs >> shift));
+  }
+
+  if (op == "&") return Value(static_cast<double>(toInt32(a) & toInt32(b)));
+
+  if (op == "^") return Value(static_cast<double>(toInt32(a) ^ toInt32(b)));
+
+  if (op == "|") return Value(static_cast<double>(toInt32(a) | toInt32(b)));
   fail("unsupported arithmetic operator '" + op + "'");
 }
 
