@@ -1,7 +1,7 @@
 #pragma once
 
+#include "../engine/lexer.hh"
 #include "ast.hh"
-#include "engine/lexer.hh"
 #include <string>
 #include <unordered_map>
 #include <vector>

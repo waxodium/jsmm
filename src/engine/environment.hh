@@ -58,7 +58,7 @@ public:
       return true;
     }
     if (outer_) return outer_->setBinding(name, std::move(value), strict);
-    return !strict; 
+    return !strict;
   }
 
   std::shared_ptr<Environment> outer() const { return outer_; }

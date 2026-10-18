@@ -20,7 +20,7 @@ public:
 
   static std::string typeOf(const Value &value) {
     if (value.isUndefined()) return "undefined";
-    if (value.isNull()) return "object";
+    if (value.isNull()) return "object"; // Historical ECMAScript behavior.
     if (value.isBoolean()) return "boolean";
     if (value.isNumber()) return "number";
     if (value.isString()) return "string";
@@ -33,8 +33,8 @@ public:
     if (value.isNull()) return 0.0;
     if (value.isBoolean()) return value.asBoolean() ? 1.0 : 0.0;
     if (value.isNumber()) return value.asNumber();
-    if (value.isString()) return stringToNumber(value.asString());
-    return std::numeric_limits<double>::quiet_NaN();
+    if (value.isString()) return stringToNumber(utf16ToUtf8(value.asString()));
+    return std::numeric_limits<double>::quiet_NaN(); // ToPrimitive is not wired yet.
   }
 
   static bool strictEqual(const Value &a, const Value &b) {

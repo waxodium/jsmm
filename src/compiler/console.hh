@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine/object.hh"
+#include "../engine/object.hh"
 #include <string>
 
 namespace rma::compiler {

@@ -26,7 +26,7 @@ bool ConsoleBuiltins::resolve(const std::string &method, int &fileDescriptor) {
   const ObjectPtr console = namespaceObject();
   const Value methodValue = ObjectOperations::get(console, PropertyKey(method));
   if (!methodValue.isString()) return false;
-  fileDescriptor = methodValue.asString() == "stdout" ? 1 : 2;
+  fileDescriptor = methodValue.asString() == u"stdout" ? 1 : 2;
   return true;
 }
 
@@ -34,7 +34,7 @@ std::string formatConsoleValue(const Value &value) {
   if (value.isUndefined()) return "undefined";
   if (value.isNull()) return "null";
   if (value.isBoolean()) return value.asBoolean() ? "true" : "false";
-  if (value.isString()) return value.asString();
+  if (value.isString()) return utf16ToUtf8(value.asString());
   if (value.isNumber()) {
     const double number = value.asNumber();
     if (std::isnan(number)) return "NaN";

@@ -6,7 +6,7 @@ The JavaScript Compiler Engine
 
 __*Runtime Machine Assembler*__ is developed to distribute as a feature for [edon.js runtime](https://github.com/waxodium/edon) (A dynamic JavaScript runtime that provides API to interact with C programming language). 
 
-**rma** can still be used as a standalone software.
+**rma** can still be use as a standalone software.
 
 ---
 

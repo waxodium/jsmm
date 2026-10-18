@@ -1,18 +1,15 @@
-CXX := g++
-CXXFLAGS := -std=c++20 -Wall -Wextra -Werror -O2
-SRC_DIR := src
-BUILD_DIR := build
-TARGET := $(BUILD_DIR)/rma
+.PHONY: all init build clean
 
-SOURCES := $(sort $(wildcard $(SRC_DIR)/*.cc $(SRC_DIR)/*/*.cc $(SRC_DIR)/*/*/*.cc))
-HEADERS := $(sort $(wildcard $(SRC_DIR)/*.hh $(SRC_DIR)/*/*.hh $(SRC_DIR)/*/*/*.hh))
+all: build
 
-.PHONY: all
-all: $(TARGET)
+init:
+	@if [ ! -d "build" ]; then \
+		cmake -S . -B build/cmake; \
+	fi
 
-$(TARGET): $(SOURCES) $(HEADERS) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SOURCES) -o $@
+build: init
+	cmake --build build/cmake --parallel $$(nproc)
 
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+clean:
+	rm -rf build/
 
