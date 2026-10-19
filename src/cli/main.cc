@@ -31,6 +31,7 @@ int main(int argc, char *argv[]) {
   if (argc == 3 && std::string(argv[1]) == "--ast") {
     try {
       const std::string source = readFile(argv[2]);
+      
       rma::syntax::Lexer lexer(source);
       auto tokens = lexer.tokenize();
       if (lexer.failed()) {
