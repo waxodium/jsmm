@@ -1,6 +1,9 @@
 #include <rma/engine.hpp>
 
+#include "compiler.hh"
+
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace rma {
@@ -24,6 +27,26 @@ Error DiagnosticBuffer::status() const noexcept {
   if (messages_.empty()) return Error::None;
 
   return messages_.front().status;
+}
+
+Result<Executable, Error> Engine::compile(std::string_view source,
+                                          DiagnosticBuffer *diagnostics) const {
+  DiagnosticBuffer local;
+  DiagnosticBuffer *out = diagnostics ? diagnostics : &local;
+
+  try {
+    std::vector<std::uint8_t> bytes = compiler::compileSource(source);
+    return Result<Executable, Error>::success(std::move(bytes));
+  } catch (const std::runtime_error &error) {
+    out->add(Error::Internal, error.what());
+    return Result<Executable, Error>::failure(Error::Internal);
+  } catch (const std::exception &error) {
+    out->add(Error::Internal, error.what());
+    return Result<Executable, Error>::failure(Error::Internal);
+  } catch (...) {
+    out->add(Error::Internal, "unknown error during compilation");
+    return Result<Executable, Error>::failure(Error::Internal);
+  }
 }
 
 } // namespace rma

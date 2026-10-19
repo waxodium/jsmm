@@ -4,4 +4,4 @@ namespace rma::cli {
 
 int run(int argc, char *argv[]);
 
-} // namespace rma::cli
+} 

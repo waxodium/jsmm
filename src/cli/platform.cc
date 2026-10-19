@@ -31,4 +31,4 @@ void writeExecutable(const std::string &path, const std::vector<std::uint8_t> &b
     throw std::runtime_error("cannot make output executable: " + path);
 }
 
-} // namespace rma::cli
+} 

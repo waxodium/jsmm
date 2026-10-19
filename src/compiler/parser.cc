@@ -1,332 +1,438 @@
 #include "parser.hh"
-#include "console.hh"
 
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
+#include <array>
 #include <stdexcept>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
+namespace rma::compiler {
 namespace {
-
-std::uint32_t toUint32(double value) {
-  if (!std::isfinite(value) || value == 0.0) return 0;
-
-  constexpr double modulus = 4294967296.0;
-
-  double integer = std::fmod(std::trunc(value), modulus);
-  if (integer < 0.0) integer += modulus;
-
-  return static_cast<std::uint32_t>(integer);
-}
-
-std::int32_t toInt32(double value) {
-  const std::uint32_t bits = toUint32(value);
-
-  if (bits <= 0x7FFFFFFFU) return static_cast<std::int32_t>(bits);
-
-  return static_cast<std::int32_t>(static_cast<std::int64_t>(bits) - 0x100000000LL);
-}
+using Token = syntax::Token;
+using TokenKind = syntax::TokenKind;
 
 } // namespace
 
-// #####
+const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParselets() {
+  using P = Parser;
+  static const std::unordered_map<std::string, P::InfixParselet> table{
+      {"=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"+=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"-=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"*=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"/=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"%=", {{1, true}, &P::parseAssignmentInfix, true}},
+      {"||", {{2, false}, &P::parseBinaryInfix}},
+      {"??", {{2, false}, &P::parseBinaryInfix}},
+      {"&&", {{3, false}, &P::parseBinaryInfix}},
+      {"|", {{4, false}, &P::parseBinaryInfix}},
+      {"^", {{5, false}, &P::parseBinaryInfix}},
+      {"&", {{6, false}, &P::parseBinaryInfix}},
+      {"==", {{7, false}, &P::parseBinaryInfix}},
+      {"!=", {{7, false}, &P::parseBinaryInfix}},
+      {"===", {{7, false}, &P::parseBinaryInfix}},
+      {"!==", {{7, false}, &P::parseBinaryInfix}},
+      {"<", {{8, false}, &P::parseBinaryInfix}},
+      {">", {{8, false}, &P::parseBinaryInfix}},
+      {"<=", {{8, false}, &P::parseBinaryInfix}},
+      {">=", {{8, false}, &P::parseBinaryInfix}},
+      {"<<", {{9, false}, &P::parseBinaryInfix}},
+      {">>", {{9, false}, &P::parseBinaryInfix}},
+      {">>>", {{9, false}, &P::parseBinaryInfix}},
+      {"+", {{10, false}, &P::parseBinaryInfix}},
+      {"-", {{10, false}, &P::parseBinaryInfix}},
+      {"*", {{11, false}, &P::parseBinaryInfix}},
+      {"/", {{11, false}, &P::parseBinaryInfix}},
+      {"%", {{11, false}, &P::parseBinaryInfix}},
+      {"**", {{12, true}, &P::parseBinaryInfix}}};
+  return table;
+}
 
-namespace rma::compiler {
-using edon::ecma::Token;
-using edon::ecma::TokenKind;
-using edon::ecma::Value;
+const std::unordered_map<std::string, Parser::PrefixParser> &Parser::prefixParselets() {
+  using P = Parser;
+  static const std::unordered_map<std::string, P::PrefixParser> table{
+      {"!", &P::parseUnaryPrefix},      {"~", &P::parseUnaryPrefix},
+      {"+", &P::parseUnaryPrefix},      {"-", &P::parseUnaryPrefix},
+      {"++", &P::parseUpdatePrefix},    {"--", &P::parseUpdatePrefix},
+      {"typeof", &P::parseUnaryPrefix}, {"void", &P::parseUnaryPrefix},
+      {"delete", &P::parseUnaryPrefix}};
+  return table;
+}
+
+const std::unordered_map<std::string, Parser::PostfixParser> &Parser::postfixParselets() {
+  using P = Parser;
+  static const std::unordered_map<std::string, P::PostfixParser> table{
+      {"(", &P::parseCallPostfix},
+      {".", &P::parseMemberPostfix},
+      {"[", &P::parseComputedMemberPostfix},
+      {"++", &P::parseUpdatePostfix},
+      {"--", &P::parseUpdatePostfix}};
+  return table;
+}
+
+using syntax::Token;
+using syntax::TokenKind;
 
 Parser::Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
 const Token &Parser::current() const { return tokens_.at(index_); }
+
 bool Parser::eat(const std::string &lexeme) {
   if (current().lexeme != lexeme) return false;
   ++index_;
   return true;
 }
+
 const Token &Parser::consume() {
   const Token &token = current();
   if (token.kind == TokenKind::End) fail("unexpected end of input");
   ++index_;
   return token;
 }
+
 [[noreturn]] void Parser::fail(const std::string &message) const {
   throw std::runtime_error("line " + std::to_string(current().start.line) + ", column " +
                            std::to_string(current().start.column) + ": " + message);
 }
+
 void Parser::optionalSemicolon() { (void)eat(";"); }
 
-Value Parser::parsePrimary() {
-  if (eat("(")) {
-    Value value = parseExpression();
-    if (!eat(")")) fail("expected ')' after expression");
-    return value;
-  }
+Program Parser::parse() {
+  Program program;
+  if (current().kind != TokenKind::End) program.range.start = current().start;
+  while (current().kind != TokenKind::End) program.statements.push_back(parseStatement());
+  program.range.end = tokens_.at(index_ == 0 ? 0 : index_ - 1).end;
+  return program;
+}
 
-  const Token token = consume();
-  if (token.kind == TokenKind::StringLiteral) {
-    const std::string &raw = token.lexeme;
-    std::u16string value;
-    const std::size_t limit = raw.size() - 1;
-    const auto hexValue = [](char c) -> int {
-      if (c >= '0' && c <= '9') return c - '0';
-      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-      return -1;
-    };
-    const auto readHex = [&](std::size_t &i, std::size_t digits) -> std::uint32_t {
-      if (i + digits > limit) fail("incomplete hexadecimal escape");
-      std::uint32_t result = 0;
-      for (std::size_t n = 0; n < digits; ++n) {
-        const int digit = hexValue(raw[i++]);
-        if (digit < 0) fail("invalid hexadecimal escape");
-        result = (result << 4) | static_cast<std::uint32_t>(digit);
-      }
-      return result;
-    };
-    for (std::size_t i = 1; i < limit;) {
-      if (raw[i] != '\\') {
-        const std::size_t start = i;
-        while (i < limit && raw[i] != '\\') ++i;
-        value += edon::ecma::utf8ToUtf16(raw.substr(start, i - start));
-        continue;
-      }
-      ++i;
-      if (i >= limit) fail("incomplete string escape");
-      const char escaped = raw[i++];
-      switch (escaped) {
-      case 'n': value.push_back(u'\n'); break;
-      case 'r': value.push_back(u'\r'); break;
-      case 't': value.push_back(u'\t'); break;
-      case 'b': value.push_back(u'\b'); break;
-      case 'f': value.push_back(u'\f'); break;
-      case 'v': value.push_back(u'\v'); break;
-      case '\\': value.push_back(u'\\'); break;
-      case '\'': value.push_back(u'\''); break;
-      case '"': value.push_back(u'"'); break;
-      case '0': value.push_back(u'\0'); break;
-      case 'x': value.push_back(static_cast<char16_t>(readHex(i, 2))); break;
-      case 'u': {
-        std::uint32_t cp = 0;
-        if (i < limit && raw[i] == '{') {
-          ++i;
-          const std::size_t start = i;
-          while (i < limit && raw[i] != '}') {
-            const int digit = hexValue(raw[i]);
-            if (digit < 0 || i - start >= 6) fail("invalid Unicode code point escape");
-            cp = (cp << 4) | static_cast<std::uint32_t>(digit);
-            ++i;
-          }
-          if (i == start || i >= limit || raw[i] != '}' || cp > 0x10FFFF ||
-              (cp >= 0xD800 && cp <= 0xDFFF))
-            fail("invalid Unicode code point escape");
-          ++i;
-          if (cp <= 0xFFFF) value.push_back(static_cast<char16_t>(cp));
-          else {
-            cp -= 0x10000;
-            value.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
-            value.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
-          }
-        } else {
-          cp = readHex(i, 4);
-          value.push_back(static_cast<char16_t>(cp));
-        }
-        break;
-      }
-      case '\n': break;
-      case '\r':
-        if (i < limit && raw[i] == '\n') ++i;
-        break;
-      default: {
-        const auto lead = static_cast<unsigned char>(escaped);
-        const std::size_t count = lead < 0x80             ? 1
-                                  : (lead & 0xE0) == 0xC0 ? 2
-                                  : (lead & 0xF0) == 0xE0 ? 3
-                                  : (lead & 0xF8) == 0xF0 ? 4
-                                                          : 1;
-        const std::size_t start = i - 1;
-        const std::size_t available = std::min(count, limit - start);
-        value += edon::ecma::utf8ToUtf16(raw.substr(start, available));
-        i = start + available;
-        break;
-      }
-      }
+Statement Parser::parseStatement() {
+  const auto start = current().start;
+  using Registry = std::unordered_map<std::string, StatementParser>;
+  static const Registry registry{{"let", &Parser::parseDeclaration},
+                                 {"const", &Parser::parseDeclaration},
+                                 {"var", &Parser::parseDeclaration},
+                                 {"function", &Parser::parseFunctionDeclaration},
+                                 {"return", &Parser::parseReturnStatement},
+                                 {"{", &Parser::parseBlock},
+                                 {"if", &Parser::parseIfStatement},
+                                 {"while", &Parser::parseWhileStatement},
+                                 {"for", &Parser::parseForStatement},
+                                 {"break", &Parser::parseBreakStatement},
+                                 {"continue", &Parser::parseContinueStatement}};
+  Statement statement = [&]() {
+    if (const auto found = registry.find(current().lexeme); found != registry.end())
+      return (this->*(found->second))();
+    return parseExpressionStatement();
+  }();
+  statement.range = SourceRange{start, tokens_.at(index_ == 0 ? 0 : index_ - 1).end};
+  return statement;
+}
+
+Statement Parser::parseExpressionStatement() {
+  auto expression = parseExpression();
+  optionalSemicolon();
+  return Statement(ExpressionStatement{std::move(expression)});
+}
+
+Statement Parser::parseDeclaration() {
+  const std::string kind = consume().lexeme;
+  VariableDeclaration declaration{kind, {}};
+  do {
+    if (current().kind != TokenKind::Identifier) fail("expected binding name");
+    std::string name = consume().lexeme;
+    ExprPtr initializer;
+    if (eat("=")) initializer = parseExpression();
+    else if (kind == "const")
+      fail("const declaration requires an initializer");
+    declaration.declarations.push_back({std::move(name), std::move(initializer)});
+  } while (eat(","));
+  optionalSemicolon();
+  return Statement(std::move(declaration));
+}
+
+Statement Parser::parseFunctionDeclaration() {
+  consume();
+  if (current().kind != TokenKind::Identifier) fail("expected function name");
+  FunctionDeclaration function{consume().lexeme, {}, {}};
+  if (!eat("(")) fail("expected '(' after function name");
+  if (!eat(")")) {
+    do {
+      if (current().kind != TokenKind::Identifier) fail("expected parameter name");
+      function.parameters.push_back(consume().lexeme);
+    } while (eat(","));
+    if (!eat(")")) fail("expected ')' after parameters");
+  }
+  if (!eat("{")) fail("expected function body");
+  function.body = parseBlockBody();
+  return Statement(std::move(function));
+}
+
+Statement Parser::parseReturnStatement() {
+  consume();
+  ExprPtr argument;
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End)
+    argument = parseExpression();
+  optionalSemicolon();
+  return Statement(ReturnStatement{std::move(argument)});
+}
+
+Statement Parser::parseIfStatement() {
+  consume();
+  if (!eat("(")) fail("expected '(' after 'if'");
+  auto condition = parseExpression();
+  if (!eat(")")) fail("expected ')' after if condition");
+  if (!eat("{")) fail("expected '{' for if consequent");
+  StatementList consequent = parseBlockBody();
+  StatementList alternate;
+  if (eat("else")) {
+    if (eat("if")) {
+    } else if (eat("{")) {
+      alternate = parseBlockBody();
+    } else {
+      alternate.push_back(parseStatement());
     }
-    return Value(std::move(value));
   }
-  if (token.kind == TokenKind::NumericLiteral) {
-    std::string normalized;
-    for (char c : token.lexeme)
-      if (c != '_') normalized += c;
-    char *end = nullptr;
-    const double number = std::strtod(normalized.c_str(), &end);
-    if (end != normalized.c_str() + normalized.size() || !std::isfinite(number))
-      fail("unsupported numeric literal");
-    return Value(number);
-  }
-  if (token.lexeme == "true") return Value(true);
-  if (token.lexeme == "false") return Value(false);
-  if (token.lexeme == "null") return Value::null();
-  if (token.lexeme == "undefined") return Value::undefined();
-  if (token.kind == TokenKind::Identifier) {
-    const auto found = bindings_.find(token.lexeme);
-    if (found == bindings_.end()) fail("undefined identifier '" + token.lexeme + "'");
-    return found->second.value;
-  }
-  fail("expected expression");
+  return Statement(IfStatement{std::move(condition), std::move(consequent), std::move(alternate)});
 }
 
-Value Parser::parseUnary() {
-  if (eat("~")) {
-    const Value value = parseUnary();
-    if (!value.isNumber()) fail("unary '~' requires a number");
-
-    return Value(static_cast<double>(~toInt32(value.asNumber())));
-  }
-
-  if (eat("+")) {
-    Value value = parseUnary();
-    if (!value.isNumber()) fail("unary '+' currently requires a number");
-    return value;
-  }
-
-  if (eat("-")) {
-    Value value = parseUnary();
-    if (!value.isNumber()) fail("unary '-' requires a number");
-    return Value(-value.asNumber());
-  }
-
-  return parsePrimary();
+Statement Parser::parseWhileStatement() {
+  consume();
+  if (!eat("(")) fail("expected '(' after 'while'");
+  auto condition = parseExpression();
+  if (!eat(")")) fail("expected ')' after while condition");
+  if (!eat("{")) fail("expected '{' for while body");
+  StatementList body = parseBlockBody();
+  return Statement(WhileStatement{std::move(condition), std::move(body)});
 }
 
-int Parser::precedence(const std::string &op) const {
-  if (op == "**") return 7;
-  if (op == "*" || op == "/" || op == "%") return 6;
-  if (op == "+" || op == "-") return 5;
-  if (op == "<<" || op == ">>" || op == ">>>") return 4;
-  if (op == "&") return 3;
-  if (op == "^") return 2;
-  if (op == "|") return 1;
-  return -1;
+Statement Parser::parseForStatement() {
+  consume();
+  if (!eat("(")) fail("expected '(' after 'for'");
+  std::unique_ptr<VariableDeclaration> init;
+  bool initHasSemicolon = false;
+  if (current().lexeme != ";") {
+    if (current().lexeme == "let" || current().lexeme == "const" || current().lexeme == "var") {
+      auto decl = parseDeclaration();
+      if (const auto *d = std::get_if<VariableDeclaration>(&decl.node)) {
+        init = std::make_unique<VariableDeclaration>(*std::move(d));
+        initHasSemicolon = true;
+      } else
+        fail("expected variable declaration in for-init");
+    } else {
+      parseExpression();
+      optionalSemicolon();
+      initHasSemicolon = true;
+    }
+  }
+  if (!initHasSemicolon) {
+    if (!eat(";")) fail("expected ';' after for-init");
+  }
+  ExprPtr condition;
+  if (current().lexeme != ";") { condition = parseExpression(); }
+  if (!eat(";")) fail("expected ';' after for-condition");
+  ExprPtr update;
+  if (current().lexeme != ")") { update = parseExpression(); }
+  if (!eat(")")) fail("expected ')' after for-clauses");
+  if (!eat("{")) fail("expected '{' for for body");
+  StatementList body = parseBlockBody();
+  return Statement(
+      ForStatement{std::move(init), std::move(condition), std::move(update), std::move(body)});
 }
 
-Value Parser::applyBinary(const std::string &op, const Value &left, const Value &right) {
-  if (op == "+" && (left.isString() || right.isString())) {
-    const std::u16string a =
-        left.isString() ? left.asString() : edon::ecma::utf8ToUtf16(formatConsoleValue(left));
-    const std::u16string b =
-        right.isString() ? right.asString() : edon::ecma::utf8ToUtf16(formatConsoleValue(right));
-    return Value(a + b);
+Statement Parser::parseBreakStatement() {
+  consume();
+  std::string label;
+  if (current().kind == TokenKind::Identifier && current().lexeme != ";" &&
+      current().lexeme != "}") {
+    label = consume().lexeme;
   }
-  if (!left.isNumber() || !right.isNumber())
-    fail("operator '" + op + "' requires numeric operands");
-  const double a = left.asNumber();
-  const double b = right.asNumber();
-  if (op == "+") return Value(a + b);
-  if (op == "-") return Value(a - b);
-  if (op == "*") return Value(a * b);
-  if (op == "/") return Value(a / b);
-  if (op == "%") return Value(std::fmod(a, b));
-  if (op == "**") return Value(std::pow(a, b));
-  if (op == "<<") {
-    const std::uint32_t lhs = toUint32(a);
-    const unsigned shift = toUint32(b) & 31U;
-    return Value(static_cast<double>(toInt32(static_cast<double>(lhs << shift))));
-  }
-
-  if (op == ">>") {
-    const std::int32_t lhs = toInt32(a);
-    const unsigned shift = toUint32(b) & 31U;
-    std::uint32_t result = static_cast<std::uint32_t>(lhs) >> shift;
-    if (shift != 0 && lhs < 0) result |= (~std::uint32_t{0}) << (32U - shift);
-
-    return Value(static_cast<double>(toInt32(static_cast<double>(result))));
-  }
-
-  if (op == ">>>") {
-    const std::uint32_t lhs = toUint32(a);
-    const unsigned shift = toUint32(b) & 31U;
-    return Value(static_cast<double>(lhs >> shift));
-  }
-
-  if (op == "&") return Value(static_cast<double>(toInt32(a) & toInt32(b)));
-
-  if (op == "^") return Value(static_cast<double>(toInt32(a) ^ toInt32(b)));
-
-  if (op == "|") return Value(static_cast<double>(toInt32(a) | toInt32(b)));
-  fail("unsupported arithmetic operator '" + op + "'");
+  optionalSemicolon();
+  return Statement(BreakStatement{std::move(label)});
 }
 
-Value Parser::parseExpression(int minimumPrecedence) {
-  Value left = parseUnary();
-  while (true) {
-    const std::string op = current().lexeme;
-    const int opPrecedence = precedence(op);
-    if (opPrecedence < minimumPrecedence) break;
-    consume();
-    const int nextMinimum = op == "**" ? opPrecedence : opPrecedence + 1;
-    Value right = parseExpression(nextMinimum);
-    left = applyBinary(op, left, right);
+Statement Parser::parseContinueStatement() {
+  consume();
+  std::string label;
+  if (current().kind == TokenKind::Identifier && current().lexeme != ";" &&
+      current().lexeme != "}") {
+    label = consume().lexeme;
+  }
+  optionalSemicolon();
+  return Statement(ContinueStatement{std::move(label)});
+}
+
+Statement Parser::parseBlock() {
+  consume();
+  return Statement(BlockStatement{parseBlockBody()});
+}
+
+StatementList Parser::parseBlockBody() {
+  StatementList statements;
+  while (current().kind != TokenKind::End && current().lexeme != "}")
+    statements.push_back(parseStatement());
+  if (!eat("}")) fail("expected '}' to close block");
+  return statements;
+}
+
+ExprPtr Parser::parseExpression(int minimumBindingPower) {
+  auto left = parsePrefix();
+  for (;;) {
+    const auto found = infixParselets().find(current().lexeme);
+    if (found == infixParselets().end() || found->second.info.bindingPower < minimumBindingPower)
+      break;
+    const auto parselet = found->second;
+    const std::string op = consume().lexeme;
+    left = (this->*parselet.parse)(std::move(left), op, parselet.info);
   }
   return left;
 }
 
-void Parser::parseDeclaration() {
-  const std::string declaration = consume().lexeme;
-  const Token name = consume();
-  if (name.kind != TokenKind::Identifier) fail("expected binding name");
-  if (bindings_.contains(name.lexeme)) fail("duplicate binding '" + name.lexeme + "'");
-  if (!eat("=")) fail("declaration initializer is required in this compiler stage");
-  Value value = parseExpression();
-  bindings_.emplace(name.lexeme, Binding{std::move(value), declaration != "const"});
-  optionalSemicolon();
+ExprPtr Parser::parsePrefix() {
+  const auto found = prefixParselets().find(current().lexeme);
+  if (found != prefixParselets().end()) return (this->*found->second)();
+  return parsePostfix(parsePrimary());
 }
 
-void Parser::parseAssignment() {
-  const Token name = consume();
-  const auto found = bindings_.find(name.lexeme);
-  if (found == bindings_.end()) fail("assignment to undefined identifier '" + name.lexeme + "'");
-  if (!found->second.mutableBinding) fail("assignment to constant '" + name.lexeme + "'");
-  if (!eat("=")) fail("expected '=' in assignment");
-  found->second.value = parseExpression();
-  optionalSemicolon();
+ExprPtr Parser::parseUnaryPrefix() {
+  const auto start = current().start;
+  const std::string op = consume().lexeme;
+  auto operand = parsePrefix();
+  const SourceRange sourceRange{start, operand->range.end};
+  return std::make_shared<Expr>(UnaryExpr{op, std::move(operand)}, sourceRange);
 }
 
-void Parser::parseConsoleCall() {
-  if (!eat(".")) fail("expected '.' after console");
-  const Token method = consume();
-  if (method.kind != TokenKind::Identifier && method.kind != TokenKind::Keyword)
-    fail("expected console method name");
-  int fd = 1;
-  if (!ConsoleBuiltins::resolve(method.lexeme, fd))
-    fail("unsupported console method '" + method.lexeme + "'");
-  if (!eat("(")) fail("expected '(' after console method");
-  PrintStatement statement;
-  statement.fd = fd;
+ExprPtr Parser::parseUpdatePrefix() {
+  const auto start = current().start;
+  const std::string op = consume().lexeme;
+  auto target = parsePrefix();
+  const SourceRange sourceRange{start, target->range.end};
+  return std::make_shared<Expr>(UpdateExpr{op, true, std::move(target)}, sourceRange);
+}
+
+ExprPtr Parser::parseUpdatePostfix(ExprPtr expression) {
+  const auto start = expression->range.start;
+  const std::string op = consume().lexeme;
+  const SourceRange sourceRange{start, current().start};
+  return std::make_shared<Expr>(UpdateExpr{op, false, std::move(expression)}, sourceRange);
+}
+
+ExprPtr Parser::parseBinaryInfix(ExprPtr left, const std::string &op, OperatorInfo info) {
+  const auto start = left->range.start;
+  auto right = parseExpression(info.bindingPower + (info.rightAssociative ? 0 : 1));
+  const SourceRange sourceRange{start, right->range.end};
+  return std::make_shared<Expr>(BinaryExpr{op, std::move(left), std::move(right)}, sourceRange);
+}
+
+ExprPtr Parser::parseAssignmentInfix(ExprPtr left, const std::string &op, OperatorInfo info) {
+  const auto start = left->range.start;
+  auto right = parseExpression(info.bindingPower);
+  const SourceRange sourceRange{start, right->range.end};
+  return std::make_shared<Expr>(AssignmentExpr{op, std::move(left), std::move(right)}, sourceRange);
+}
+
+ExprPtr Parser::parsePostfix(ExprPtr expression) {
+  for (;;) {
+    const auto found = postfixParselets().find(current().lexeme);
+    if (found == postfixParselets().end()) break;
+    expression = (this->*found->second)(std::move(expression));
+  }
+  return expression;
+}
+
+ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
+  (void)consume();
+  const auto start = expression->range.start;
+  std::vector<ExprPtr> arguments;
   if (!eat(")")) {
-    do { statement.arguments.push_back(parseExpression()); } while (eat(","));
-    if (!eat(")")) fail("expected ')' after console arguments");
+    do { arguments.push_back(parseExpression()); } while (eat(","));
+    if (!eat(")")) fail("expected ')' after call arguments");
   }
-  program_.output.push_back(std::move(statement));
-  optionalSemicolon();
+  const auto end = tokens_.at(index_ - 1).end;
+  return std::make_shared<Expr>(CallExpr{std::move(expression), std::move(arguments)},
+                                SourceRange{start, end});
 }
 
-Program Parser::parse() {
-  while (current().kind != TokenKind::End) {
-    if (current().lexeme == "const" || current().lexeme == "let" || current().lexeme == "var") {
-      parseDeclaration();
-    } else if (eat("console")) {
-      parseConsoleCall();
-    } else if (current().kind == TokenKind::Identifier && index_ + 1 < tokens_.size() &&
-               tokens_[index_ + 1].lexeme == "=") {
-      parseAssignment();
-    } else {
-      fail("unsupported statement; expected declaration, assignment, or console call");
-    }
+ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
+  (void)consume();
+  const Token property = consume();
+  if (property.kind != TokenKind::Identifier && property.kind != TokenKind::Keyword)
+    fail("expected property name after '.'");
+  const auto start = expression->range.start;
+  return std::make_shared<Expr>(MemberExpr{std::move(expression), property.lexeme, {}, false},
+                                SourceRange{start, property.end});
+}
+
+ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
+  (void)consume();
+  const auto start = expression->range.start;
+  auto property = parseExpression();
+  if (!eat("]")) fail("expected ']' after computed property name");
+  const auto end = tokens_.at(index_ - 1).end;
+  return std::make_shared<Expr>(MemberExpr{std::move(expression), {}, std::move(property), true},
+                                SourceRange{start, end});
+}
+
+ExprPtr Parser::parsePrimary() {
+  if (current().lexeme == "{") return parseObjectLiteral();
+  if (current().lexeme == "[") return parseArrayLiteral();
+  if (current().lexeme == "(") {
+    const auto start = consume().start;
+    auto expression = parseExpression();
+    if (!eat(")")) fail("expected ')' after expression");
+    expression->range = SourceRange{start, tokens_.at(index_ - 1).end};
+    return expression;
   }
-  return std::move(program_);
+
+  const Token token = consume();
+  const SourceRange sourceRange{token.start, token.end};
+  if (token.kind == TokenKind::NumericLiteral || token.kind == TokenKind::BigIntLiteral)
+    return std::make_shared<Expr>(LiteralExpr{LiteralExpr::Kind::Number, token.lexeme},
+                                  sourceRange);
+  if (token.kind == TokenKind::StringLiteral)
+    return std::make_shared<Expr>(LiteralExpr{LiteralExpr::Kind::String, token.lexeme},
+                                  sourceRange);
+  if (token.lexeme == "true" || token.lexeme == "false")
+    return std::make_shared<Expr>(LiteralExpr{LiteralExpr::Kind::Boolean, token.lexeme},
+                                  sourceRange);
+  if (token.lexeme == "null")
+    return std::make_shared<Expr>(LiteralExpr{LiteralExpr::Kind::Null, token.lexeme}, sourceRange);
+  if (token.lexeme == "undefined")
+    return std::make_shared<Expr>(LiteralExpr{LiteralExpr::Kind::Undefined, token.lexeme},
+                                  sourceRange);
+  if (token.kind == TokenKind::Identifier || token.lexeme == "console")
+    return std::make_shared<Expr>(IdentifierExpr{token.lexeme}, sourceRange);
+  fail("expected expression");
+}
+
+ExprPtr Parser::parseObjectLiteral() {
+  const auto start = consume().start;
+  ObjectExpr object;
+  if (!eat("}")) {
+    do {
+      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword &&
+          current().kind != TokenKind::StringLiteral && current().kind != TokenKind::NumericLiteral)
+        fail("expected object property name");
+      std::string key = consume().lexeme;
+      if (key.size() >= 2 && (key.front() == '\'' || key.front() == '\"'))
+        key = key.substr(1, key.size() - 2);
+      if (!eat(":")) fail("expected ':' after object property name");
+      object.properties.push_back({std::move(key), parseExpression()});
+    } while (eat(",") && current().lexeme != "}");
+    if (!eat("}")) fail("expected '}' after object literal");
+  }
+  const auto end = tokens_.at(index_ - 1).end;
+  return std::make_shared<Expr>(std::move(object), SourceRange{start, end});
+}
+
+ExprPtr Parser::parseArrayLiteral() {
+  const auto start = consume().start;
+  ArrayExpr array;
+  if (!eat("]")) {
+    do { array.elements.push_back(parseExpression()); } while (eat(",") && current().lexeme != "]");
+    if (!eat("]")) fail("expected ']' after array literal");
+  }
+  const auto end = tokens_.at(index_ - 1).end;
+  return std::make_shared<Expr>(std::move(array), SourceRange{start, end});
 }
 
 } // namespace rma::compiler

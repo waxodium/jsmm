@@ -5,9 +5,11 @@
 #include <string>
 #include <utility>
 
-namespace edon::ecma {
+namespace rma::syntax {
 
 enum class ReferenceKind { Invalid, Binding, Property };
+
+
 
 struct Reference {
   ReferenceKind kind = ReferenceKind::Invalid;
@@ -21,16 +23,16 @@ struct Reference {
   }
   static Reference property(ObjectPtr base, std::string key, bool strict = false) {
     PropertyKey propertyKey(key);
-    return {ReferenceKind::Property, std::move(key), std::move(base), std::move(propertyKey),
-            strict};
+    return {ReferenceKind::Property, std::move(key), std::move(base),
+            std::move(propertyKey), strict};
   }
   static Reference property(ObjectPtr base, PropertyKey key, bool strict = false) {
     std::string displayName;
     if (key.isString()) displayName = key.asString();
-    return {ReferenceKind::Property, std::move(displayName), std::move(base), std::move(key),
-            strict};
+    return {ReferenceKind::Property, std::move(displayName), std::move(base),
+            std::move(key), strict};
   }
   bool isValid() const noexcept { return kind != ReferenceKind::Invalid; }
 };
 
-} // namespace edon::ecma
+} 

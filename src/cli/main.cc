@@ -1,4 +1,7 @@
+#include "compiler/ast_printer.hh"
 #include "compiler/compiler.hh"
+#include "compiler/parser.hh"
+#include "engine/lexer.hh"
 #include "platform.hh"
 
 #include <fstream>
@@ -12,11 +15,39 @@
 namespace {
 
 void usage(const char *program) {
-  std::cerr << "Usage: " << program << " <input.js> [-o <output>]\n";
+  std::cerr << "Usage: " << program << " <input.js> [-o <output>]\n  "
+            << program << " --ast <input.js>\n";
 }
-} // namespace
+
+std::string readFile(const std::string &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("cannot open source file: " + path);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+} 
 
 int main(int argc, char *argv[]) {
+  if (argc == 3 && std::string(argv[1]) == "--ast") {
+    try {
+      const std::string source = readFile(argv[2]);
+      rma::syntax::Lexer lexer(source);
+      auto tokens = lexer.tokenize();
+      if (lexer.failed()) {
+        const auto &e = lexer.error();
+        throw std::runtime_error("lexer error at " + std::to_string(e.position.line) + ":" +
+                                 std::to_string(e.position.column) + ": " + e.message);
+      }
+      rma::compiler::Parser parser(std::move(tokens));
+      auto program = parser.parse();
+      rma::compiler::AstPrinter{}.print(program, std::cout);
+      return 0;
+    } catch (const std::exception &error) {
+      std::cerr << "rma: " << error.what() << '\n';
+      return 1;
+    }
+  }
+
   if (argc < 2) {
     usage(argv[0]);
     return 2;

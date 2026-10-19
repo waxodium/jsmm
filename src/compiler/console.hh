@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../engine/object.hh"
+#include "engine/object.hh"
 #include <string>
 
 namespace rma::compiler {
@@ -8,9 +8,9 @@ namespace rma::compiler {
 class ConsoleBuiltins final {
 public:
   static bool resolve(const std::string &method, int &fileDescriptor);
-  static edon::ecma::ObjectPtr namespaceObject();
+  static rma::syntax::ObjectPtr namespaceObject();
 };
 
-std::string formatConsoleValue(const edon::ecma::Value &value);
+std::string formatConsoleValue(const rma::syntax::Value &value);
 
 } // namespace rma::compiler

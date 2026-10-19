@@ -10,4 +10,4 @@ std::string readFile(const std::string &path);
 
 void writeExecutable(const std::string &path, const std::vector<std::uint8_t> &bytes);
 
-} // namespace rma::cli
+} 

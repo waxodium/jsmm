@@ -4,9 +4,10 @@
 #include <string>
 #include <utility>
 
-namespace edon::ecma {
+namespace rma::syntax {
 
 enum class CompletionType { Normal, Return, Break, Continue, Throw };
+
 
 struct Completion {
   CompletionType type = CompletionType::Normal;
@@ -19,7 +20,9 @@ struct Completion {
   static Completion returned(Value value = Value::undefined()) {
     return {CompletionType::Return, std::move(value), {}};
   }
-  static Completion thrown(Value value) { return {CompletionType::Throw, std::move(value), {}}; }
+  static Completion thrown(Value value) {
+    return {CompletionType::Throw, std::move(value), {}};
+  }
   static Completion broken(std::string target = {}) {
     return {CompletionType::Break, Value::undefined(), std::move(target)};
   }
@@ -29,4 +32,4 @@ struct Completion {
   bool isAbrupt() const noexcept { return type != CompletionType::Normal; }
 };
 
-} // namespace edon::ecma
+} 

@@ -5,7 +5,7 @@
 #include <sstream>
 
 namespace rma::compiler {
-using namespace edon::ecma;
+using namespace rma::syntax;
 
 ObjectPtr ConsoleBuiltins::namespaceObject() {
   auto console = std::make_shared<Object>();
@@ -45,6 +45,17 @@ std::string formatConsoleValue(const Value &value) {
     return out.str();
   }
   if (value.isSymbol()) return "Symbol(" + value.asSymbol()->description + ")";
+  if (value.isObject() && value.asObject() &&
+      value.asObject()->kind == rma::syntax::ObjectKind::Array) {
+    auto arr = std::static_pointer_cast<rma::syntax::ArrayObject>(value.asObject());
+    std::string out = "[";
+    for (std::size_t i = 0; i < arr->elements.size(); ++i) {
+      if (i) out += ", ";
+      out += formatConsoleValue(arr->elements[i]);
+    }
+    out += "]";
+    return out;
+  }
   return "[object Object]";
 }
 
