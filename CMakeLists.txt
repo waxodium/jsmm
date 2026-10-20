@@ -10,12 +10,9 @@ file(GLOB_RECURSE RMA_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
 )
 
-list(FILTER RMA_SOURCES EXCLUDE REGEX "/engine/main\\.cc$")
-
 add_executable(rma ${RMA_SOURCES})
 
 target_include_directories(rma PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
@@ -29,4 +26,3 @@ target_compile_options(rma PRIVATE
 set_target_properties(rma PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build"
 )
-

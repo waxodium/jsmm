@@ -1,22 +1,34 @@
 # rma
 
-The JavaScript Compiler Engine 
+**The JavaScript Compiler Engine**
 
-**rma (Runtime Machine Assembler)** is a deterministic Ahead-of-Time JavaScript *compiler engine*.
+**RMA (Runtime Machine Assembler)** is a deterministic Ahead-of-Time (AOT) compiler engine for a statically analyzable subset of JavaScript.
 
-__*Runtime Machine Assembler*__ is developed to distribute as a feature for [edon.js runtime](https://github.com/waxodium/edon) (A dynamic JavaScript runtime that provides API to interact with C programming language). 
-
-**rma** can still be use as a standalone software.
-
----
+RMA is designed to be distributed as a compilation feature of [edon.js](https://github.com/waxodium/edon), 
+a dynamic JavaScript runtime that provides APIs for interacting with C.
 
 ## About
 
-RMA engine is Implicitly Inferred, Static-Subset JavaScript Programming.
+RMA uses **ES2015 (ECMAScript 2015) as its base syntax**. 
+It does not introduce a separate programming language or modify JavaScript syntax. 
+Instead, it restricts the supported ECMAScript features to a statically analyzable subset suitable for native compilation.
 
-The **rma** compiler achieves compilation by disallowing unsafe/dynamic ECMAScript features.
+RMA uses implicit type inference and static analysis to reject unsupported or unsafe dynamic features at compile time.
+
+
+RMA excludes JavaScript built-ins and standard library, those includes `console`, `arrays`, `objects`
+
+The compiler provides a single `cat()` function for concatenation. This engine is only compatible with __x86_64 linux__
+
+## Build
+For users who required an rma as CLI program:
+
+```bash
+make
+./build/rma // executable
+```
+
 
 ## License
 
-**rma** is declared under the terms of [Mozilla Public License v2.0](./LICENSE). Review the LICENSE file for more detail.
-
+RMA is licensed under the terms of the [Mozilla Public License 2.0](./LICENSE). Review `LICENSE` file for details.

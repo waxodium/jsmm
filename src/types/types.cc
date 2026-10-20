@@ -1,0 +1,130 @@
+#include "types/types.hh"
+
+#include <set>
+#include <stdexcept>
+
+namespace rma::types {
+
+TypeContext::TypeContext() {
+  number_ = std::make_shared<Type>();
+  number_->kind = TypeKind::Number;
+  number_->id = nextId_++;
+  string_ = std::make_shared<Type>();
+  string_->kind = TypeKind::String;
+  string_->id = nextId_++;
+  boolean_ = std::make_shared<Type>();
+  boolean_->kind = TypeKind::Boolean;
+  boolean_->id = nextId_++;
+  null_ = std::make_shared<Type>();
+  null_->kind = TypeKind::Null;
+  null_->id = nextId_++;
+  undefined_ = std::make_shared<Type>();
+  undefined_->kind = TypeKind::Undefined;
+  undefined_->id = nextId_++;
+  never_ = std::make_shared<Type>();
+  never_->kind = TypeKind::Never;
+  never_->id = nextId_++;
+}
+
+TypePtr TypeContext::number() { return number_; }
+TypePtr TypeContext::string() { return string_; }
+TypePtr TypeContext::boolean() { return boolean_; }
+TypePtr TypeContext::null() { return null_; }
+TypePtr TypeContext::undefined() { return undefined_; }
+TypePtr TypeContext::never() { return never_; }
+
+TypePtr TypeContext::variable() {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Variable;
+  type->id = nextId_++;
+  return type;
+}
+
+TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr result) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Function;
+  type->id = nextId_++;
+  type->parameters = std::move(parameters);
+  type->result = std::move(result);
+  return type;
+}
+
+TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Struct;
+  type->id = nextId_++;
+  type->fields = std::move(fields);
+  return type;
+}
+
+TypePtr TypeContext::arrayType(TypePtr element) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Array;
+  type->id = nextId_++;
+  type->element = std::move(element);
+  return type;
+}
+
+TypePtr TypeContext::unionType(std::vector<TypePtr> members) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Union;
+  type->id = nextId_++;
+  type->members = std::move(members);
+  return type;
+}
+
+TypePtr TypeContext::resolve(TypePtr type) {
+  std::set<int> seen;
+  while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr) {
+    if (!seen.insert(type->id).second) throw std::runtime_error("rma: type cycle detected");
+    type = type->link;
+  }
+  return type;
+}
+
+std::string TypeContext::show(TypePtr type) {
+  type = resolve(type);
+  if (type == nullptr) return "?";
+  switch (type->kind) {
+    case TypeKind::Number: return "number";
+    case TypeKind::String: return "string";
+    case TypeKind::Boolean: return "boolean";
+    case TypeKind::Null: return "null";
+    case TypeKind::Undefined: return "undefined";
+    case TypeKind::Never: return "never";
+    case TypeKind::Variable: return "t" + std::to_string(type->id);
+    case TypeKind::Function: {
+      std::string out = "(";
+      for (std::size_t i = 0; i < type->parameters.size(); ++i) {
+        if (i != 0) out += ", ";
+        out += show(type->parameters[i]);
+      }
+      out += ") -> ";
+      out += show(type->result);
+      return out;
+    }
+    case TypeKind::Struct: {
+      std::string out = "struct ObjectLiteral { ";
+      for (std::size_t i = 0; i < type->fields.size(); ++i) {
+        if (i != 0) out += ", ";
+        out += type->fields[i].first;
+        out += ": ";
+        out += show(type->fields[i].second);
+      }
+      out += " }";
+      return out;
+    }
+    case TypeKind::Array: return show(type->element) + "[]";
+    case TypeKind::Union: {
+      std::string out;
+      for (std::size_t i = 0; i < type->members.size(); ++i) {
+        if (i != 0) out += " | ";
+        out += show(type->members[i]);
+      }
+      return out;
+    }
+  }
+  return "?";
+}
+
+}
