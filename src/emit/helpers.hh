@@ -10,6 +10,7 @@ namespace rma::emit {
 
 inline constexpr std::string_view entrySymbol = "rma_entry";
 inline constexpr std::string_view startSymbol = "_start";
+inline constexpr std::string_view entryFrameSymbol = "rma_entry_frame";
 inline constexpr std::string_view allocSymbol = "rma_alloc";
 inline constexpr std::string_view moduloSymbol = "rma_mod";
 inline constexpr std::string_view powerSymbol = "rma_pow";

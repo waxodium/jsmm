@@ -27,6 +27,7 @@ public:
   void callHelper(const std::string &symbol) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
+  void formatNewline() override;
   void formatByType(const types::TypePtr &type);
   void formatArrayValue(const types::TypePtr &type);
 
@@ -58,6 +59,8 @@ private:
   void beginScope();
   void endScope();
   Slot *lookupSlot(const std::string &name);
+  long long topLevelOffset(const std::string &name);
+  bool topLevelIsNumber(const std::string &name);
   long long allocateSlot();
   void releaseSlot(long long offset);
   long long pushTemp();
@@ -105,6 +108,9 @@ private:
   std::vector<long long> freeSlots_;
   std::vector<long long> temps_;
   FunctionState state_;
+  bool generatingEntry_ = false;
+  std::unordered_map<std::string, long long> topLevelOffsets_;
+  std::unordered_map<std::string, bool> topLevelIsNumber_;
 };
 
 } // namespace rma::emit

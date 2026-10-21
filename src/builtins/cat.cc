@@ -36,6 +36,7 @@ TypePtr inferCat(InferContext &context, const std::vector<types::TypePtr> &argum
 
 void emitCat(EmitContext &context, const CallExpr &call) {
   for (const auto &argument : call.arguments) context.formatValue(argument);
+  context.formatNewline();
   context.clearResult();
 }
 

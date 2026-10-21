@@ -73,7 +73,7 @@ private:
   TypePtr annotate(const reader::ExprPtr &expr, TypePtr type);
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
-  void inferFunctionBody(const FunctionEntry &entry);
+  void inferFunctionBody(const FunctionEntry &entry, Scope *parentScope);
   void inferStatements(const reader::StatementList &statements);
   void inferStatement(const reader::Statement &statement);
   TypePtr inferExpression(const reader::ExprPtr &expr);

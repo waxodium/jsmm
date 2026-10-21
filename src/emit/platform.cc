@@ -99,6 +99,12 @@ rma_message_bounds:
 rma_message_bounds_end:
 )ASM";
 
+constexpr const char *entryFrameText = R"ASM(.section .bss
+.align 8
+rma_entry_frame:
+  .zero 8
+)ASM";
+
 constexpr const char *stringWriterText = R"ASM(.section .text
 .globl rma_cat_str
 rma_cat_str:
@@ -141,6 +147,9 @@ rma_literal_infinity:
 rma_literal_neg_infinity:
   .quad 9
   .ascii "-Infinity"
+rma_literal_newline:
+  .quad 1
+  .ascii "\n"
 )ASM";
 
 constexpr const char *literalWriterText = R"ASM(.section .text
@@ -297,6 +306,7 @@ rma_number_emit:
 
 void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(startSymbol), startText);
+  registry.declare(std::string(entryFrameSymbol), entryFrameText);
   registry.declare(std::string(allocSymbol), allocText);
   registry.declare(std::string(moduloSymbol), moduloText);
   registry.declare(std::string(powerSymbol), powerText);

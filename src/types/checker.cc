@@ -128,8 +128,8 @@ void Checker::hoistFunctions(const reader::Program &program,
   }
 }
 
-void Checker::inferFunctionBody(const FunctionEntry &entry) {
-  pushScope(&rootScope_);
+void Checker::inferFunctionBody(const FunctionEntry &entry, Scope *parentScope) {
+  pushScope(parentScope);
   for (std::size_t i = 0; i < entry.declaration->parameters.size(); ++i) {
     Binding binding;
     binding.scheme = TypeScheme{{}, entry.parameters[i]};
@@ -504,8 +504,18 @@ Annotations Checker::check(const reader::Program &program) {
   annotations_ = Annotations{};
   std::vector<FunctionEntry> functions;
   hoistFunctions(program, functions);
+
+  // Phase 1: Infer all top-level variable declarations first so they are in
+  // scope when function bodies are type-checked.
+  for (const auto &statement : program.statements) {
+    if (std::holds_alternative<reader::VariableDeclaration>(statement.node)) {
+      inferStatement(statement);
+    }
+  }
+
+  // Phase 2: Infer function bodies (can now see top-level variables).
   for (const auto &entry : functions) {
-    inferFunctionBody(entry);
+    inferFunctionBody(entry, &rootScope_);
     const TypePtr type = context_.functionType(entry.parameters, entry.result);
     rootScope_.bindings.erase(entry.declaration->name);
     Binding binding;
@@ -513,8 +523,12 @@ Annotations Checker::check(const reader::Program &program) {
     binding.isConst = true;
     rootScope_.bindings.insert_or_assign(entry.declaration->name, std::move(binding));
   }
+
+  // Phase 3: Infer remaining top-level statements.
   for (const auto &statement : program.statements) {
-    if (std::holds_alternative<reader::FunctionDeclaration>(statement.node)) continue;
+    if (std::holds_alternative<reader::VariableDeclaration>(statement.node) ||
+        std::holds_alternative<reader::FunctionDeclaration>(statement.node))
+      continue;
     inferStatement(statement);
   }
   return std::move(annotations_);

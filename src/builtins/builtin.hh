@@ -43,6 +43,7 @@ public:
   virtual void callHelper(const std::string &symbol) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
+  virtual void formatNewline() = 0;
 };
 
 struct BuiltinSpec {

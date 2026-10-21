@@ -64,6 +64,18 @@ CodeGenerator::Slot *CodeGenerator::lookupSlot(const std::string &name) {
   return nullptr;
 }
 
+long long CodeGenerator::topLevelOffset(const std::string &name) {
+  const auto found = topLevelOffsets_.find(name);
+  if (found == topLevelOffsets_.end()) return -1;
+  return found->second;
+}
+
+bool CodeGenerator::topLevelIsNumber(const std::string &name) {
+  const auto found = topLevelIsNumber_.find(name);
+  if (found == topLevelIsNumber_.end()) return false;
+  return found->second;
+}
+
 long long CodeGenerator::allocateSlot() {
   if (!freeSlots_.empty()) {
     const long long offset = freeSlots_.back();
@@ -146,11 +158,19 @@ void CodeGenerator::generateDeclaration(const reader::VariableDeclaration &decla
       scopes_.back().slots.insert_or_assign(declarator.name,
                                             Slot{offset, declaration.kind == "const"});
       storeValue(offset, typeOf(declarator.initializer));
+      if (generatingEntry_) {
+        topLevelOffsets_.emplace(declarator.name, offset);
+        topLevelIsNumber_.emplace(declarator.name, isNumber(typeOf(declarator.initializer)));
+      }
     } else {
       out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
       const long long offset = allocateSlot();
       scopes_.back().slots.insert_or_assign(declarator.name, Slot{offset, false});
       out().movOffsetReg(x64::Reg::Rbp, offset, x64::Reg::Rax);
+      if (generatingEntry_) {
+        topLevelOffsets_.emplace(declarator.name, offset);
+        topLevelIsNumber_.emplace(declarator.name, false);
+      }
     }
   }
 }
@@ -265,7 +285,17 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
             else
               loadGp(slot->offset, x64::Reg::Rax);
           } else {
-            out().leaLabel(x64::Reg::Rax, functions_.at(node.name));
+            long long toff = topLevelOffset(node.name);
+            if (toff != -1) {
+              out().leaLabel(x64::Reg::R11, entryFrameSymbol);
+              out().movRegOffset(x64::Reg::R11, x64::Reg::R11, 0);
+              if (topLevelIsNumber(node.name))
+                out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, toff);
+              else
+                out().movRegOffset(x64::Reg::Rax, x64::Reg::R11, toff);
+            } else {
+              out().leaLabel(x64::Reg::Rax, functions_.at(node.name));
+            }
           }
         } else if constexpr (std::is_same_v<T, reader::UnaryExpr>) {
           generateUnary(node);
@@ -573,9 +603,22 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
   const bool decrement = update.op == "--";
   long long addressTemp = -1;
   long long targetOffset = 0;
+  x64::Reg baseReg = x64::Reg::Rbp;
   if (member == nullptr) {
     const auto &identifier = std::get<reader::IdentifierExpr>(update.target->node);
-    targetOffset = lookupSlot(identifier.name)->offset;
+    if (Slot *slot = lookupSlot(identifier.name)) {
+      targetOffset = slot->offset;
+    } else {
+      long long toff = topLevelOffset(identifier.name);
+      if (toff != -1) {
+        out().leaLabel(x64::Reg::R11, entryFrameSymbol);
+        out().movRegOffset(x64::Reg::R11, x64::Reg::R11, 0);
+        targetOffset = toff;
+        baseReg = x64::Reg::R11;
+      } else {
+        targetOffset = 0;
+      }
+    }
   } else {
     generateMemberAddress(*member);
     addressTemp = pushTemp();
@@ -586,7 +629,7 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
     loadGp(addressTemp, x64::Reg::R11);
     out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, 0);
   } else {
-    loadXmm(targetOffset, x64::Xmm::X0);
+    out().movsdXmmOffset(x64::Xmm::X0, baseReg, targetOffset);
   }
   const long long oldTemp = pushTemp();
   storeValue(oldTemp, context_->number());
@@ -600,7 +643,7 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
     loadGp(addressTemp, x64::Reg::R11);
     out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X1);
   } else {
-    out().movsdOffsetXmm(x64::Reg::Rbp, targetOffset, x64::Xmm::X1);
+    out().movsdOffsetXmm(baseReg, targetOffset, x64::Xmm::X1);
   }
   popTemp();
   if (addressTemp >= 0) { popTemp(); }
@@ -611,13 +654,37 @@ void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment)
   const auto *member = std::get_if<reader::MemberExpr>(&assignment.target->node);
   if (member == nullptr) {
     const auto &identifier = std::get<reader::IdentifierExpr>(assignment.target->node);
-    const long long offset = lookupSlot(identifier.name)->offset;
+    x64::Reg baseReg = x64::Reg::Rbp;
+    long long offset = 0;
+    if (Slot *slot = lookupSlot(identifier.name)) {
+      offset = slot->offset;
+    } else {
+      long long toff = topLevelOffset(identifier.name);
+      if (toff != -1) {
+        out().leaLabel(x64::Reg::R11, entryFrameSymbol);
+        out().movRegOffset(x64::Reg::R11, x64::Reg::R11, 0);
+        offset = toff;
+        baseReg = x64::Reg::R11;
+      } else {
+        offset = 0;
+      }
+    }
     if (assignment.op == "=") {
       generateExpression(assignment.value);
-      storeValue(offset, typeOf(assignment.value));
+      if (baseReg == x64::Reg::Rbp) {
+        storeValue(offset, typeOf(assignment.value));
+      } else {
+        if (isNumber(typeOf(assignment.value))) out().movsdOffsetXmm(baseReg, offset, x64::Xmm::X0);
+        else
+          out().movOffsetReg(baseReg, offset, x64::Reg::Rax);
+      }
       return;
     }
-    loadXmm(offset, x64::Xmm::X0);
+    if (baseReg == x64::Reg::Rbp) {
+      loadXmm(offset, x64::Xmm::X0);
+    } else {
+      out().movsdXmmOffset(x64::Xmm::X0, baseReg, offset);
+    }
     const long long temp = pushTemp();
     storeValue(temp, context_->number());
     generateExpression(assignment.value);
@@ -633,7 +700,7 @@ void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment)
       helpers_.use(std::string(moduloSymbol));
       out().call(moduloSymbol);
     }
-    out().movsdOffsetXmm(x64::Reg::Rbp, offset, x64::Xmm::X0);
+    out().movsdOffsetXmm(baseReg, offset, x64::Xmm::X0);
     return;
   }
 
@@ -785,6 +852,13 @@ void CodeGenerator::formatArray(const reader::ExprPtr &expression) {
   formatArrayValue(context_->resolve(typeOf(expression)));
 }
 
+void CodeGenerator::formatNewline() {
+  helpers_.use("string_writer");
+  helpers_.use("literals");
+  out().leaLabel(x64::Reg::Rdi, internString("\n"));
+  out().call("rma_cat_str");
+}
+
 void CodeGenerator::formatArrayValue(const TypePtr &type) {
   const TypePtr resolved = context_->resolve(type);
   const TypePtr elementType = resolved != nullptr && resolved->element != nullptr
@@ -879,6 +953,7 @@ std::string CodeGenerator::generateFunction(const reader::FunctionDeclaration &d
   temps_.clear();
   state_ = FunctionState{};
   state_.returnLabel = newLabel(".Lret");
+  generatingEntry_ = false;
   const auto found = annotations_->functionResults.find(&declaration);
   state_.resultType =
       found != annotations_->functionResults.end() ? found->second : context_->undefined();
@@ -939,9 +1014,14 @@ std::string CodeGenerator::generateEntry(const reader::Program &program) {
   state_ = FunctionState{};
   state_.returnLabel = newLabel(".Lret");
   state_.resultType = context_->undefined();
+  generatingEntry_ = true;
+
+  // Save the entry frame pointer so nested functions can access top-level variables.
+  out_ = &body;
+  out().leaLabel(x64::Reg::R11, entryFrameSymbol);
+  out().movOffsetReg(x64::Reg::R11, 0, x64::Reg::Rbp);
 
   beginScope();
-  out_ = &body;
   generateStatements(program.statements);
   out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
   out().label(state_.returnLabel);
@@ -972,6 +1052,28 @@ std::string CodeGenerator::generate(const reader::Program &program,
   helpers_.reset();
   registerPlatformHelpers(helpers_);
   helpers_.use(std::string(startSymbol));
+  helpers_.use(std::string(entryFrameSymbol));
+
+  // Pre-populate top-level variable offsets so function codegen can resolve them.
+  // Must match generateEntry's allocateSlot() order (starts at -8, decrements by 8).
+  {
+    long long topLevelSlotCount = 0;
+    for (const auto &statement : program.statements) {
+      const auto *decl = std::get_if<reader::VariableDeclaration>(&statement.node);
+      if (decl == nullptr) continue;
+      for (const auto &d : decl->declarations) {
+        ++topLevelSlotCount;
+        const long long offset = -8 * topLevelSlotCount;
+        topLevelOffsets_.emplace(d.name, offset);
+        bool isNum = false;
+        if (d.initializer != nullptr) {
+          const auto it = annotations_->expressionTypes.find(d.initializer.get());
+          if (it != annotations_->expressionTypes.end()) { isNum = isNumber(it->second); }
+        }
+        topLevelIsNumber_.emplace(d.name, isNum);
+      }
+    }
+  }
 
   std::vector<std::string> functionTexts;
   long long index = 0;
