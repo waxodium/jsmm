@@ -1,8 +1,9 @@
-# rma
+# rMa
 
-**The JavaScript Compiler Engine**
+**Compiler Engine for a programming language with ES5 syntax**
 
-**RMA (Runtime Machine Assembler)** is a deterministic Ahead-of-Time (AOT) compiler engine for a statically analyzable subset of JavaScript.
+**rMa (Runtime Machine Assembler)** Ahead-of-Time (AOT) compiler engine for a 
+statically analyzable subset of JavaScript.
 
 RMA is designed to be distributed as a compilation feature of [edon.js](https://github.com/waxodium/edon), 
 a dynamic JavaScript runtime that provides APIs for interacting with C.
@@ -16,7 +17,7 @@ Instead, it restricts the supported ECMAScript features to a statically analyzab
 RMA uses implicit type inference and static analysis to reject unsupported or unsafe dynamic features at compile time.
 
 
-RMA excludes JavaScript built-ins and standard library, those includes `console`, `arrays`, `objects`
+RMA excludes JavaScript built-ins, those includes `console`, `arrays`, `objects`
 
 The compiler provides a single `cat()` function for concatenation. This engine is only compatible with __x86_64 linux__
 
@@ -25,7 +26,7 @@ For users who required an rma as CLI program:
 
 ```bash
 make
-./build/rma // executable
+./build/rma # executable
 ```
 
 
