@@ -23,4 +23,4 @@ TypeScheme generalize(TypePtr type, const std::vector<TypePtr> &environment, Typ
   return {std::move(quantified), std::move(type)};
 }
 
-}
+} // namespace rma::types

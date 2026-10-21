@@ -10,8 +10,7 @@ namespace rma::io {
 void writeFile(const std::string &path, std::string_view content) {
   std::FILE *file = std::fopen(path.c_str(), "wb");
   if (file == nullptr) throw std::runtime_error("cannot open file for writing: " + path);
-  if (!content.empty() &&
-      std::fwrite(content.data(), 1, content.size(), file) != content.size()) {
+  if (!content.empty() && std::fwrite(content.data(), 1, content.size(), file) != content.size()) {
     std::fclose(file);
     throw std::runtime_error("cannot write file: " + path);
   }
@@ -36,10 +35,9 @@ int runCommand(const std::vector<std::string> &command) {
   }
 
   int status = 0;
-  while (::waitpid(child, &status, 0) < 0) {
-  }
+  while (::waitpid(child, &status, 0) < 0) {}
   if (WIFEXITED(status)) return WEXITSTATUS(status);
   throw std::runtime_error("command terminated abnormally: " + command.front());
 }
 
-}
+} // namespace rma::io

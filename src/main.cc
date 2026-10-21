@@ -24,7 +24,7 @@ std::string readFile(const std::string &path) {
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-}
+} // namespace
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
@@ -79,8 +79,8 @@ int main(int argc, char *argv[]) {
     rma::reader::Lexer lexer(source);
     std::vector<rma::reader::Token> tokens = lexer.tokenize();
     if (lexer.failed())
-      throw std::runtime_error("lex error at " + std::to_string(lexer.error().position.line) +
-                               ":" + std::to_string(lexer.error().position.column) + ": " +
+      throw std::runtime_error("lex error at " + std::to_string(lexer.error().position.line) + ":" +
+                               std::to_string(lexer.error().position.column) + ": " +
                                lexer.error().message);
 
     rma::reader::Parser parser(std::move(tokens));

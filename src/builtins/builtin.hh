@@ -24,6 +24,9 @@ public:
   virtual TypePtr numberType() = 0;
   virtual TypePtr booleanType() = 0;
   virtual TypePtr undefinedType() = 0;
+  virtual TypePtr resolveType(TypePtr type) = 0;
+  [[nodiscard]] virtual std::string showType(TypePtr type) = 0;
+  [[noreturn]] virtual void report(const SourceRange &range, const std::string &message) = 0;
   virtual void requireUnify(TypePtr left, TypePtr right, const SourceRange &range,
                             const std::string &what) = 0;
 };
@@ -38,6 +41,8 @@ public:
   virtual void declareHelper(std::string symbol, std::string text) = 0;
   virtual void useHelper(const std::string &symbol) = 0;
   virtual void callHelper(const std::string &symbol) = 0;
+  virtual void formatValue(const ExprPtr &expression) = 0;
+  virtual void formatArray(const ExprPtr &expression) = 0;
 };
 
 struct BuiltinSpec {
@@ -63,4 +68,4 @@ private:
 
 void declareCat(BuiltinRegistry &registry);
 
-}
+} // namespace rma::builtins

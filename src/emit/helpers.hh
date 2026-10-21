@@ -33,4 +33,4 @@ private:
   std::vector<std::string> used_;
 };
 
-}
+} // namespace rma::emit

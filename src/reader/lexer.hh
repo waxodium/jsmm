@@ -9,14 +9,7 @@
 
 namespace rma::reader {
 
-enum class TokenKind {
-  End,
-  Identifier,
-  Keyword,
-  NumberLiteral,
-  StringLiteral,
-  Punctuator
-};
+enum class TokenKind { End, Identifier, Keyword, NumberLiteral, StringLiteral, Punctuator };
 
 struct Token {
   TokenKind kind = TokenKind::End;
@@ -64,4 +57,4 @@ private:
   bool failed_ = false;
 };
 
-}
+} // namespace rma::reader

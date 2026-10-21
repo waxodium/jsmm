@@ -64,4 +64,4 @@ private:
   TypePtr never_;
 };
 
-}
+} // namespace rma::types

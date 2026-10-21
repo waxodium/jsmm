@@ -20,21 +20,21 @@ long long alignFrame(long long bytes) { return (bytes + 15) / 16 * 16; }
 
 std::string typeofName(TypePtr type) {
   switch (type->kind) {
-    case TypeKind::Number: return "number";
-    case TypeKind::String: return "string";
-    case TypeKind::Boolean: return "boolean";
-    case TypeKind::Null: return "object";
-    case TypeKind::Undefined: return "undefined";
-    case TypeKind::Never: return "undefined";
-    case TypeKind::Function: return "function";
-    case TypeKind::Struct: return "object";
-    case TypeKind::Array: return "object";
-    case TypeKind::Union: return "object";
-    default: return "undefined";
+  case TypeKind::Number: return "number";
+  case TypeKind::String: return "string";
+  case TypeKind::Boolean: return "boolean";
+  case TypeKind::Null: return "object";
+  case TypeKind::Undefined: return "undefined";
+  case TypeKind::Never: return "undefined";
+  case TypeKind::Function: return "function";
+  case TypeKind::Struct: return "object";
+  case TypeKind::Array: return "object";
+  case TypeKind::Union: return "object";
+  default: return "undefined";
   }
 }
 
-}
+} // namespace
 
 x64::Assembly &CodeGenerator::out() { return *out_; }
 
@@ -92,8 +92,7 @@ long long CodeGenerator::tempOffset(std::size_t depth) const {
 }
 
 void CodeGenerator::storeValue(long long offset, TypePtr type) {
-  if (isNumber(type))
-    out().movsdOffsetXmm(x64::Reg::Rbp, offset, x64::Xmm::X0);
+  if (isNumber(type)) out().movsdOffsetXmm(x64::Reg::Rbp, offset, x64::Xmm::X0);
   else
     out().movOffsetReg(x64::Reg::Rbp, offset, x64::Reg::Rax);
 }
@@ -117,15 +116,16 @@ bool CodeGenerator::isNumber(TypePtr type) const {
 
 std::uint64_t CodeGenerator::numberBits(const std::string &spelling) {
   double value = 0.0;
-  if (spelling.size() > 2 && spelling[0] == '0' &&
-      (spelling[1] == 'x' || spelling[1] == 'X')) {
+  if (spelling.size() > 2 && spelling[0] == '0' && (spelling[1] == 'x' || spelling[1] == 'X')) {
     value = static_cast<double>(std::strtoull(spelling.c_str() + 2, nullptr, 16));
-  } else if (spelling.size() > 2 && spelling[0] == '0' && (spelling[1] == 'b' || spelling[1] == 'B')) {
+  } else if (spelling.size() > 2 && spelling[0] == '0' &&
+             (spelling[1] == 'b' || spelling[1] == 'B')) {
     unsigned long long result = 0;
     for (std::size_t i = 2; i < spelling.size(); ++i)
       result = result * 2ULL + static_cast<unsigned long long>(spelling[i] - '0');
     value = static_cast<double>(result);
-  } else if (spelling.size() > 2 && spelling[0] == '0' && (spelling[1] == 'o' || spelling[1] == 'O')) {
+  } else if (spelling.size() > 2 && spelling[0] == '0' &&
+             (spelling[1] == 'o' || spelling[1] == 'O')) {
     unsigned long long result = 0;
     for (std::size_t i = 2; i < spelling.size(); ++i)
       result = result * 8ULL + static_cast<unsigned long long>(spelling[i] - '0');
@@ -261,8 +261,7 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
           out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
         } else if constexpr (std::is_same_v<T, reader::IdentifierExpr>) {
           if (Slot *slot = lookupSlot(node.name)) {
-            if (isNumber(typeOf(expr)))
-              loadXmm(slot->offset, x64::Xmm::X0);
+            if (isNumber(typeOf(expr))) loadXmm(slot->offset, x64::Xmm::X0);
             else
               loadGp(slot->offset, x64::Reg::Rax);
           } else {
@@ -279,8 +278,7 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
         } else if constexpr (std::is_same_v<T, reader::MemberExpr>) {
           generateMemberAddress(node);
           out().movRegReg(x64::Reg::R11, x64::Reg::Rax);
-          if (isNumber(typeOf(expr)))
-            out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, 0);
+          if (isNumber(typeOf(expr))) out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, 0);
           else
             out().movRegOffset(x64::Reg::Rax, x64::Reg::R11, 0);
         } else if constexpr (std::is_same_v<T, reader::ObjectExpr>) {
@@ -595,8 +593,7 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
   out().movRegImm(x64::Reg::Rax, oneBits);
   out().movqXmmReg(x64::Xmm::X2, x64::Reg::Rax);
   out().movsdXmmXmm(x64::Xmm::X1, x64::Xmm::X0);
-  if (decrement)
-    out().subsd(x64::Xmm::X1, x64::Xmm::X2);
+  if (decrement) out().subsd(x64::Xmm::X1, x64::Xmm::X2);
   else
     out().addsd(x64::Xmm::X1, x64::Xmm::X2);
   if (addressTemp >= 0) {
@@ -606,9 +603,7 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
     out().movsdOffsetXmm(x64::Reg::Rbp, targetOffset, x64::Xmm::X1);
   }
   popTemp();
-  if (addressTemp >= 0) {
-    popTemp();
-  }
+  if (addressTemp >= 0) { popTemp(); }
   if (update.prefix) out().movsdXmmXmm(x64::Xmm::X0, x64::Xmm::X1);
 }
 
@@ -648,8 +643,7 @@ void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment)
   if (assignment.op == "=") {
     generateExpression(assignment.value);
     loadGp(addressTemp, x64::Reg::R11);
-    if (isNumber(typeOf(assignment.value)))
-      out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X0);
+    if (isNumber(typeOf(assignment.value))) out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X0);
     else
       out().movOffsetReg(x64::Reg::R11, 0, x64::Reg::Rax);
     popTemp();
@@ -736,6 +730,109 @@ void CodeGenerator::callHelper(const std::string &symbol) { out().call(symbol); 
 
 void CodeGenerator::clearResult() { out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax); }
 
+void CodeGenerator::formatValue(const reader::ExprPtr &expression) {
+  const TypePtr resolved = context_->resolve(typeOf(expression));
+  if (resolved != nullptr && resolved->kind == TypeKind::Array) {
+    formatArray(expression);
+    return;
+  }
+  generateExpression(expression);
+  if (resolved != nullptr && resolved->kind == TypeKind::Variable) {
+    helpers_.use("string_writer");
+    out().movRegReg(x64::Reg::Rdi, x64::Reg::Rax);
+    out().call("rma_cat_str");
+    return;
+  }
+  formatByType(resolved);
+}
+
+void CodeGenerator::formatByType(const TypePtr &type) {
+  const TypePtr resolved = context_->resolve(type);
+  const TypeKind kind = resolved == nullptr ? TypeKind::Variable : resolved->kind;
+  helpers_.use("string_writer");
+  switch (kind) {
+  case TypeKind::Number:
+    helpers_.use("literals");
+    helpers_.use("number_writer");
+    out().call("rma_write_number");
+    break;
+  case TypeKind::Boolean:
+    helpers_.use("literals");
+    helpers_.use("literal_writers");
+    out().movRegReg(x64::Reg::Rdi, x64::Reg::Rax);
+    out().call("rma_write_bool");
+    break;
+  case TypeKind::Null:
+    helpers_.use("literals");
+    helpers_.use("literal_writers");
+    out().call("rma_write_null");
+    break;
+  case TypeKind::Undefined:
+    helpers_.use("literals");
+    helpers_.use("literal_writers");
+    out().call("rma_write_undefined");
+    break;
+  case TypeKind::Array: formatArrayValue(resolved); break;
+  default:
+    out().movRegReg(x64::Reg::Rdi, x64::Reg::Rax);
+    out().call("rma_cat_str");
+    break;
+  }
+}
+
+void CodeGenerator::formatArray(const reader::ExprPtr &expression) {
+  generateExpression(expression);
+  formatArrayValue(context_->resolve(typeOf(expression)));
+}
+
+void CodeGenerator::formatArrayValue(const TypePtr &type) {
+  const TypePtr resolved = context_->resolve(type);
+  const TypePtr elementType = resolved != nullptr && resolved->element != nullptr
+                                  ? resolved->element
+                                  : context_->variable();
+  helpers_.use("literals");
+  helpers_.use("literal_writers");
+  const long long arrayTemp = pushTemp();
+  out().movOffsetReg(x64::Reg::Rbp, arrayTemp, x64::Reg::Rax);
+  const long long indexTemp = pushTemp();
+  out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
+  out().movOffsetReg(x64::Reg::Rbp, indexTemp, x64::Reg::Rax);
+
+  out().call("rma_write_lbracket");
+  const std::string loopLabel = newLabel(".Larray");
+  const std::string doneLabel = newLabel(".Larraydone");
+  const std::string skipLabel = newLabel(".Larraysep");
+  out().label(loopLabel);
+  loadGp(indexTemp, x64::Reg::Rax);
+  loadGp(arrayTemp, x64::Reg::R11);
+  out().movRegOffset(x64::Reg::Rcx, x64::Reg::R11, 0);
+  out().cmpRegReg(x64::Reg::Rax, x64::Reg::Rcx);
+  out().jcc(x64::Cond::AE, doneLabel);
+  out().testRegReg(x64::Reg::Rax, x64::Reg::Rax);
+  out().jcc(x64::Cond::E, skipLabel);
+  out().call("rma_write_separator");
+  out().label(skipLabel);
+  loadGp(indexTemp, x64::Reg::Rax);
+  loadGp(arrayTemp, x64::Reg::R11);
+  out().movRegReg(x64::Reg::Rcx, x64::Reg::Rax);
+  out().movRegImm(x64::Reg::Rdx, 8);
+  out().imulRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
+  out().addRegReg(x64::Reg::Rcx, x64::Reg::R11);
+  out().addRegImm(x64::Reg::Rcx, 8);
+  if (isNumber(elementType)) out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::Rcx, 0);
+  else
+    out().movRegOffset(x64::Reg::Rax, x64::Reg::Rcx, 0);
+  formatByType(elementType);
+  loadGp(indexTemp, x64::Reg::Rax);
+  out().addRegImm(x64::Reg::Rax, 1);
+  out().movOffsetReg(x64::Reg::Rbp, indexTemp, x64::Reg::Rax);
+  out().jmp(loopLabel);
+  out().label(doneLabel);
+  out().call("rma_write_rbracket");
+  popTemp();
+  popTemp();
+}
+
 void CodeGenerator::generateCall(const reader::ExprPtr &expr, const reader::CallExpr &call) {
   const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node);
   const bool direct = identifier != nullptr && lookupSlot(identifier->name) == nullptr &&
@@ -783,8 +880,8 @@ std::string CodeGenerator::generateFunction(const reader::FunctionDeclaration &d
   state_ = FunctionState{};
   state_.returnLabel = newLabel(".Lret");
   const auto found = annotations_->functionResults.find(&declaration);
-  state_.resultType = found != annotations_->functionResults.end() ? found->second
-                                                                   : context_->undefined();
+  state_.resultType =
+      found != annotations_->functionResults.end() ? found->second : context_->undefined();
 
   beginScope();
   std::vector<long long> parameterOffsets;
@@ -879,8 +976,7 @@ std::string CodeGenerator::generate(const reader::Program &program,
   std::vector<std::string> functionTexts;
   long long index = 0;
   for (const auto &statement : program.statements) {
-    const auto *declaration =
-        std::get_if<reader::FunctionDeclaration>(&statement.node);
+    const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement.node);
     if (declaration == nullptr) continue;
     const std::string label = "jsfn_" + declaration->name + "_" + std::to_string(index++);
     functions_.insert_or_assign(declaration->name, label);
@@ -906,4 +1002,4 @@ std::string CodeGenerator::generate(const reader::Program &program,
   return assembly.text();
 }
 
-}
+} // namespace rma::emit

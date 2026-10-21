@@ -20,4 +20,4 @@ private:
   TypeContext &context_;
 };
 
-}
+} // namespace rma::types

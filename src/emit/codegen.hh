@@ -16,8 +16,7 @@ namespace rma::emit {
 
 class CodeGenerator final : public builtins::EmitContext {
 public:
-  std::string generate(const reader::Program &program,
-                       const types::Annotations &annotations,
+  std::string generate(const reader::Program &program, const types::Annotations &annotations,
                        types::TypeContext &context);
 
   void emitArgument(const reader::ExprPtr &argument) override;
@@ -26,6 +25,10 @@ public:
   void declareHelper(std::string symbol, std::string text) override;
   void useHelper(const std::string &symbol) override;
   void callHelper(const std::string &symbol) override;
+  void formatValue(const reader::ExprPtr &expression) override;
+  void formatArray(const reader::ExprPtr &expression) override;
+  void formatByType(const types::TypePtr &type);
+  void formatArrayValue(const types::TypePtr &type);
 
 private:
   struct Slot {
@@ -104,4 +107,4 @@ private:
   FunctionState state_;
 };
 
-}
+} // namespace rma::emit

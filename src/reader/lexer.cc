@@ -7,18 +7,17 @@ namespace rma::reader {
 namespace {
 
 const std::unordered_set<std::string> keywords = {
-    "async",    "await",   "break",     "case",     "catch",   "class",     "const",
-    "continue", "debugger", "default",  "delete",   "do",      "else",      "enum",
-    "export",   "extends", "false",     "finally",  "for",     "function",  "if",
-    "import",   "in",      "instanceof", "let",     "new",     "null",      "return",
-    "static",   "super",   "switch",    "this",     "throw",   "true",      "try",
-    "typeof",   "var",     "void",      "while",    "with",    "yield",     "undefined"};
+    "async",    "await",    "break",      "case",    "catch", "class",    "const",
+    "continue", "debugger", "default",    "delete",  "do",    "else",     "enum",
+    "export",   "extends",  "false",      "finally", "for",   "function", "if",
+    "import",   "in",       "instanceof", "let",     "new",   "null",     "return",
+    "static",   "super",    "switch",     "this",    "throw", "true",     "try",
+    "typeof",   "var",      "void",       "while",   "with",  "yield",    "undefined"};
 
 const std::vector<std::string_view> punctuators = {
-    ">>>=", "**=", "===", "!==", ">>>", "==", "!=", "<=", ">=", "++", "--", "<<", ">>",
-    "&&",   "||", "??",   "+=",  "-=",  "*=", "/=", "%=", "**", "{",  "}",  "(",  ")",
-    "[",    "]",  ".",    ";",   ",",   "<",  ">",  "+",  "-",  "*",  "/",  "%",  "=",
-    "!",    "~",  "^",    "&",   "|",   ":"};
+    ">>>=", "**=", "===", "!==", ">>>", "==", "!=", "<=", ">=", "++", "--", "<<", ">>", "&&", "||",
+    "??",   "+=",  "-=",  "*=",  "/=",  "%=", "**", "{",  "}",  "(",  ")",  "[",  "]",  ".",  ";",
+    ",",    "<",   ">",   "+",   "-",   "*",  "/",  "%",  "=",  "!",  "~",  "^",  "&",  "|",  ":"};
 
 bool isWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\v' || c == '\f' || c == '\r' || c == '\n';
@@ -26,15 +25,15 @@ bool isWhitespace(char c) {
 
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
 
-bool isHexDigit(char c) {
-  return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-}
+bool isHexDigit(char c) { return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
 bool isIdentifierStart(unsigned char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' || c >= 0x80;
 }
 
-bool isIdentifierContinue(unsigned char c) { return isIdentifierStart(c) || isDigit(static_cast<char>(c)); }
+bool isIdentifierContinue(unsigned char c) {
+  return isIdentifierStart(c) || isDigit(static_cast<char>(c));
+}
 
 void appendUtf8(std::string &out, unsigned long codePoint) {
   if (codePoint <= 0x7F) {
@@ -54,7 +53,7 @@ void appendUtf8(std::string &out, unsigned long codePoint) {
   }
 }
 
-}
+} // namespace
 
 Lexer::Lexer(std::string_view source) : source_(source) {}
 
@@ -135,9 +134,10 @@ bool Lexer::scanDigits(unsigned base, bool requireOne) {
   bool sawDigit = false;
   while (!atEnd()) {
     const char c = peek();
-    const bool digit = base == 16 ? isHexDigit(c) : base == 8 ? (c >= '0' && c <= '7')
-                                              : base == 2    ? (c == '0' || c == '1')
-                                                             : isDigit(c);
+    const bool digit = base == 16  ? isHexDigit(c)
+                       : base == 8 ? (c >= '0' && c <= '7')
+                       : base == 2 ? (c == '0' || c == '1')
+                                   : isDigit(c);
     if (!digit) break;
     sawDigit = true;
     advance();
@@ -156,9 +156,9 @@ bool Lexer::scanNumber(Token &token) {
   if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X' || peek(1) == 'b' || peek(1) == 'B' ||
                         peek(1) == 'o' || peek(1) == 'O')) {
     const char prefix = peek(1);
-    const unsigned base = (prefix == 'x' || prefix == 'X') ? 16U
-                         : (prefix == 'b' || prefix == 'B') ? 2U
-                                                            : 8U;
+    const unsigned base = (prefix == 'x' || prefix == 'X')   ? 16U
+                          : (prefix == 'b' || prefix == 'B') ? 2U
+                                                             : 8U;
     advance();
     advance();
     if (!scanDigits(base, true)) return false;
@@ -222,71 +222,72 @@ bool Lexer::scanString(Token &token, char quote) {
     }
     const char escaped = advance();
     switch (escaped) {
-      case 'n': decoded.push_back('\n'); break;
-      case 't': decoded.push_back('\t'); break;
-      case 'r': decoded.push_back('\r'); break;
-      case 'v': decoded.push_back('\v'); break;
-      case 'b': decoded.push_back('\b'); break;
-      case 'f': decoded.push_back('\f'); break;
-      case '0': decoded.push_back('\0'); break;
-      case '\\': decoded.push_back('\\'); break;
-      case '\'': decoded.push_back('\''); break;
-      case '"': decoded.push_back('"'); break;
-      case '\r': if (peek() == '\n') advance(); break;
-      case '\n': break;
-      case 'x': {
-        unsigned value = 0;
-        for (int i = 0; i < 2; ++i) {
+    case 'n': decoded.push_back('\n'); break;
+    case 't': decoded.push_back('\t'); break;
+    case 'r': decoded.push_back('\r'); break;
+    case 'v': decoded.push_back('\v'); break;
+    case 'b': decoded.push_back('\b'); break;
+    case 'f': decoded.push_back('\f'); break;
+    case '0': decoded.push_back('\0'); break;
+    case '\\': decoded.push_back('\\'); break;
+    case '\'': decoded.push_back('\''); break;
+    case '"': decoded.push_back('"'); break;
+    case '\r':
+      if (peek() == '\n') advance();
+      break;
+    case '\n': break;
+    case 'x': {
+      unsigned value = 0;
+      for (int i = 0; i < 2; ++i) {
+        const char h = advance();
+        if (!isHexDigit(h)) {
+          setError("invalid \\x escape sequence", position());
+          return false;
+        }
+        value = value * 16U + static_cast<unsigned>(isDigit(h) ? h - '0' : (h | 0x20) - 'a' + 10);
+      }
+      decoded.push_back(static_cast<char>(value));
+      break;
+    }
+    case 'u': {
+      if (peek() == '{') {
+        advance();
+        unsigned long codePoint = 0;
+        int digits = 0;
+        while (!atEnd() && peek() != '}') {
           const char h = advance();
           if (!isHexDigit(h)) {
-            setError("invalid \\x escape sequence", position());
-            return false;
-          }
-          value = value * 16U + static_cast<unsigned>(isDigit(h) ? h - '0'
-                                                                : (h | 0x20) - 'a' + 10);
-        }
-        decoded.push_back(static_cast<char>(value));
-        break;
-      }
-      case 'u': {
-        if (peek() == '{') {
-          advance();
-          unsigned long codePoint = 0;
-          int digits = 0;
-          while (!atEnd() && peek() != '}') {
-            const char h = advance();
-            if (!isHexDigit(h)) {
-              setError("invalid \\u escape sequence", position());
-              return false;
-            }
-            codePoint = codePoint * 16UL + static_cast<unsigned long>(isDigit(h) ? h - '0'
-                                                                                : (h | 0x20) - 'a' + 10);
-            if (++digits > 6) {
-              setError("invalid \\u escape sequence", position());
-              return false;
-            }
-          }
-          if (digits == 0 || !match('}')) {
             setError("invalid \\u escape sequence", position());
             return false;
           }
-          appendUtf8(decoded, codePoint);
-          break;
-        }
-        unsigned long codePoint = 0;
-        for (int i = 0; i < 4; ++i) {
-          if (atEnd() || !isHexDigit(peek())) {
+          codePoint = codePoint * 16UL +
+                      static_cast<unsigned long>(isDigit(h) ? h - '0' : (h | 0x20) - 'a' + 10);
+          if (++digits > 6) {
             setError("invalid \\u escape sequence", position());
             return false;
           }
-          const char h = advance();
-          codePoint = codePoint * 16UL + static_cast<unsigned long>(isDigit(h) ? h - '0'
-                                                                             : (h | 0x20) - 'a' + 10);
+        }
+        if (digits == 0 || !match('}')) {
+          setError("invalid \\u escape sequence", position());
+          return false;
         }
         appendUtf8(decoded, codePoint);
         break;
       }
-      default: setError("invalid escape sequence", position()); return false;
+      unsigned long codePoint = 0;
+      for (int i = 0; i < 4; ++i) {
+        if (atEnd() || !isHexDigit(peek())) {
+          setError("invalid \\u escape sequence", position());
+          return false;
+        }
+        const char h = advance();
+        codePoint = codePoint * 16UL +
+                    static_cast<unsigned long>(isDigit(h) ? h - '0' : (h | 0x20) - 'a' + 10);
+      }
+      appendUtf8(decoded, codePoint);
+      break;
+    }
+    default: setError("invalid escape sequence", position()); return false;
     }
   }
   token.text = std::move(decoded);
@@ -352,4 +353,4 @@ void Lexer::finish(Token &token, TokenKind kind, std::size_t startOffset,
   token.end = position();
 }
 
-}
+} // namespace rma::reader

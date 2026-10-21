@@ -21,18 +21,18 @@ bool Unifier::occurs(int id, TypePtr type) {
     }
     if (!visited.insert(current->id).second) continue;
     switch (current->kind) {
-      case TypeKind::Function:
-        worklist.insert(worklist.end(), current->parameters.begin(), current->parameters.end());
-        worklist.push_back(current->result);
-        break;
-      case TypeKind::Struct:
-        for (const auto &field : current->fields) worklist.push_back(field.second);
-        break;
-      case TypeKind::Array: worklist.push_back(current->element); break;
-      case TypeKind::Union:
-        worklist.insert(worklist.end(), current->members.begin(), current->members.end());
-        break;
-      default: break;
+    case TypeKind::Function:
+      worklist.insert(worklist.end(), current->parameters.begin(), current->parameters.end());
+      worklist.push_back(current->result);
+      break;
+    case TypeKind::Struct:
+      for (const auto &field : current->fields) worklist.push_back(field.second);
+      break;
+    case TypeKind::Array: worklist.push_back(current->element); break;
+    case TypeKind::Union:
+      worklist.insert(worklist.end(), current->members.begin(), current->members.end());
+      break;
+    default: break;
     }
   }
   return false;
@@ -59,18 +59,18 @@ std::vector<std::pair<Type *, TypePtr>> Unifier::snapshot(TypePtr left, TypePtr 
     }
     if (!visited.insert(current->id).second) continue;
     switch (current->kind) {
-      case TypeKind::Function:
-        worklist.insert(worklist.end(), current->parameters.begin(), current->parameters.end());
-        worklist.push_back(current->result);
-        break;
-      case TypeKind::Struct:
-        for (const auto &field : current->fields) worklist.push_back(field.second);
-        break;
-      case TypeKind::Array: worklist.push_back(current->element); break;
-      case TypeKind::Union:
-        worklist.insert(worklist.end(), current->members.begin(), current->members.end());
-        break;
-      default: break;
+    case TypeKind::Function:
+      worklist.insert(worklist.end(), current->parameters.begin(), current->parameters.end());
+      worklist.push_back(current->result);
+      break;
+    case TypeKind::Struct:
+      for (const auto &field : current->fields) worklist.push_back(field.second);
+      break;
+    case TypeKind::Array: worklist.push_back(current->element); break;
+    case TypeKind::Union:
+      worklist.insert(worklist.end(), current->members.begin(), current->members.end());
+      break;
+    default: break;
     }
   }
   return links;
@@ -138,30 +138,30 @@ bool Unifier::unify(TypePtr left, TypePtr right) {
     return unifyUnion(left, right);
   if (left->kind != right->kind) return false;
   switch (left->kind) {
-    case TypeKind::Function: {
-      if (left->parameters.size() != right->parameters.size()) return false;
-      for (std::size_t i = 0; i < left->parameters.size(); ++i)
-        if (!unify(left->parameters[i], right->parameters[i])) return false;
-      return unify(left->result, right->result);
-    }
-    case TypeKind::Struct: {
-      if (left->fields.size() != right->fields.size()) return false;
-      for (const auto &leftField : left->fields) {
-        bool matched = false;
-        for (const auto &rightField : right->fields) {
-          if (leftField.first == rightField.first) {
-            matched = true;
-            if (!unify(leftField.second, rightField.second)) return false;
-            break;
-          }
+  case TypeKind::Function: {
+    if (left->parameters.size() != right->parameters.size()) return false;
+    for (std::size_t i = 0; i < left->parameters.size(); ++i)
+      if (!unify(left->parameters[i], right->parameters[i])) return false;
+    return unify(left->result, right->result);
+  }
+  case TypeKind::Struct: {
+    if (left->fields.size() != right->fields.size()) return false;
+    for (const auto &leftField : left->fields) {
+      bool matched = false;
+      for (const auto &rightField : right->fields) {
+        if (leftField.first == rightField.first) {
+          matched = true;
+          if (!unify(leftField.second, rightField.second)) return false;
+          break;
         }
-        if (!matched) return false;
       }
-      return true;
+      if (!matched) return false;
     }
-    case TypeKind::Array: return unify(left->element, right->element);
-    default: return false;
+    return true;
+  }
+  case TypeKind::Array: return unify(left->element, right->element);
+  default: return false;
   }
 }
 
-}
+} // namespace rma::types

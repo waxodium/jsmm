@@ -9,22 +9,22 @@ namespace {
 
 const char *kindName(TypeKind kind) {
   switch (kind) {
-    case TypeKind::Number: return "number";
-    case TypeKind::String: return "string";
-    case TypeKind::Boolean: return "boolean";
-    case TypeKind::Null: return "null";
-    case TypeKind::Undefined: return "undefined";
-    case TypeKind::Never: return "never";
-    case TypeKind::Variable: return "variable";
-    case TypeKind::Function: return "function";
-    case TypeKind::Struct: return "struct";
-    case TypeKind::Array: return "array";
-    case TypeKind::Union: return "union";
+  case TypeKind::Number: return "number";
+  case TypeKind::String: return "string";
+  case TypeKind::Boolean: return "boolean";
+  case TypeKind::Null: return "null";
+  case TypeKind::Undefined: return "undefined";
+  case TypeKind::Never: return "never";
+  case TypeKind::Variable: return "variable";
+  case TypeKind::Function: return "function";
+  case TypeKind::Struct: return "struct";
+  case TypeKind::Array: return "array";
+  case TypeKind::Union: return "union";
   }
   return "unknown";
 }
 
-}
+} // namespace
 
 Checker::Checker() : unifier_(context_) {
   rootScope_.parent = nullptr;
@@ -38,6 +38,11 @@ TypePtr Checker::stringType() { return context_.string(); }
 TypePtr Checker::numberType() { return context_.number(); }
 TypePtr Checker::booleanType() { return context_.boolean(); }
 TypePtr Checker::undefinedType() { return context_.undefined(); }
+TypePtr Checker::resolveType(TypePtr type) { return context_.resolve(std::move(type)); }
+std::string Checker::showType(TypePtr type) { return context_.show(std::move(type)); }
+void Checker::report(const reader::SourceRange &range, const std::string &message) {
+  fail(range, message);
+}
 
 void Checker::requireUnify(TypePtr left, TypePtr right, const reader::SourceRange &range,
                            const std::string &what) {
@@ -56,9 +61,7 @@ Checker::Scope *Checker::pushScope(Scope *parent) {
   return scope;
 }
 
-void Checker::popScope() {
-  currentScope_ = currentScope_->parent;
-}
+void Checker::popScope() { currentScope_ = currentScope_->parent; }
 
 Checker::Binding *Checker::lookupBinding(const std::string &name) {
   for (Scope *scope = currentScope_; scope != nullptr; scope = scope->parent) {
@@ -85,11 +88,11 @@ void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange
                           const std::string &what) {
   TypePtr target;
   switch (kind) {
-    case TypeKind::Number: target = context_.number(); break;
-    case TypeKind::Boolean: target = context_.boolean(); break;
-    case TypeKind::String: target = context_.string(); break;
-    case TypeKind::Undefined: target = context_.undefined(); break;
-    default: break;
+  case TypeKind::Number: target = context_.number(); break;
+  case TypeKind::Boolean: target = context_.boolean(); break;
+  case TypeKind::String: target = context_.string(); break;
+  case TypeKind::Undefined: target = context_.undefined(); break;
+  default: break;
   }
   if (target != nullptr) {
     requireUnify(std::move(type), std::move(target), range, what);
@@ -133,9 +136,6 @@ void Checker::inferFunctionBody(const FunctionEntry &entry) {
     binding.isConst = true;
     currentScope_->bindings.emplace(entry.declaration->parameters[i], std::move(binding));
   }
-  for (std::size_t i = 1; i < entry.parameters.size(); ++i)
-    requireUnify(entry.parameters[i], entry.parameters[0], entry.range,
-                 "function parameters must unify to a single type");
   inFunction_ = true;
   returnTargets_.push_back(entry.result);
   inferStatements(entry.declaration->body);
@@ -172,10 +172,9 @@ void Checker::inferStatement(const reader::Statement &statement) {
           if (inFunction_)
             fail(statement.range, "function declarations must appear at the top level");
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
-          if (returnTargets_.empty())
-            fail(statement.range, "'return' outside of a function body");
-          const TypePtr type = node.argument != nullptr ? inferExpression(node.argument)
-                                                        : context_.undefined();
+          if (returnTargets_.empty()) fail(statement.range, "'return' outside of a function body");
+          const TypePtr type =
+              node.argument != nullptr ? inferExpression(node.argument) : context_.undefined();
           requireUnify(returnTargets_.back(), type, statement.range, "return value");
         } else if constexpr (std::is_same_v<T, reader::BlockStatement>) {
           pushScope(currentScope_);
@@ -204,8 +203,8 @@ void Checker::inferStatement(const reader::Statement &statement) {
           pushScope(currentScope_);
           if (node.init != nullptr) inferStatement(reader::Statement{*node.init, statement.range});
           if (node.condition != nullptr)
-            requireKind(inferExpression(node.condition), TypeKind::Boolean,
-                        node.condition->range, "for condition must be boolean");
+            requireKind(inferExpression(node.condition), TypeKind::Boolean, node.condition->range,
+                        "for condition must be boolean");
           if (node.update != nullptr) (void)inferExpression(node.update);
           ++loopDepth_;
           inferStatements(node.body);
@@ -277,8 +276,7 @@ TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr
     (void)inferExpression(unary.operand);
     return context_.undefined();
   }
-  if (unary.op == "delete")
-    fail(expr->range, "'delete' is not supported in the static subset");
+  if (unary.op == "delete") fail(expr->range, "'delete' is not supported in the static subset");
   const TypePtr operand = inferExpression(unary.operand);
   if (unary.op == "!") {
     requireKind(operand, TypeKind::Boolean, expr->range, "'!' requires a boolean operand");
@@ -342,8 +340,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
 
 TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update) {
   const TypePtr type = targetType(update.target);
-  requireKind(type, TypeKind::Number, expr->range,
-              "'" + update.op + "' requires a number target");
+  requireKind(type, TypeKind::Number, expr->range, "'" + update.op + "' requires a number target");
   return context_.number();
 }
 
@@ -373,10 +370,8 @@ TypePtr Checker::targetType(const reader::ExprPtr &target) {
   if (const auto *member = std::get_if<reader::MemberExpr>(&target->node)) {
     const TypePtr objectType = inferExpression(member->object);
     const MemberResolution resolution = resolveMember(objectType, *member);
-    if (!resolution.valid)
-      fail(target->range, "invalid assignment target");
-    if (resolution.isStruct)
-      annotations_.structFieldIndices.emplace(member, resolution.fieldIndex);
+    if (!resolution.valid) fail(target->range, "invalid assignment target");
+    if (resolution.isStruct) annotations_.structFieldIndices.emplace(member, resolution.fieldIndex);
     return resolution.elementType;
   }
   fail(target->range, "invalid assignment target");
@@ -391,8 +386,7 @@ TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberEx
       fail(expr->range, "array element access requires a computed index");
     fail(expr->range, "member access is not supported on `" + context_.show(objectType) + "'");
   }
-  if (resolution.isStruct)
-    annotations_.structFieldIndices.emplace(&member, resolution.fieldIndex);
+  if (resolution.isStruct) annotations_.structFieldIndices.emplace(&member, resolution.fieldIndex);
   return resolution.elementType;
 }
 
@@ -406,8 +400,7 @@ Checker::MemberResolution Checker::resolveMember(TypePtr objectType,
     if (!member.computed) {
       key = member.property;
     } else {
-      const auto *literal =
-          std::get_if<reader::StringLiteralExpr>(&member.computedProperty->node);
+      const auto *literal = std::get_if<reader::StringLiteralExpr>(&member.computedProperty->node);
       if (literal == nullptr) return resolution;
       key = literal->value;
     }
@@ -437,7 +430,8 @@ Checker::MemberResolution Checker::resolveMember(TypePtr objectType,
 TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call) {
   const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node);
   if (identifier != nullptr && lookupBinding(identifier->name) == nullptr) {
-    const builtins::BuiltinSpec *builtin = builtins::BuiltinRegistry::instance().find(identifier->name);
+    const builtins::BuiltinSpec *builtin =
+        builtins::BuiltinRegistry::instance().find(identifier->name);
     if (builtin != nullptr) {
       std::vector<TypePtr> arguments;
       for (const auto &argument : call.arguments) arguments.push_back(inferExpression(argument));
@@ -463,17 +457,9 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
                             std::to_string(call.arguments.size()));
   }
 
-  TypePtr parameterType = call.arguments.empty() ? context_.variable()
-                                                 : inferExpression(call.arguments.front());
-  for (std::size_t i = 1; i < call.arguments.size(); ++i)
-    requireUnify(inferExpression(call.arguments[i]), parameterType, expr->range,
-                 "call arguments must unify to a single type");
-
-  std::vector<TypePtr> parameters(arity == 0 && resolved != nullptr &&
-                                          resolved->kind == TypeKind::Function
-                                      ? arity
-                                      : (call.arguments.empty() ? 1 : call.arguments.size()),
-                                  parameterType);
+  std::vector<TypePtr> parameters;
+  parameters.reserve(call.arguments.size());
+  for (const auto &argument : call.arguments) parameters.push_back(inferExpression(argument));
   const TypePtr result = context_.variable();
   requireUnify(callee, context_.functionType(std::move(parameters), result), expr->range,
                "call target must be a function");
@@ -486,8 +472,7 @@ TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectEx
     bool duplicate = false;
     for (const auto &field : fields)
       if (field.first == property.key) duplicate = true;
-    if (duplicate)
-      fail(expr->range, "duplicate property '" + property.key + "' in object literal");
+    if (duplicate) fail(expr->range, "duplicate property '" + property.key + "' in object literal");
     fields.emplace_back(property.key, inferExpression(property.value));
   }
   return context_.structType(std::move(fields));
@@ -509,8 +494,7 @@ bool Checker::definitelyReturns(const reader::StatementList &statements) {
       if (definitelyReturns(block->statements)) return true;
     if (const auto *ifStatement = std::get_if<reader::IfStatement>(&statement.node))
       if (!ifStatement->consequent.empty() && !ifStatement->alternate.empty() &&
-          definitelyReturns(ifStatement->consequent) &&
-          definitelyReturns(ifStatement->alternate))
+          definitelyReturns(ifStatement->consequent) && definitelyReturns(ifStatement->alternate))
         return true;
   }
   return false;
@@ -536,4 +520,4 @@ Annotations Checker::check(const reader::Program &program) {
   return std::move(annotations_);
 }
 
-}
+} // namespace rma::types

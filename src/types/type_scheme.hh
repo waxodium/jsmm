@@ -14,4 +14,4 @@ struct TypeScheme {
 TypePtr instantiate(const TypeScheme &scheme, TypeContext &context);
 TypeScheme generalize(TypePtr type, const std::vector<TypePtr> &environment, TypeContext &context);
 
-}
+} // namespace rma::types

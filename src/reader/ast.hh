@@ -90,10 +90,10 @@ struct CallExpr {
 };
 
 struct Expr {
-  using Node = std::variant<NumberLiteralExpr, StringLiteralExpr, BooleanLiteralExpr,
-                            NullLiteralExpr, UndefinedLiteralExpr, IdentifierExpr, UnaryExpr,
-                            BinaryExpr, UpdateExpr, AssignmentExpr, MemberExpr, ObjectExpr,
-                            ArrayExpr, CallExpr>;
+  using Node =
+      std::variant<NumberLiteralExpr, StringLiteralExpr, BooleanLiteralExpr, NullLiteralExpr,
+                   UndefinedLiteralExpr, IdentifierExpr, UnaryExpr, BinaryExpr, UpdateExpr,
+                   AssignmentExpr, MemberExpr, ObjectExpr, ArrayExpr, CallExpr>;
   Node node;
   SourceRange range;
 
@@ -173,4 +173,4 @@ struct Program {
   StatementList statements;
 };
 
-}
+} // namespace rma::reader

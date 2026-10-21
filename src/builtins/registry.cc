@@ -19,4 +19,4 @@ const BuiltinSpec *BuiltinRegistry::find(const std::string &name) const {
 
 const std::vector<BuiltinSpec> &BuiltinRegistry::all() const { return builtins_; }
 
-}
+} // namespace rma::builtins

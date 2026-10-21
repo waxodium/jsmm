@@ -33,4 +33,4 @@ std::string HelperRegistry::assemble() const {
   return text;
 }
 
-}
+} // namespace rma::emit

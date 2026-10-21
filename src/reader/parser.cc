@@ -231,8 +231,8 @@ Statement Parser::parseForStatement() {
   if (!eat(")")) fail("expected ')' after for clauses");
   if (!eat("{")) fail("expected '{' for for body");
   StatementList body = parseBlockBody();
-  return Statement(ForStatement{std::move(init), std::move(condition), std::move(update),
-                                std::move(body)});
+  return Statement(
+      ForStatement{std::move(init), std::move(condition), std::move(update), std::move(body)});
 }
 
 Statement Parser::parseBreakStatement() {
@@ -332,9 +332,7 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
   const SourcePosition start = expression->range.start;
   std::vector<ExprPtr> arguments;
   if (!eat(")")) {
-    do {
-      arguments.push_back(parseExpression());
-    } while (eat(","));
+    do { arguments.push_back(parseExpression()); } while (eat(","));
     if (!eat(")")) fail("expected ')' after call arguments");
   }
   return std::make_shared<Expr>(CallExpr{std::move(expression), std::move(arguments)},
@@ -347,9 +345,8 @@ ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
   const Token property = consume();
   if (property.kind != TokenKind::Identifier && property.kind != TokenKind::Keyword)
     fail("expected property name after '.'");
-  return std::make_shared<Expr>(
-      MemberExpr{std::move(expression), property.lexeme, {}, false},
-      SourceRange{start, property.end});
+  return std::make_shared<Expr>(MemberExpr{std::move(expression), property.lexeme, {}, false},
+                                SourceRange{start, property.end});
 }
 
 ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
@@ -357,9 +354,8 @@ ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
   const SourcePosition start = expression->range.start;
   auto property = parseExpression();
   if (!eat("]")) fail("expected ']' after computed property");
-  return std::make_shared<Expr>(
-      MemberExpr{std::move(expression), {}, std::move(property), true},
-      SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expr>(MemberExpr{std::move(expression), {}, std::move(property), true},
+                                SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parsePrimary() {
@@ -386,8 +382,7 @@ ExprPtr Parser::parsePrimary() {
     return std::make_shared<Expr>(UndefinedLiteralExpr{}, sourceRange);
   if (token.kind == TokenKind::Identifier)
     return std::make_shared<Expr>(IdentifierExpr{token.lexeme}, sourceRange);
-  if (token.kind == TokenKind::Keyword)
-    fail("unsupported keyword '" + token.lexeme + "'");
+  if (token.kind == TokenKind::Keyword) fail("unsupported keyword '" + token.lexeme + "'");
   fail("expected expression");
 }
 
@@ -410,21 +405,17 @@ ExprPtr Parser::parseObjectLiteral() {
     } while (eat(",") && current().lexeme != "}");
     if (!eat("}")) fail("expected '}' after object literal");
   }
-  return std::make_shared<Expr>(std::move(object),
-                                SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expr>(std::move(object), SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseArrayLiteral() {
   const SourcePosition start = consume().start;
   ArrayExpr array;
   if (!eat("]")) {
-    do {
-      array.elements.push_back(parseExpression());
-    } while (eat(",") && current().lexeme != "]");
+    do { array.elements.push_back(parseExpression()); } while (eat(",") && current().lexeme != "]");
     if (!eat("]")) fail("expected ']' after array literal");
   }
-  return std::make_shared<Expr>(std::move(array),
-                                SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expr>(std::move(array), SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
-}
+} // namespace rma::reader

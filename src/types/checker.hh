@@ -1,7 +1,7 @@
 #pragma once
 
-#include "reader/ast.hh"
 #include "builtins/builtin.hh"
+#include "reader/ast.hh"
 #include "types/type_scheme.hh"
 #include "types/types.hh"
 #include "types/unifier.hh"
@@ -31,6 +31,9 @@ public:
   TypePtr numberType() override;
   TypePtr booleanType() override;
   TypePtr undefinedType() override;
+  TypePtr resolveType(TypePtr type) override;
+  std::string showType(TypePtr type) override;
+  [[noreturn]] void report(const reader::SourceRange &range, const std::string &message) override;
   void requireUnify(TypePtr left, TypePtr right, const reader::SourceRange &range,
                     const std::string &what) override;
 
@@ -98,4 +101,4 @@ private:
   int loopDepth_ = 0;
 };
 
-}
+} // namespace rma::types
