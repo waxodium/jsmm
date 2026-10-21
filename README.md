@@ -3,7 +3,7 @@
 <table width="100%">
     <tr>
         <td bgcolor="#f6f8fa" style="padding: 15px; border: 1px solid #d0d7de;">
-            !! <b>Note:</b> This program isn't finished. contributing may not be accepted
+            !! <b>Note:</b> This program isn't finished. Contributing may not be accepted
         </td>
     </tr>
 </table>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "builtins/builtin.hh"
+#include "errors/errors.hh"
 #include "reader/ast.hh"
 #include "types/type_scheme.hh"
 #include "types/types.hh"
@@ -68,6 +69,8 @@ private:
   std::vector<TypePtr> environmentTypes() const;
 
   [[noreturn]] void fail(const reader::SourceRange &range, const std::string &message) const;
+  [[noreturn]] void fail(const reader::SourceRange &range, const std::string &message,
+                         errors::ErrorCode code) const;
   void requireKind(TypePtr type, TypeKind kind, const reader::SourceRange &range,
                    const std::string &what);
   TypePtr annotate(const reader::ExprPtr &expr, TypePtr type);

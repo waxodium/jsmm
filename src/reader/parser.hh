@@ -1,6 +1,7 @@
 #pragma once
 
 #include "reader/ast.hh"
+#include "errors/errors.hh"
 #include "reader/lexer.hh"
 
 #include <string>
@@ -34,6 +35,7 @@ private:
   bool eat(std::string_view lexeme);
   const Token &consume();
   [[noreturn]] void fail(const std::string &message) const;
+  [[noreturn]] void fail(const std::string &message, errors::ErrorCode code) const;
   void optionalSemicolon();
 
   Statement parseStatement();

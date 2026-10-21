@@ -1,5 +1,6 @@
 #include "builtins/builtin.hh"
 #include "emit/codegen.hh"
+#include "errors/errors.hh"
 #include "io/platform.hh"
 #include "reader/lexer.hh"
 #include "reader/parser.hh"
@@ -20,7 +21,9 @@ void usage(const char *program) {
 
 std::string readFile(const std::string &path) {
   std::ifstream input(path, std::ios::binary);
-  if (!input) throw std::runtime_error("cannot open source file: " + path);
+  if (!input)
+    throw rma::errors::ErrorException{
+        rma::errors::ErrorStatus{rma::errors::ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE, path, {}}};
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -79,9 +82,9 @@ int main(int argc, char *argv[]) {
     rma::reader::Lexer lexer(source);
     std::vector<rma::reader::Token> tokens = lexer.tokenize();
     if (lexer.failed())
-      throw std::runtime_error("lex error at " + std::to_string(lexer.error().position.line) + ":" +
-                               std::to_string(lexer.error().position.column) + ": " +
-                               lexer.error().message);
+      throw rma::errors::ErrorException{
+          rma::errors::ErrorStatus{rma::errors::ErrorCode::CLI_LEX_ERROR, lexer.error().message,
+                                   lexer.error().position}};
 
     rma::reader::Parser parser(std::move(tokens));
     rma::reader::Program program = parser.parse();
@@ -99,14 +102,22 @@ int main(int argc, char *argv[]) {
 
     const std::vector<std::string> assembler = {"as", "--64", "-o", objectPath, assemblyPath};
     if (const int status = rma::io::runCommand(assembler); status != 0)
-      throw std::runtime_error("assembler failed with status " + std::to_string(status));
+      throw rma::errors::ErrorException{rma::errors::ErrorStatus{
+          rma::errors::ErrorCode::CLI_ASSEMBLER_FAILED,
+          "assembler failed with status " + std::to_string(status)}};
 
     const std::vector<std::string> linker = {"ld", "-o", outputPath, objectPath};
     if (const int status = rma::io::runCommand(linker); status != 0)
-      throw std::runtime_error("linker failed with status " + std::to_string(status));
+      throw rma::errors::ErrorException{rma::errors::ErrorStatus{
+          rma::errors::ErrorCode::CLI_LINKER_FAILED,
+          "linker failed with status " + std::to_string(status)}};
 
     rma::io::removeFile(assemblyPath);
     rma::io::removeFile(objectPath);
+  } catch (const rma::errors::ErrorException &error) {
+    const auto &status = error.status();
+    std::cerr << rma::errors::formatError(status) << '\n';
+    return 1;
   } catch (const std::exception &error) {
     std::cerr << "rma: " << error.what() << '\n';
     return 1;

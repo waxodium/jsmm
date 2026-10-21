@@ -1,5 +1,7 @@
 #include "types/checker.hh"
 
+#include "errors/errors.hh"
+
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -80,8 +82,13 @@ std::vector<TypePtr> Checker::environmentTypes() const {
 
 [[noreturn]] void Checker::fail(const reader::SourceRange &range,
                                 const std::string &message) const {
-  throw std::runtime_error("type error at " + std::to_string(range.start.line) + ":" +
-                           std::to_string(range.start.column) + ": " + message);
+  fail(range, message, errors::ErrorCode::TYPE_CANNOT_UNIFY);
+}
+
+[[noreturn]] void Checker::fail(const reader::SourceRange &range,
+                                const std::string &message,
+                                errors::ErrorCode code) const {
+  throw errors::ErrorException{errors::ErrorStatus{code, message, range}};
 }
 
 void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange &range,
@@ -101,7 +108,8 @@ void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange
   type = context_.resolve(std::move(type));
   if (type == nullptr || type->kind != kind)
     fail(range, what + ": expected `" + std::string(kindName(kind)) + "', got `" +
-                    context_.show(type) + "'");
+                    context_.show(type) + "'",
+         errors::ErrorCode::TYPE_EXPECTED_KIND);
 }
 
 TypePtr Checker::annotate(const reader::ExprPtr &expr, TypePtr type) {
@@ -170,9 +178,11 @@ void Checker::inferStatement(const reader::Statement &statement) {
           (void)inferExpression(node.expression);
         } else if constexpr (std::is_same_v<T, reader::FunctionDeclaration>) {
           if (inFunction_)
-            fail(statement.range, "function declarations must appear at the top level");
+            fail(statement.range, "function declarations must appear at the top level",
+                 errors::ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL);
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
-          if (returnTargets_.empty()) fail(statement.range, "'return' outside of a function body");
+          if (returnTargets_.empty()) fail(statement.range, "'return' outside of a function body",
+                                           errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION);
           const TypePtr type =
               node.argument != nullptr ? inferExpression(node.argument) : context_.undefined();
           requireUnify(returnTargets_.back(), type, statement.range, "return value");
@@ -211,9 +221,11 @@ void Checker::inferStatement(const reader::Statement &statement) {
           --loopDepth_;
           popScope();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
-          if (loopDepth_ == 0) fail(statement.range, "'break' outside of a loop");
+          if (loopDepth_ == 0) fail(statement.range, "'break' outside of a loop",
+                                    errors::ErrorCode::TYPE_BREAK_OUTSIDE_LOOP);
         } else if constexpr (std::is_same_v<T, reader::ContinueStatement>) {
-          if (loopDepth_ == 0) fail(statement.range, "'continue' outside of a loop");
+          if (loopDepth_ == 0) fail(statement.range, "'continue' outside of a loop",
+                                    errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP);
         }
       },
       statement.node);
@@ -263,8 +275,10 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
   if (const Binding *binding = lookupBinding(identifier.name))
     return instantiate(binding->scheme, context_);
   if (builtins::BuiltinRegistry::instance().find(identifier.name) != nullptr)
-    fail(expr->range, "builtin '" + identifier.name + "' cannot be used as a value");
-  fail(expr->range, "undefined identifier '" + identifier.name + "'");
+    fail(expr->range, "builtin '" + identifier.name + "' cannot be used as a value",
+         errors::ErrorCode::TYPE_BUILTIN_CANNOT_BE_USED_AS_VALUE);
+  fail(expr->range, "undefined identifier '" + identifier.name + "'",
+       errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER);
 }
 
 TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary) {
@@ -276,7 +290,9 @@ TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr
     (void)inferExpression(unary.operand);
     return context_.undefined();
   }
-  if (unary.op == "delete") fail(expr->range, "'delete' is not supported in the static subset");
+  if (unary.op == "delete")
+    fail(expr->range, "'delete' is not supported in the static subset",
+         errors::ErrorCode::TYPE_DELETE_NOT_SUPPORTED);
   const TypePtr operand = inferExpression(unary.operand);
   if (unary.op == "!") {
     requireKind(operand, TypeKind::Boolean, expr->range, "'!' requires a boolean operand");
@@ -335,7 +351,8 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
                  "nullish coalescing operands must unify to a single type");
     return left;
   }
-  fail(expr->range, "unsupported operator '" + binary.op + "'");
+  fail(expr->range, "unsupported operator '" + binary.op + "'",
+       errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR);
 }
 
 TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update) {
@@ -362,19 +379,24 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
 TypePtr Checker::targetType(const reader::ExprPtr &target) {
   if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&target->node)) {
     Binding *binding = lookupBinding(identifier->name);
-    if (binding == nullptr) fail(target->range, "undefined identifier '" + identifier->name + "'");
+    if (binding == nullptr)
+      fail(target->range, "undefined identifier '" + identifier->name + "'",
+           errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER);
     if (binding->isConst)
-      fail(target->range, "cannot assign to constant binding '" + identifier->name + "'");
+      fail(target->range, "cannot assign to constant binding '" + identifier->name + "'",
+           errors::ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST);
     return instantiate(binding->scheme, context_);
   }
   if (const auto *member = std::get_if<reader::MemberExpr>(&target->node)) {
     const TypePtr objectType = inferExpression(member->object);
     const MemberResolution resolution = resolveMember(objectType, *member);
-    if (!resolution.valid) fail(target->range, "invalid assignment target");
+    if (!resolution.valid)
+      fail(target->range, "invalid assignment target",
+           errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET);
     if (resolution.isStruct) annotations_.structFieldIndices.emplace(member, resolution.fieldIndex);
     return resolution.elementType;
   }
-  fail(target->range, "invalid assignment target");
+  fail(target->range, "invalid assignment target", errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET);
 }
 
 TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member) {
@@ -383,8 +405,10 @@ TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberEx
   if (!resolution.valid) {
     const TypePtr resolved = context_.resolve(objectType);
     if (resolved != nullptr && resolved->kind == TypeKind::Array)
-      fail(expr->range, "array element access requires a computed index");
-    fail(expr->range, "member access is not supported on `" + context_.show(objectType) + "'");
+      fail(expr->range, "array element access requires a computed index",
+           errors::ErrorCode::TYPE_ARRAY_ELEMENT_ACCESS_REQUIRES_COMPUTED_INDEX);
+    fail(expr->range, "member access is not supported on `" + context_.show(objectType) + "'",
+         errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED);
   }
   if (resolution.isStruct) annotations_.structFieldIndices.emplace(&member, resolution.fieldIndex);
   return resolution.elementType;
@@ -438,11 +462,13 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
       if (!builtin->variadic && arguments.size() != builtin->minimumArguments)
         fail(expr->range, "'" + builtin->name + "' expects " +
                               std::to_string(builtin->minimumArguments) + " arguments, got " +
-                              std::to_string(arguments.size()));
+                              std::to_string(arguments.size()),
+             errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS);
       if (builtin->variadic && arguments.size() < builtin->minimumArguments)
         fail(expr->range, "'" + builtin->name + "' expects at least " +
                               std::to_string(builtin->minimumArguments) + " arguments, got " +
-                              std::to_string(arguments.size()));
+                              std::to_string(arguments.size()),
+             errors::ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS);
       return builtin->infer(*this, arguments, expr->range);
     }
   }
@@ -454,7 +480,8 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
     arity = resolved->parameters.size();
     if (arity != call.arguments.size())
       fail(expr->range, "call target expects " + std::to_string(arity) + " arguments, got " +
-                            std::to_string(call.arguments.size()));
+                            std::to_string(call.arguments.size()),
+           errors::ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS);
   }
 
   std::vector<TypePtr> parameters;
@@ -472,7 +499,8 @@ TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectEx
     bool duplicate = false;
     for (const auto &field : fields)
       if (field.first == property.key) duplicate = true;
-    if (duplicate) fail(expr->range, "duplicate property '" + property.key + "' in object literal");
+    if (duplicate) fail(expr->range, "duplicate property '" + property.key + "' in object literal",
+                        errors::ErrorCode::TYPE_DUPLICATE_PROPERTY);
     fields.emplace_back(property.key, inferExpression(property.value));
   }
   return context_.structType(std::move(fields));

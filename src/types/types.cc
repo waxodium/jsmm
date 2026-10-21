@@ -1,5 +1,7 @@
 #include "types/types.hh"
 
+#include "errors/errors.hh"
+
 #include <set>
 #include <stdexcept>
 
@@ -76,7 +78,9 @@ TypePtr TypeContext::unionType(std::vector<TypePtr> members) {
 TypePtr TypeContext::resolve(TypePtr type) {
   std::set<int> seen;
   while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr) {
-    if (!seen.insert(type->id).second) throw std::runtime_error("rma: type cycle detected");
+    if (!seen.insert(type->id).second)
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::UNIFY_TYPE_CYCLE_DETECTED, {}, {}}};
     type = type->link;
   }
   return type;

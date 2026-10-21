@@ -1,5 +1,7 @@
 #include "emit/helpers.hh"
 
+#include "errors/errors.hh"
+
 #include <stdexcept>
 
 namespace rma::emit {
@@ -12,7 +14,8 @@ void HelperRegistry::declare(std::string symbol, std::string text) {
 
 void HelperRegistry::use(const std::string &symbol) {
   if (available_.find(symbol) == available_.end())
-    throw std::runtime_error("unknown runtime helper: " + symbol);
+    throw errors::ErrorException{
+        errors::ErrorStatus{errors::ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER, symbol}};
   for (const auto &name : used_)
     if (name == symbol) return;
   used_.push_back(symbol);

@@ -1,5 +1,7 @@
 #include "reader/parser.hh"
 
+#include "errors/errors.hh"
+
 #include <cstdlib>
 #include <stdexcept>
 #include <utility>
@@ -75,14 +77,18 @@ bool Parser::eat(std::string_view lexeme) {
 
 const Token &Parser::consume() {
   const Token &token = current();
-  if (token.kind == TokenKind::End) fail("unexpected end of input");
+  if (token.kind == TokenKind::End)
+    fail("unexpected end of input", errors::ErrorCode::PARSE_UNEXPECTED_END_OF_INPUT);
   ++index_;
   return token;
 }
 
 [[noreturn]] void Parser::fail(const std::string &message) const {
-  throw std::runtime_error("parse error at " + std::to_string(current().start.line) + ":" +
-                           std::to_string(current().start.column) + ": " + message);
+  fail(message, errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+}
+
+[[noreturn]] void Parser::fail(const std::string &message, errors::ErrorCode code) const {
+  throw errors::ErrorException{errors::ErrorStatus{code, message, current().start}};
 }
 
 void Parser::optionalSemicolon() { (void)eat(";"); }
@@ -106,7 +112,8 @@ Statement Parser::parseStatement() {
       if (keyword == "for") return parseForStatement();
       if (keyword == "break") return parseBreakStatement();
       if (keyword == "continue") return parseContinueStatement();
-      fail("unsupported keyword '" + keyword + "'");
+      fail("unsupported keyword '" + keyword + "'",
+           errors::ErrorCode::PARSE_UNSUPPORTED_KEYWORD);
     }
     if (current().lexeme == "{") return parseBlock();
     if (current().lexeme == ";") return parseEmptyStatement();
@@ -132,13 +139,15 @@ Statement Parser::parseDeclaration() {
   const std::string kind = consume().lexeme;
   VariableDeclaration declaration{kind, {}};
   do {
-    if (current().kind != TokenKind::Identifier) fail("expected binding name");
+    if (current().kind != TokenKind::Identifier)
+      fail("expected binding name", errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
     const std::string name = consume().lexeme;
     ExprPtr initializer;
     if (eat("=")) {
       initializer = parseExpression();
     } else if (kind == "const") {
-      fail("const declaration requires an initializer");
+      fail("const declaration requires an initializer",
+           errors::ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER);
     }
     declaration.declarations.push_back({std::move(name), std::move(initializer)});
   } while (eat(","));
@@ -148,17 +157,25 @@ Statement Parser::parseDeclaration() {
 
 Statement Parser::parseFunctionDeclaration() {
   consume();
-  if (current().kind != TokenKind::Identifier) fail("expected function name");
+  if (current().kind != TokenKind::Identifier)
+    fail("expected function name", errors::ErrorCode::PARSE_EXPECTED_FUNCTION_NAME);
   FunctionDeclaration function{consume().lexeme, {}, {}};
-  if (!eat("(")) fail("expected '(' after function name");
+  if (!eat("("))
+    fail("expected '(' after function name",
+         errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME);
   if (!eat(")")) {
     do {
-      if (current().kind != TokenKind::Identifier) fail("expected parameter name");
+      if (current().kind != TokenKind::Identifier)
+        fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
       function.parameters.push_back(consume().lexeme);
     } while (eat(","));
-    if (!eat(")")) fail("expected ')' after parameters");
+    if (!eat(")"))
+      fail("expected ')' after parameters",
+           errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
   }
-  if (!eat("{")) fail("expected '{' before function body");
+  if (!eat("{"))
+    fail("expected '{' before function body",
+         errors::ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY);
   function.body = parseBlockBody();
   return Statement(std::move(function));
 }
@@ -174,10 +191,12 @@ Statement Parser::parseReturnStatement() {
 
 Statement Parser::parseIfStatement() {
   consume();
-  if (!eat("(")) fail("expected '(' after 'if'");
+  if (!eat("(")) fail("expected '(' after 'if'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_IF);
   auto condition = parseExpression();
-  if (!eat(")")) fail("expected ')' after if condition");
-  if (!eat("{")) fail("expected '{' for if consequent");
+  if (!eat(")"))
+    fail("expected ')' after if condition", errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION);
+  if (!eat("{"))
+    fail("expected '{' for if consequent", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_IF_CONSEQUENT);
   StatementList consequent = parseBlockBody();
   StatementList alternate;
   if (eat("else")) {
@@ -192,29 +211,35 @@ Statement Parser::parseIfStatement() {
 
 Statement Parser::parseWhileStatement() {
   consume();
-  if (!eat("(")) fail("expected '(' after 'while'");
+  if (!eat("("))
+    fail("expected '(' after 'while'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_WHILE);
   auto condition = parseExpression();
-  if (!eat(")")) fail("expected ')' after while condition");
-  if (!eat("{")) fail("expected '{' for while body");
+  if (!eat(")"))
+    fail("expected ')' after while condition",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_CONDITION);
+  if (!eat("{"))
+    fail("expected '{' for while body", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_WHILE_BODY);
   StatementList body = parseBlockBody();
   return Statement(WhileStatement{std::move(condition), std::move(body)});
 }
 
 Statement Parser::parseForStatement() {
   consume();
-  if (!eat("(")) fail("expected '(' after 'for'");
+  if (!eat("(")) fail("expected '(' after 'for'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FOR);
   std::unique_ptr<VariableDeclaration> init;
   if (current().lexeme == "let" || current().lexeme == "const" || current().lexeme == "var") {
     const std::string kind = consume().lexeme;
     VariableDeclaration declaration{kind, {}};
     do {
-      if (current().kind != TokenKind::Identifier) fail("expected binding name");
+      if (current().kind != TokenKind::Identifier)
+        fail("expected binding name", errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
       const std::string name = consume().lexeme;
       ExprPtr initializer;
       if (eat("=")) {
         initializer = parseExpression();
       } else if (kind == "const") {
-        fail("const declaration requires an initializer");
+        fail("const declaration requires an initializer",
+             errors::ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER);
       }
       declaration.declarations.push_back({std::move(name), std::move(initializer)});
     } while (eat(","));
@@ -222,14 +247,19 @@ Statement Parser::parseForStatement() {
   } else if (current().lexeme != ";") {
     (void)parseExpression();
   }
-  if (!eat(";")) fail("expected ';' after for-init");
+  if (!eat(";"))
+    fail("expected ';' after for-init", errors::ErrorCode::PARSE_EXPECTED_SEMICOLON_AFTER_FOR_INIT);
   ExprPtr condition;
   if (current().lexeme != ";") condition = parseExpression();
-  if (!eat(";")) fail("expected ';' after for-condition");
+  if (!eat(";"))
+    fail("expected ';' after for-condition",
+         errors::ErrorCode::PARSE_EXPECTED_SEMICOLON_AFTER_FOR_CONDITION);
   ExprPtr update;
   if (current().lexeme != ")") update = parseExpression();
-  if (!eat(")")) fail("expected ')' after for clauses");
-  if (!eat("{")) fail("expected '{' for for body");
+  if (!eat(")"))
+    fail("expected ')' after for clauses", errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_FOR_CLAUSES);
+  if (!eat("{"))
+    fail("expected '{' for for body", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_FOR_BODY);
   StatementList body = parseBlockBody();
   return Statement(
       ForStatement{std::move(init), std::move(condition), std::move(update), std::move(body)});
@@ -258,7 +288,8 @@ StatementList Parser::parseBlockBody() {
   StatementList statements;
   while (current().kind != TokenKind::End && current().lexeme != "}")
     statements.push_back(parseStatement());
-  if (!eat("}")) fail("expected '}' to close block");
+  if (!eat("}")) fail("expected '}' to close block",
+                      errors::ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK);
   return statements;
 }
 
@@ -333,7 +364,8 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
   std::vector<ExprPtr> arguments;
   if (!eat(")")) {
     do { arguments.push_back(parseExpression()); } while (eat(","));
-    if (!eat(")")) fail("expected ')' after call arguments");
+    if (!eat(")")) fail("expected ')' after call arguments",
+                        errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS);
   }
   return std::make_shared<Expr>(CallExpr{std::move(expression), std::move(arguments)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
@@ -344,7 +376,8 @@ ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
   const SourcePosition start = expression->range.start;
   const Token property = consume();
   if (property.kind != TokenKind::Identifier && property.kind != TokenKind::Keyword)
-    fail("expected property name after '.'");
+    fail("expected property name after '.'",
+         errors::ErrorCode::PARSE_EXPECTED_PROPERTY_NAME_AFTER_DOT);
   return std::make_shared<Expr>(MemberExpr{std::move(expression), property.lexeme, {}, false},
                                 SourceRange{start, property.end});
 }
@@ -353,7 +386,8 @@ ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
   (void)consume();
   const SourcePosition start = expression->range.start;
   auto property = parseExpression();
-  if (!eat("]")) fail("expected ']' after computed property");
+  if (!eat("]")) fail("expected ']' after computed property",
+                      errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
   return std::make_shared<Expr>(MemberExpr{std::move(expression), {}, std::move(property), true},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
@@ -364,7 +398,8 @@ ExprPtr Parser::parsePrimary() {
   if (current().lexeme == "(") {
     const SourcePosition start = consume().start;
     auto expression = parseExpression();
-    if (!eat(")")) fail("expected ')' after expression");
+    if (!eat(")"))
+      fail("expected ')' after expression", errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_EXPRESSION);
     expression->range = SourceRange{start, tokens_.at(index_ - 1).end};
     return expression;
   }
@@ -382,8 +417,10 @@ ExprPtr Parser::parsePrimary() {
     return std::make_shared<Expr>(UndefinedLiteralExpr{}, sourceRange);
   if (token.kind == TokenKind::Identifier)
     return std::make_shared<Expr>(IdentifierExpr{token.lexeme}, sourceRange);
-  if (token.kind == TokenKind::Keyword) fail("unsupported keyword '" + token.lexeme + "'");
-  fail("expected expression");
+  if (token.kind == TokenKind::Keyword)
+    fail("unsupported keyword '" + token.lexeme + "'",
+         errors::ErrorCode::PARSE_UNSUPPORTED_KEYWORD);
+  fail("expected expression", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
 }
 
 ExprPtr Parser::parseObjectLiteral() {
@@ -398,12 +435,16 @@ ExprPtr Parser::parseObjectLiteral() {
                  current().kind == TokenKind::NumberLiteral) {
         key = consume().lexeme;
       } else {
-        fail("expected object property name");
+        fail("expected object property name",
+             errors::ErrorCode::PARSE_EXPECTED_OBJECT_PROPERTY_NAME);
       }
-      if (!eat(":")) fail("expected ':' after object property name");
+      if (!eat(":"))
+        fail("expected ':' after object property name",
+             errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
       object.properties.push_back({std::move(key), parseExpression()});
     } while (eat(",") && current().lexeme != "}");
-    if (!eat("}")) fail("expected '}' after object literal");
+    if (!eat("}")) fail("expected '}' after object literal",
+                        errors::ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL);
   }
   return std::make_shared<Expr>(std::move(object), SourceRange{start, tokens_.at(index_ - 1).end});
 }
@@ -413,7 +454,8 @@ ExprPtr Parser::parseArrayLiteral() {
   ArrayExpr array;
   if (!eat("]")) {
     do { array.elements.push_back(parseExpression()); } while (eat(",") && current().lexeme != "]");
-    if (!eat("]")) fail("expected ']' after array literal");
+    if (!eat("]")) fail("expected ']' after array literal",
+                        errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
   }
   return std::make_shared<Expr>(std::move(array), SourceRange{start, tokens_.at(index_ - 1).end});
 }
