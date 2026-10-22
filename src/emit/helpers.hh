@@ -6,17 +6,17 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rma::emit {
+namespace jsmm::emit {
 
-inline constexpr std::string_view entrySymbol = "rma_entry";
+inline constexpr std::string_view entrySymbol = "jsmm_entry";
 inline constexpr std::string_view startSymbol = "_start";
-inline constexpr std::string_view entryFrameSymbol = "rma_entry_frame";
-inline constexpr std::string_view allocSymbol = "rma_alloc";
-inline constexpr std::string_view moduloSymbol = "rma_mod";
-inline constexpr std::string_view powerSymbol = "rma_pow";
-inline constexpr std::string_view boundsSymbol = "rma_oob";
-inline constexpr std::string_view arenaSymbol = "rma_arena";
-inline constexpr std::string_view arenaPointerSymbol = "rma_arena_pointer";
+inline constexpr std::string_view entryFrameSymbol = "jsmm_entry_frame";
+inline constexpr std::string_view allocSymbol = "jsmm_alloc";
+inline constexpr std::string_view moduloSymbol = "jsmm_mod";
+inline constexpr std::string_view powerSymbol = "jsmm_pow";
+inline constexpr std::string_view boundsSymbol = "jsmm_oob";
+inline constexpr std::string_view arenaSymbol = "jsmm_arena";
+inline constexpr std::string_view arenaPointerSymbol = "jsmm_arena_pointer";
 
 inline constexpr std::uint64_t arenaSize = 64ULL * 1024ULL * 1024ULL;
 
@@ -34,4 +34,4 @@ private:
   std::vector<std::string> used_;
 };
 
-} // namespace rma::emit
+} // namespace jsmm::emit

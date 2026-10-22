@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace rma::builtins {
+namespace jsmm::builtins {
 
 namespace {
 
@@ -20,6 +20,11 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   case TypeKind::Undefined:
   case TypeKind::Variable: return true;
   case TypeKind::Array: return formattable(context, resolved->element);
+  case TypeKind::Union: {
+    for (const types::TypePtr &member : resolved->members)
+      if (!formattable(context, member)) return false;
+    return true;
+  }
   default: return false;
   }
 }
@@ -52,4 +57,4 @@ void declareCat(BuiltinRegistry &registry) {
   registry.declare({"cat", true, 0, inferCat, emitCat});
 }
 
-} // namespace rma::builtins
+} // namespace jsmm::builtins

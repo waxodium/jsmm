@@ -19,7 +19,7 @@ rebuild: distclean build
 
 clean:
 	cmake --build $(CMAKE_DIR) --target clean 2>/dev/null || rm -rf $(CMAKE_DIR)
-	rm -f $(BUILD_DIR)/rma
+	rm -f $(BUILD_DIR)/jsd
 
 distclean:
 	rm -rf $(BUILD_DIR)

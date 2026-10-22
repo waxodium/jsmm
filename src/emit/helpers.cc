@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace rma::emit {
+namespace jsmm::emit {
 
 void HelperRegistry::declare(std::string symbol, std::string text) {
   if (available_.find(symbol) != available_.end()) return;
@@ -36,4 +36,4 @@ std::string HelperRegistry::assemble() const {
   return text;
 }
 
-} // namespace rma::emit
+} // namespace jsmm::emit

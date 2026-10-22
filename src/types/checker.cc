@@ -6,7 +6,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace rma::types {
+namespace jsmm::types {
 namespace {
 
 const char *kindName(TypeKind kind) {
@@ -53,6 +53,15 @@ void Checker::requireUnify(TypePtr left, TypePtr right, const reader::SourceRang
   if (!unifier_.unify(std::move(left), std::move(right)))
     fail(range, what + ": cannot unify `" + context_.show(leftCopy) + "' with `" +
                     context_.show(rightCopy) + "'");
+}
+
+void Checker::requireAssignable(TypePtr value, TypePtr target, const reader::SourceRange &range,
+                                const std::string &what) {
+  const TypePtr valueCopy = value;
+  const TypePtr targetCopy = target;
+  if (!unifier_.assignable(std::move(value), std::move(target)))
+    fail(range, what + ": cannot unify `" + context_.show(valueCopy) + "' with `" +
+                    context_.show(targetCopy) + "'");
 }
 
 void Checker::requireConcreteType(TypePtr type, const reader::SourceRange &range) {
@@ -165,7 +174,7 @@ void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange
   default: break;
   }
   if (target != nullptr) {
-    requireUnify(std::move(type), std::move(target), range, what);
+    requireAssignable(std::move(type), std::move(target), range, what);
     return;
   }
   type = context_.resolve(std::move(type));
@@ -179,6 +188,48 @@ void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange
 TypePtr Checker::annotate(const reader::ExprPtr &expr, TypePtr type) {
   annotations_.expressionTypes.emplace(expr.get(), type);
   return type;
+}
+
+bool Checker::isNullish(TypePtr type) {
+  if (type == nullptr) return false;
+  return type->kind == TypeKind::Null || type->kind == TypeKind::Undefined;
+}
+
+TypePtr Checker::unionPayload(TypePtr type) {
+  if (type == nullptr || type->kind != TypeKind::Union) return nullptr;
+  for (const TypePtr &member : type->members)
+    if (!isNullish(member)) return member;
+  return nullptr;
+}
+
+TypePtr Checker::resolveAnnotation(const reader::TypeExpr &annotation,
+                                   const reader::SourceRange &range) {
+  std::vector<TypePtr> members;
+  for (const std::string &name : annotation.names) {
+    TypePtr member;
+    if (name == "number") member = context_.number();
+    else if (name == "string") member = context_.string();
+    else if (name == "boolean") member = context_.boolean();
+    else if (name == "null") member = context_.null();
+    else if (name == "undefined") member = context_.undefined();
+    else
+      fail(range, "unknown type name '" + name + "'", errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME);
+    bool duplicate = false;
+    for (const TypePtr &existing : members)
+      if (existing->kind == member->kind) duplicate = true;
+    if (!duplicate) members.push_back(std::move(member));
+  }
+  if (members.empty())
+    fail(range, "a type annotation must name at least one type",
+         errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+  if (members.size() == 1) return members.front();
+  std::size_t payloads = 0;
+  for (const TypePtr &member : members)
+    if (!isNullish(member)) ++payloads;
+  if (payloads > 1)
+    fail(range, "a union may hold at most one non-nullable member",
+         errors::ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD);
+  return context_.unionType(std::move(members));
 }
 
 void Checker::hoistFunctions(const reader::Program &program,
@@ -228,15 +279,26 @@ void Checker::inferStatements(const reader::StatementList &statements) {
 void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
   for (const auto &declarator : declaration.declarations) {
     const bool initialized = declarator.initializer != nullptr;
-    const TypePtr type =
-        initialized ? inferExpression(declarator.initializer) : context_.variable();
+    TypePtr type;
+    if (declarator.annotation != nullptr) {
+      type = resolveAnnotation(*declarator.annotation, declarator.annotation->range);
+      annotations_.declaredTypes.emplace(&declarator, context_.resolve(type));
+      if (initialized) {
+        const TypePtr valueType = inferExpression(declarator.initializer);
+        requireAssignable(valueType, type, declarator.initializer->range,
+                          "assigned value must unify with the declared type");
+      }
+    } else {
+      type = initialized ? inferExpression(declarator.initializer) : context_.variable();
+    }
     Binding binding;
     binding.scheme =
         initialized ? generalize(type, environmentTypes(), context_) : TypeScheme{{}, type};
     binding.isConst = declaration.kind == "const";
     Scope *target = (declaration.kind == "var") ? lookupVarScope() : currentScope_;
     target->bindings.insert_or_assign(declarator.name, std::move(binding));
-    if (!initialized) declarationTypeVars_.emplace(&declarator, type);
+    if (!initialized && declarator.annotation == nullptr)
+      declarationTypeVars_.emplace(&declarator, type);
   }
 }
 
@@ -258,7 +320,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
                  errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION);
           const TypePtr type =
               node.argument != nullptr ? inferExpression(node.argument) : context_.undefined();
-          requireUnify(returnTargets_.back(), type, statement.range, "return value");
+          requireAssignable(type, returnTargets_.back(), statement.range, "return value");
         } else if constexpr (std::is_same_v<T, reader::BlockStatement>) {
           pushScope(currentScope_);
           inferStatements(node.statements);
@@ -412,6 +474,24 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     }
   for (const auto &op : equality)
     if (binary.op == op) {
+      const TypePtr leftResolved = context_.resolve(left);
+      const TypePtr rightResolved = context_.resolve(right);
+      const bool leftUnion =
+          leftResolved != nullptr && leftResolved->kind == TypeKind::Union;
+      const bool rightUnion =
+          rightResolved != nullptr && rightResolved->kind == TypeKind::Union;
+      if (leftUnion || rightUnion) {
+        if (leftUnion && rightUnion) {
+          requireUnify(left, right, expr->range, "equality operands must have the same type");
+          return context_.boolean();
+        }
+        const TypePtr other = leftUnion ? rightResolved : leftResolved;
+        if (!isNullish(other))
+          fail(expr->range,
+               "a nullable value may only be compared with null or undefined",
+               errors::ErrorCode::TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH);
+        return context_.boolean();
+      }
       requireUnify(left, right, expr->range, "equality operands must have the same type");
       return context_.boolean();
     }
@@ -423,6 +503,26 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     return context_.boolean();
   }
   if (binary.op == "??") {
+    const TypePtr leftResolved = context_.resolve(left);
+    const TypePtr rightResolved = context_.resolve(right);
+    if (isNullish(leftResolved)) return right;
+    if (leftResolved != nullptr && leftResolved->kind == TypeKind::Union) {
+      const TypePtr payload = unionPayload(leftResolved);
+      if (payload == nullptr) return right;
+      requireAssignable(right, payload, expr->range,
+                       "nullish coalescing right operand must unify with the payload type");
+      return payload;
+    }
+    if (leftResolved != nullptr && leftResolved->kind == TypeKind::Variable &&
+        rightResolved != nullptr && rightResolved->kind != TypeKind::Variable &&
+        !isNullish(rightResolved)) {
+      std::vector<TypePtr> members;
+      members.push_back(rightResolved);
+      members.push_back(context_.null());
+      const TypePtr nullable = context_.unionType(std::move(members));
+      unifier_.unify(left, nullable);
+      return rightResolved;
+    }
     requireUnify(left, right, expr->range,
                  "nullish coalescing operands must unify to a single type");
     return left;
@@ -440,9 +540,11 @@ TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateEx
 TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
                                  const reader::AssignmentExpr &assignment) {
   const TypePtr target = targetType(assignment.target);
+  annotations_.expressionTypes.insert_or_assign(assignment.target.get(), target);
   const TypePtr value = inferExpression(assignment.value);
   if (assignment.op == "=") {
-    requireUnify(value, target, expr->range, "assigned value must unify with the target type");
+    requireAssignable(value, target, expr->range,
+                       "assigned value must unify with the target type");
     return target;
   }
   requireKind(target, TypeKind::Number, expr->range,
@@ -530,7 +632,8 @@ void Checker::resolvePendingMembers() {
            "member access is not supported on `" + context_.show(pending.objectType) + "'",
            errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED);
     }
-    requireUnify(pending.resultType, resolution.elementType, pending.range, "member access type");
+    requireAssignable(resolution.elementType, pending.resultType, pending.range,
+                       "member access type");
     if (resolution.isStruct)
       annotations_.structFieldIndices.emplace(pending.member, resolution.fieldIndex);
     annotations_.expressionTypes.insert_or_assign(pending.expression,
@@ -555,8 +658,8 @@ void Checker::bindUnresolvedTypes(bool excludeMemberResults) {
     for (const TypePtr &variable : freeVariables) {
       if (quantified.contains(variable->id)) continue;
       if (excluded.contains(variable->id)) continue;
-      requireUnify(variable, context_.undefined(), reader::SourceRange{},
-                   "unresolved type defaults to undefined");
+      requireAssignable(context_.undefined(), variable, reader::SourceRange{},
+                         "unresolved type defaults to undefined");
     }
   }
 }
@@ -653,9 +756,18 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
   for (const auto &argument : call.arguments) parameters.push_back(inferExpression(argument));
   const TypePtr result = context_.variable();
   const bool calleeIsFunction = resolved != nullptr && resolved->kind == TypeKind::Function;
+  if (calleeIsFunction) {
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+      requireAssignable(parameters[i], resolved->parameters[i], expr->range,
+                        "call arguments do not match the parameter types");
+      annotations_.argumentTypes.emplace(call.arguments[i].get(),
+                                         context_.resolve(resolved->parameters[i]));
+    }
+    requireUnify(resolved->result, result, expr->range, "call result type");
+    return result;
+  }
   requireUnify(callee, context_.functionType(std::move(parameters), result), expr->range,
-               calleeIsFunction ? "call arguments do not match the parameter types"
-                                : "call target must be a function");
+               "call target must be a function");
   return result;
 }
 
@@ -676,9 +788,24 @@ TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectEx
 TypePtr Checker::inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array) {
   if (array.elements.empty()) return context_.arrayType(context_.variable());
   TypePtr element = inferExpression(array.elements.front());
-  for (std::size_t i = 1; i < array.elements.size(); ++i)
-    requireUnify(inferExpression(array.elements[i]), element, expr->range,
-                 "array elements must unify to a single type");
+  for (std::size_t i = 1; i < array.elements.size(); ++i) {
+    const TypePtr current = inferExpression(array.elements[i]);
+    const TypePtr elementResolved = context_.resolve(element);
+    const TypePtr currentResolved = context_.resolve(current);
+    const bool elementUnion =
+        elementResolved != nullptr && elementResolved->kind == TypeKind::Union;
+    const bool currentUnion = currentResolved != nullptr && currentResolved->kind == TypeKind::Union;
+    if (elementUnion && !currentUnion) {
+      requireAssignable(current, element, expr->range,
+                        "array elements must unify to a single type");
+    } else if (!elementUnion && currentUnion) {
+      requireAssignable(element, current, expr->range,
+                        "array elements must unify to a single type");
+      element = current;
+    } else {
+      requireUnify(current, element, expr->range, "array elements must unify to a single type");
+    }
+  }
   return context_.arrayType(element);
 }
 
@@ -730,4 +857,4 @@ Annotations Checker::check(const reader::Program &program) {
   return std::move(annotations_);
 }
 
-} // namespace rma::types
+} // namespace jsmm::types

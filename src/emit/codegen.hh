@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rma::emit {
+namespace jsmm::emit {
 
 class CodeGenerator final : public builtins::EmitContext {
 public:
@@ -71,10 +71,16 @@ private:
   void storeValue(long long offset, types::TypePtr type);
   void loadGp(long long offset, x64::Reg reg);
   void loadXmm(long long offset, x64::Xmm reg);
+  void loadEntryFrame(x64::Reg reg);
   void emitZeroValue(types::TypePtr type);
+  void emitBox(types::TypePtr payloadType);
+  void emitNullishCell(long long tag);
+  void emitCoerce(types::TypePtr destinationType, types::TypePtr valueType);
+  void formatUnionValue(const types::TypePtr &type);
 
   types::TypePtr typeOf(const reader::ExprPtr &expr) const;
   bool isNumber(types::TypePtr type) const;
+  types::TypePtr unionPayload(types::TypePtr type) const;
   static std::uint64_t numberBits(const std::string &spelling);
 
   void generateStatements(const reader::StatementList &statements);
@@ -117,4 +123,4 @@ private:
   std::unordered_map<std::string, long long> entrySlots_;
 };
 
-} // namespace rma::emit
+} // namespace jsmm::emit

@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace rma::errors {
+namespace jsmm::errors {
 
 
 enum class ErrorCode : std::uint16_t {
@@ -52,6 +52,7 @@ enum class ErrorCode : std::uint16_t {
   PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL,
   PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL,
   PARSE_EXPECTED_EXPRESSION,
+  PARSE_EXPECTED_TYPE_NAME,
 
   TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL,
   TYPE_RETURN_OUTSIDE_FUNCTION,
@@ -72,6 +73,9 @@ enum class ErrorCode : std::uint16_t {
   TYPE_CALL_TARGET_EXPECTS_ARGUMENTS,
   TYPE_DUPLICATE_PROPERTY,
   TYPE_FUNCTION_WITHOUT_GUARANTEED_RETURN,
+  TYPE_UNKNOWN_TYPE_NAME,
+  TYPE_UNION_REQUIRES_SINGLE_PAYLOAD,
+  TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH,
 
   CODEGEN_UNKNOWN_RUNTIME_HELPER,
 
@@ -176,6 +180,8 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "expected ']' after array literal";
     case ErrorCode::PARSE_EXPECTED_EXPRESSION:
       return "expected expression";
+    case ErrorCode::PARSE_EXPECTED_TYPE_NAME:
+      return "expected a type name";
 
     case ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL:
       return "function declarations must appear at the top level";
@@ -215,6 +221,12 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "duplicate property in object literal";
     case ErrorCode::TYPE_FUNCTION_WITHOUT_GUARANTEED_RETURN:
       return "function without a guaranteed return unifies its result with undefined";
+    case ErrorCode::TYPE_UNKNOWN_TYPE_NAME:
+      return "unknown type name";
+    case ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD:
+      return "a union may hold at most one non-nullable member";
+    case ErrorCode::TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH:
+      return "a nullable value may only be compared with null or undefined";
 
     case ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER:
       return "unknown runtime helper";
@@ -259,7 +271,7 @@ struct ErrorStatus {
   reader::SourceRange range{};
 };
 
-// `rma: <code> <message> [<detail>] at <file>:<line>:<col>`.
+// `jsmm: <code> <message> [<detail>] at <file>:<line>:<col>`.
 class ErrorException : public std::runtime_error {
 public:
   explicit ErrorException(ErrorStatus status)
@@ -278,7 +290,7 @@ private:
 };
 
 inline std::string formatError(const ErrorStatus &status) {
-  std::string out = "rma: ";
+  std::string out = "jsmm: ";
   out += std::string(errorMessage(status.code));
   if (!status.detail.empty()) out += ": " + status.detail;
   out += " at ";
@@ -288,4 +300,4 @@ inline std::string formatError(const ErrorStatus &status) {
   return out;
 }
 
-} // namespace rma::errors
+} // namespace jsmm::errors

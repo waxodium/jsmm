@@ -7,7 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace rma::io {
+namespace jsmm::io {
 
 void writeFile(const std::string &path, std::string_view content) {
   std::FILE *file = std::fopen(path.c_str(), "wb");
@@ -39,7 +39,7 @@ int runCommand(const std::vector<std::string> &command) {
         errors::ErrorCode::IO_CANNOT_FORK, command.front()}};
   if (child == 0) {
     ::execvp(arguments.front(), arguments.data());
-    std::perror("rma: execvp");
+    std::perror("jsmm: execvp");
     ::_exit(127);
   }
 
@@ -50,4 +50,4 @@ int runCommand(const std::vector<std::string> &command) {
       errors::ErrorCode::IO_COMMAND_TERMINATED_ABNORMALLY, command.front()}};
 }
 
-} // namespace rma::io
+} // namespace jsmm::io

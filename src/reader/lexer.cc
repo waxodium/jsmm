@@ -3,7 +3,7 @@
 #include <array>
 #include <unordered_set>
 
-namespace rma::reader {
+namespace jsmm::reader {
 namespace {
 
 const std::unordered_set<std::string> keywords = {
@@ -353,4 +353,4 @@ void Lexer::finish(Token &token, TokenKind kind, std::size_t startOffset,
   token.end = position();
 }
 
-} // namespace rma::reader
+} // namespace jsmm::reader

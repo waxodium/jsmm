@@ -22,8 +22,8 @@ void usage(const char *program) {
 std::string readFile(const std::string &path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
-    throw rma::errors::ErrorException{
-        rma::errors::ErrorStatus{rma::errors::ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE, path, {}}};
+    throw jsmm::errors::ErrorException{
+        jsmm::errors::ErrorStatus{jsmm::errors::ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE, path, {}}};
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -75,51 +75,51 @@ int main(int argc, char *argv[]) {
   }
 
   try {
-    rma::builtins::BuiltinRegistry::registerAll();
+    jsmm::builtins::BuiltinRegistry::registerAll();
 
     const std::string source = readFile(inputPath);
 
-    rma::reader::Lexer lexer(source);
-    std::vector<rma::reader::Token> tokens = lexer.tokenize();
+    jsmm::reader::Lexer lexer(source);
+    std::vector<jsmm::reader::Token> tokens = lexer.tokenize();
     if (lexer.failed())
-      throw rma::errors::ErrorException{
-          rma::errors::ErrorStatus{rma::errors::ErrorCode::CLI_LEX_ERROR, lexer.error().message,
+      throw jsmm::errors::ErrorException{
+          jsmm::errors::ErrorStatus{jsmm::errors::ErrorCode::CLI_LEX_ERROR, lexer.error().message,
                                    lexer.error().position}};
 
-    rma::reader::Parser parser(std::move(tokens));
-    rma::reader::Program program = parser.parse();
+    jsmm::reader::Parser parser(std::move(tokens));
+    jsmm::reader::Program program = parser.parse();
 
-    rma::types::Checker checker;
-    const rma::types::Annotations annotations = checker.check(program);
+    jsmm::types::Checker checker;
+    const jsmm::types::Annotations annotations = checker.check(program);
 
-    rma::emit::CodeGenerator codegen;
+    jsmm::emit::CodeGenerator codegen;
     const std::string assembly = codegen.generate(program, annotations, checker.context());
 
     const std::string assemblyPath = outputPath + ".s";
     const std::string objectPath = outputPath + ".o";
 
-    rma::io::writeFile(assemblyPath, assembly);
+    jsmm::io::writeFile(assemblyPath, assembly);
 
     const std::vector<std::string> assembler = {"as", "--64", "-o", objectPath, assemblyPath};
-    if (const int status = rma::io::runCommand(assembler); status != 0)
-      throw rma::errors::ErrorException{rma::errors::ErrorStatus{
-          rma::errors::ErrorCode::CLI_ASSEMBLER_FAILED,
+    if (const int status = jsmm::io::runCommand(assembler); status != 0)
+      throw jsmm::errors::ErrorException{jsmm::errors::ErrorStatus{
+          jsmm::errors::ErrorCode::CLI_ASSEMBLER_FAILED,
           "assembler failed with status " + std::to_string(status)}};
 
     const std::vector<std::string> linker = {"ld", "-o", outputPath, objectPath};
-    if (const int status = rma::io::runCommand(linker); status != 0)
-      throw rma::errors::ErrorException{rma::errors::ErrorStatus{
-          rma::errors::ErrorCode::CLI_LINKER_FAILED,
+    if (const int status = jsmm::io::runCommand(linker); status != 0)
+      throw jsmm::errors::ErrorException{jsmm::errors::ErrorStatus{
+          jsmm::errors::ErrorCode::CLI_LINKER_FAILED,
           "linker failed with status " + std::to_string(status)}};
 
-    rma::io::removeFile(assemblyPath);
-    rma::io::removeFile(objectPath);
-  } catch (const rma::errors::ErrorException &error) {
+    jsmm::io::removeFile(assemblyPath);
+    jsmm::io::removeFile(objectPath);
+  } catch (const jsmm::errors::ErrorException &error) {
     const auto &status = error.status();
-    std::cerr << rma::errors::formatError(status) << '\n';
+    std::cerr << jsmm::errors::formatError(status) << '\n';
     return 1;
   } catch (const std::exception &error) {
-    std::cerr << "rma: " << error.what() << '\n';
+    std::cerr << "jsmm: " << error.what() << '\n';
     return 1;
   }
 

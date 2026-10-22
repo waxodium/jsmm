@@ -8,13 +8,18 @@
 #include <stdexcept>
 #include <type_traits>
 
-namespace rma::emit {
+namespace jsmm::emit {
 namespace {
 
 using types::TypeKind;
 using types::TypePtr;
 
 const std::uint64_t oneBits = 0x3FF0000000000000ULL;
+
+constexpr long long unionTagUndefined = 0;
+constexpr long long unionTagNull = 1;
+constexpr long long unionTagPayload = 2;
+constexpr long long unionCellSize = 16;
 
 long long alignFrame(long long bytes) { return (bytes + 15) / 16 * 16; }
 
@@ -130,7 +135,7 @@ void CodeGenerator::emitZeroValue(TypePtr type) {
     return;
   case TypeKind::String:
     helpers_.use("literals");
-    out().leaLabel(x64::Reg::Rax, "rma_literal_empty_string");
+    out().leaLabel(x64::Reg::Rax, "jsmm_literal_empty_string");
     return;
   case TypeKind::Array: {
     helpers_.use(std::string(allocSymbol));
@@ -160,8 +165,74 @@ void CodeGenerator::emitZeroValue(TypePtr type) {
     popTemp();
     return;
   }
+  case TypeKind::Union: {
+    long long tag = unionTagPayload;
+    for (const TypePtr &member : resolved->members) {
+      const TypePtr memberResolved = context_->resolve(member);
+      if (memberResolved == nullptr) continue;
+      if (memberResolved->kind == TypeKind::Undefined) {
+        tag = unionTagUndefined;
+        break;
+      }
+      if (memberResolved->kind == TypeKind::Null && tag == unionTagPayload) tag = unionTagNull;
+    }
+    emitNullishCell(tag);
+    return;
+  }
   default: out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax); return;
   }
+}
+
+void CodeGenerator::emitBox(TypePtr payloadType) {
+  const bool numeric = isNumber(payloadType);
+  const long long temp = pushTemp();
+  if (numeric) out().movsdOffsetXmm(x64::Reg::Rbp, temp, x64::Xmm::X0);
+  else
+    out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
+  helpers_.use(std::string(allocSymbol));
+  out().movRegImm(x64::Reg::Rdi, unionCellSize);
+  out().call(allocSymbol);
+  out().movRegReg(x64::Reg::R10, x64::Reg::Rax);
+  if (numeric) {
+    out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::Rbp, temp);
+    out().movqRegXmm(x64::Reg::Rax, x64::Xmm::X0);
+  } else {
+    loadGp(temp, x64::Reg::Rax);
+  }
+  out().movOffsetReg(x64::Reg::R10, 8, x64::Reg::Rax);
+  out().movRegImm(x64::Reg::Rax, unionTagPayload);
+  out().movOffsetReg(x64::Reg::R10, 0, x64::Reg::Rax);
+  out().movRegReg(x64::Reg::Rax, x64::Reg::R10);
+  popTemp();
+}
+
+void CodeGenerator::emitNullishCell(long long tag) {
+  helpers_.use(std::string(allocSymbol));
+  out().movRegImm(x64::Reg::Rdi, unionCellSize);
+  out().call(allocSymbol);
+  out().movRegReg(x64::Reg::R10, x64::Reg::Rax);
+  out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
+  out().movOffsetReg(x64::Reg::R10, 8, x64::Reg::Rax);
+  out().movRegImm(x64::Reg::Rax, static_cast<std::uint64_t>(tag));
+  out().movOffsetReg(x64::Reg::R10, 0, x64::Reg::Rax);
+  out().movRegReg(x64::Reg::Rax, x64::Reg::R10);
+}
+
+void CodeGenerator::emitCoerce(TypePtr destinationType, TypePtr valueType) {
+  const TypePtr destination = context_->resolve(std::move(destinationType));
+  const TypePtr value = context_->resolve(std::move(valueType));
+  if (destination == nullptr || value == nullptr) return;
+  if (destination->kind != TypeKind::Union) return;
+  if (value->kind == TypeKind::Union) return;
+  if (value->kind == TypeKind::Null) {
+    emitNullishCell(unionTagNull);
+    return;
+  }
+  if (value->kind == TypeKind::Undefined) {
+    emitNullishCell(unionTagUndefined);
+    return;
+  }
+  emitBox(unionPayload(destination));
 }
 
 TypePtr CodeGenerator::typeOf(const reader::ExprPtr &expr) const {
@@ -171,6 +242,18 @@ TypePtr CodeGenerator::typeOf(const reader::ExprPtr &expr) const {
 bool CodeGenerator::isNumber(TypePtr type) const {
   type = context_->resolve(std::move(type));
   return type != nullptr && type->kind == TypeKind::Number;
+}
+
+TypePtr CodeGenerator::unionPayload(TypePtr type) const {
+  type = context_->resolve(std::move(type));
+  if (type == nullptr || type->kind != TypeKind::Union) return nullptr;
+  for (const TypePtr &member : type->members) {
+    const TypePtr resolved = context_->resolve(member);
+    if (resolved == nullptr) continue;
+    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Undefined) continue;
+    return resolved;
+  }
+  return nullptr;
 }
 
 std::uint64_t CodeGenerator::numberBits(const std::string &spelling) {
@@ -198,7 +281,7 @@ std::uint64_t CodeGenerator::numberBits(const std::string &spelling) {
 }
 
 long long CodeGenerator::slotForDeclaration(const std::string &name) {
-  if (generatingEntry_) {
+  if (generatingEntry_ && scopes_.size() == 1) {
     const auto found = entrySlots_.find(name);
     if (found != entrySlots_.end()) return found->second;
   }
@@ -207,23 +290,28 @@ long long CodeGenerator::slotForDeclaration(const std::string &name) {
 
 void CodeGenerator::generateDeclaration(const reader::VariableDeclaration &declaration) {
   for (const auto &declarator : declaration.declarations) {
+    Scope &target = (declaration.kind == "var" && varTargetScopeIndex_ >= 0)
+                        ? scopes_[varTargetScopeIndex_]
+                        : scopes_.back();
+    const auto existing = target.slots.find(declarator.name);
+    const bool reuseExisting = declaration.kind == "var" && existing != target.slots.end();
+    const long long offset =
+        reuseExisting ? existing->second.offset : slotForDeclaration(declarator.name);
     if (declarator.initializer != nullptr) {
       generateExpression(declarator.initializer);
-      const long long offset = slotForDeclaration(declarator.name);
-      Scope &target = (declaration.kind == "var" && varTargetScopeIndex_ >= 0)
-                          ? scopes_[varTargetScopeIndex_]
-                          : scopes_.back();
+      TypePtr storedType = typeOf(declarator.initializer);
+      const auto declared = annotations_->declaredTypes.find(&declarator);
+      if (declared != annotations_->declaredTypes.end()) {
+        emitCoerce(declared->second, storedType);
+        storedType = declared->second;
+      }
       target.slots.insert_or_assign(declarator.name, Slot{offset, declaration.kind == "const"});
-      storeValue(offset, typeOf(declarator.initializer));
+      storeValue(offset, storedType);
       if (generatingEntry_) {
         topLevelOffsets_.emplace(declarator.name, offset);
-        topLevelIsNumber_.emplace(declarator.name, isNumber(typeOf(declarator.initializer)));
+        topLevelIsNumber_.emplace(declarator.name, isNumber(storedType));
       }
     } else {
-      const long long offset = slotForDeclaration(declarator.name);
-      Scope &target = (declaration.kind == "var" && varTargetScopeIndex_ >= 0)
-                          ? scopes_[varTargetScopeIndex_]
-                          : scopes_.back();
       target.slots.insert_or_assign(declarator.name, Slot{offset, false});
       TypePtr declaredType;
       const auto found = annotations_->declarationTypes.find(&declarator);
@@ -256,6 +344,7 @@ void CodeGenerator::generateStatement(const reader::Statement &statement) {
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
           if (node.argument != nullptr) {
             generateExpression(node.argument);
+            emitCoerce(state_.resultType, typeOf(node.argument));
             if (isNumber(state_.resultType)) out().movqRegXmm(x64::Reg::Rax, x64::Xmm::X0);
           } else {
             out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
@@ -383,11 +472,18 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
           out().call(allocSymbol);
           const long long temp = pushTemp();
           out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
+          const TypePtr structType = context_->resolve(typeOf(expr));
           for (std::size_t i = 0; i < node.properties.size(); ++i) {
             generateExpression(node.properties[i].value);
+            TypePtr fieldType = typeOf(node.properties[i].value);
+            if (structType != nullptr && structType->kind == TypeKind::Struct &&
+                i < structType->fields.size()) {
+              emitCoerce(structType->fields[i].second, fieldType);
+              fieldType = structType->fields[i].second;
+            }
             loadGp(temp, x64::Reg::R11);
             const long long displacement = static_cast<long long>(8 * i);
-            if (isNumber(typeOf(node.properties[i].value)))
+            if (isNumber(fieldType))
               out().movsdOffsetXmm(x64::Reg::R11, displacement, x64::Xmm::X0);
             else
               out().movOffsetReg(x64::Reg::R11, displacement, x64::Reg::Rax);
@@ -403,11 +499,20 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
           out().movOffsetReg(x64::Reg::Rax, 0, x64::Reg::Rcx);
           const long long temp = pushTemp();
           out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
+          const TypePtr arrayType = context_->resolve(typeOf(expr));
+          const TypePtr elementType = arrayType != nullptr && arrayType->kind == TypeKind::Array
+                                          ? arrayType->element
+                                          : nullptr;
           for (std::size_t i = 0; i < node.elements.size(); ++i) {
             generateExpression(node.elements[i]);
+            TypePtr storedType = typeOf(node.elements[i]);
+            if (elementType != nullptr) {
+              emitCoerce(elementType, storedType);
+              storedType = elementType;
+            }
             loadGp(temp, x64::Reg::R11);
             const long long displacement = static_cast<long long>(8 + 8 * i);
-            if (isNumber(typeOf(node.elements[i])))
+            if (isNumber(storedType))
               out().movsdOffsetXmm(x64::Reg::R11, displacement, x64::Xmm::X0);
             else
               out().movOffsetReg(x64::Reg::R11, displacement, x64::Reg::Rax);
@@ -554,6 +659,7 @@ void CodeGenerator::generateBitwise(const reader::BinaryExpr &binary) {
 void CodeGenerator::generateEquality(const reader::BinaryExpr &binary) {
   const bool negated = binary.op == "!=" || binary.op == "!==";
   const TypePtr leftType = context_->resolve(typeOf(binary.left));
+  const TypePtr rightType = context_->resolve(typeOf(binary.right));
   if (leftType != nullptr && leftType->kind == TypeKind::Number) {
     generateExpression(binary.left);
     const long long temp = pushTemp();
@@ -576,6 +682,68 @@ void CodeGenerator::generateEquality(const reader::BinaryExpr &binary) {
     }
     return;
   }
+  const bool leftUnion = leftType != nullptr && leftType->kind == TypeKind::Union;
+  const bool rightUnion = rightType != nullptr && rightType->kind == TypeKind::Union;
+  if (leftUnion || rightUnion) {
+    const bool unionOnLeft = leftUnion;
+    const reader::ExprPtr &unionSide = unionOnLeft ? binary.left : binary.right;
+    const reader::ExprPtr &otherSide = unionOnLeft ? binary.right : binary.left;
+    const TypePtr otherType = unionOnLeft ? rightType : leftType;
+    const TypePtr unionType = unionOnLeft ? leftType : rightType;
+    generateExpression(unionSide);
+    const long long temp = pushTemp();
+    storeValue(temp, typeOf(unionSide));
+    generateExpression(otherSide);
+    out().movRegReg(x64::Reg::R11, x64::Reg::Rax);
+    loadGp(temp, x64::Reg::R10);
+    popTemp();
+    const std::string unequalLabel = newLabel(".Lequnequal");
+    const std::string endLabel = newLabel(".Leqend");
+    if (otherType != nullptr && otherType->kind == TypeKind::Union) {
+      out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 0);
+      out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 0);
+      out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
+      out().jcc(x64::Cond::NE, unequalLabel);
+      const TypePtr payload = unionPayload(unionType);
+      if (isNumber(payload)) {
+        out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 8);
+        out().movqXmmReg(x64::Xmm::X0, x64::Reg::Rcx);
+        out().movRegOffset(x64::Reg::Rcx, x64::Reg::R11, 8);
+        out().movqXmmReg(x64::Xmm::X1, x64::Reg::Rcx);
+        out().ucomisd(x64::Xmm::X0, x64::Xmm::X1);
+        if (negated) {
+          out().setCond(x64::Cond::NE, x64::Reg::Rax);
+          out().setCond(x64::Cond::P, x64::Reg::Rcx);
+          out().orRegReg(x64::Reg::Rax, x64::Reg::Rcx);
+          out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
+        } else {
+          out().setCond(x64::Cond::E, x64::Reg::Rax);
+          out().setCond(x64::Cond::NP, x64::Reg::Rcx);
+          out().andRegReg(x64::Reg::Rax, x64::Reg::Rcx);
+          out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
+        }
+      } else {
+        out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 8);
+        out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 8);
+        out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
+        out().setCond(negated ? x64::Cond::NE : x64::Cond::E, x64::Reg::Rax);
+        out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
+      }
+      out().jmp(endLabel);
+      out().label(unequalLabel);
+      out().movRegImm(x64::Reg::Rax, negated ? 1 : 0);
+      out().label(endLabel);
+      return;
+    }
+    const long long expected = otherType != nullptr && otherType->kind == TypeKind::Null
+                                   ? unionTagNull
+                                   : unionTagUndefined;
+    out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 0);
+    out().cmpRegImm(x64::Reg::Rcx, expected);
+    out().setCond(negated ? x64::Cond::NE : x64::Cond::E, x64::Reg::Rax);
+    out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
+    return;
+  }
   generateExpression(binary.left);
   const long long temp = pushTemp();
   storeValue(temp, typeOf(binary.left));
@@ -583,37 +751,6 @@ void CodeGenerator::generateEquality(const reader::BinaryExpr &binary) {
   out().movRegReg(x64::Reg::R11, x64::Reg::Rax);
   loadGp(temp, x64::Reg::R10);
   popTemp();
-  if (leftType != nullptr && leftType->kind == TypeKind::Union) {
-    const std::string trueLabel = newLabel(".Leqtrue");
-    const std::string endLabel = newLabel(".Leqend");
-    if (negated) {
-      out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 0);
-      out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 0);
-      out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
-      out().jcc(x64::Cond::NE, trueLabel);
-      out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 8);
-      out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 8);
-      out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
-      out().setCond(x64::Cond::NE, x64::Reg::Rax);
-      out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
-      out().jmp(endLabel);
-      out().label(trueLabel);
-      out().movRegImm(x64::Reg::Rax, 1);
-      out().label(endLabel);
-    } else {
-      out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 0);
-      out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 0);
-      out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
-      out().jcc(x64::Cond::NE, endLabel);
-      out().movRegOffset(x64::Reg::Rcx, x64::Reg::R10, 8);
-      out().movRegOffset(x64::Reg::Rdx, x64::Reg::R11, 8);
-      out().cmpRegReg(x64::Reg::Rcx, x64::Reg::Rdx);
-      out().setCond(x64::Cond::E, x64::Reg::Rax);
-      out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
-      out().label(endLabel);
-    }
-    return;
-  }
   out().cmpRegReg(x64::Reg::R10, x64::Reg::R11);
   out().setCond(negated ? x64::Cond::NE : x64::Cond::E, x64::Reg::Rax);
   out().movzxByte(x64::Reg::Rax, x64::Reg::Rax);
@@ -629,9 +766,12 @@ void CodeGenerator::generateLogical(const reader::BinaryExpr &binary) {
       const long long temp = pushTemp();
       storeValue(temp, typeOf(binary.left));
       out().movRegOffset(x64::Reg::Rcx, x64::Reg::Rax, 0);
-      out().cmpRegImm(x64::Reg::Rcx, 2);
+      out().cmpRegImm(x64::Reg::Rcx, unionTagPayload);
       out().jcc(x64::Cond::B, rightLabel);
       loadGp(temp, x64::Reg::Rax);
+      out().movRegOffset(x64::Reg::Rax, x64::Reg::Rax, 8);
+      const TypePtr payload = unionPayload(leftType);
+      if (isNumber(payload)) out().movqXmmReg(x64::Xmm::X0, x64::Reg::Rax);
       out().jmp(endLabel);
       out().label(rightLabel);
       generateExpression(binary.right);
@@ -666,18 +806,18 @@ void CodeGenerator::generateLogical(const reader::BinaryExpr &binary) {
 void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
   const auto *member = std::get_if<reader::MemberExpr>(&update.target->node);
   const bool decrement = update.op == "--";
-  long long addressTemp = -1;
+  const bool memberTarget = member != nullptr;
+  long long addressTemp = 0;
   long long targetOffset = 0;
   x64::Reg baseReg = x64::Reg::Rbp;
-  if (member == nullptr) {
+  if (!memberTarget) {
     const auto &identifier = std::get<reader::IdentifierExpr>(update.target->node);
     if (Slot *slot = lookupSlot(identifier.name)) {
       targetOffset = slot->offset;
     } else {
       long long toff = topLevelOffset(identifier.name);
       if (toff != -1) {
-        out().leaLabel(x64::Reg::R11, entryFrameSymbol);
-        out().movRegOffset(x64::Reg::R11, x64::Reg::R11, 0);
+        loadEntryFrame(x64::Reg::R11);
         targetOffset = toff;
         baseReg = x64::Reg::R11;
       } else {
@@ -690,7 +830,7 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
     out().movOffsetReg(x64::Reg::Rbp, addressTemp, x64::Reg::Rax);
   }
 
-  if (addressTemp >= 0) {
+  if (memberTarget) {
     loadGp(addressTemp, x64::Reg::R11);
     out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, 0);
   } else {
@@ -704,51 +844,49 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
   if (decrement) out().subsd(x64::Xmm::X1, x64::Xmm::X2);
   else
     out().addsd(x64::Xmm::X1, x64::Xmm::X2);
-  if (addressTemp >= 0) {
+  if (memberTarget) {
     loadGp(addressTemp, x64::Reg::R11);
     out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X1);
   } else {
     out().movsdOffsetXmm(baseReg, targetOffset, x64::Xmm::X1);
   }
   popTemp();
-  if (addressTemp >= 0) { popTemp(); }
+  if (memberTarget) { popTemp(); }
   if (update.prefix) out().movsdXmmXmm(x64::Xmm::X0, x64::Xmm::X1);
+}
+
+void CodeGenerator::loadEntryFrame(x64::Reg reg) {
+  out().leaLabel(reg, entryFrameSymbol);
+  out().movRegOffset(reg, reg, 0);
 }
 
 void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment) {
   const auto *member = std::get_if<reader::MemberExpr>(&assignment.target->node);
   if (member == nullptr) {
     const auto &identifier = std::get<reader::IdentifierExpr>(assignment.target->node);
-    x64::Reg baseReg = x64::Reg::Rbp;
-    long long offset = 0;
-    if (Slot *slot = lookupSlot(identifier.name)) {
-      offset = slot->offset;
-    } else {
-      long long toff = topLevelOffset(identifier.name);
-      if (toff != -1) {
-        out().leaLabel(x64::Reg::R11, entryFrameSymbol);
-        out().movRegOffset(x64::Reg::R11, x64::Reg::R11, 0);
-        offset = toff;
-        baseReg = x64::Reg::R11;
-      } else {
-        offset = 0;
-      }
-    }
+    const Slot *slot = lookupSlot(identifier.name);
+    const bool local = slot != nullptr;
+    const long long localOffset = local ? slot->offset : 0;
+    const long long topOffset = local ? -1 : topLevelOffset(identifier.name);
     if (assignment.op == "=") {
       generateExpression(assignment.value);
-      if (baseReg == x64::Reg::Rbp) {
-        storeValue(offset, typeOf(assignment.value));
-      } else {
-        if (isNumber(typeOf(assignment.value))) out().movsdOffsetXmm(baseReg, offset, x64::Xmm::X0);
+      emitCoerce(typeOf(assignment.target), typeOf(assignment.value));
+      const TypePtr storedType = typeOf(assignment.target);
+      if (local) {
+        storeValue(localOffset, storedType);
+      } else if (topOffset != -1) {
+        loadEntryFrame(x64::Reg::R11);
+        if (isNumber(storedType)) out().movsdOffsetXmm(x64::Reg::R11, topOffset, x64::Xmm::X0);
         else
-          out().movOffsetReg(baseReg, offset, x64::Reg::Rax);
+          out().movOffsetReg(x64::Reg::R11, topOffset, x64::Reg::Rax);
       }
       return;
     }
-    if (baseReg == x64::Reg::Rbp) {
-      loadXmm(offset, x64::Xmm::X0);
-    } else {
-      out().movsdXmmOffset(x64::Xmm::X0, baseReg, offset);
+    if (local) {
+      loadXmm(localOffset, x64::Xmm::X0);
+    } else if (topOffset != -1) {
+      loadEntryFrame(x64::Reg::R11);
+      out().movsdXmmOffset(x64::Xmm::X0, x64::Reg::R11, topOffset);
     }
     const long long temp = pushTemp();
     storeValue(temp, context_->number());
@@ -765,7 +903,12 @@ void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment)
       helpers_.use(std::string(moduloSymbol));
       out().call(moduloSymbol);
     }
-    out().movsdOffsetXmm(baseReg, offset, x64::Xmm::X0);
+    if (local) {
+      out().movsdOffsetXmm(x64::Reg::Rbp, localOffset, x64::Xmm::X0);
+    } else if (topOffset != -1) {
+      loadEntryFrame(x64::Reg::R11);
+      out().movsdOffsetXmm(x64::Reg::R11, topOffset, x64::Xmm::X0);
+    }
     return;
   }
 
@@ -774,8 +917,10 @@ void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment)
   out().movOffsetReg(x64::Reg::Rbp, addressTemp, x64::Reg::Rax);
   if (assignment.op == "=") {
     generateExpression(assignment.value);
+    emitCoerce(typeOf(assignment.target), typeOf(assignment.value));
+    const TypePtr storedType = typeOf(assignment.target);
     loadGp(addressTemp, x64::Reg::R11);
-    if (isNumber(typeOf(assignment.value))) out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X0);
+    if (isNumber(storedType)) out().movsdOffsetXmm(x64::Reg::R11, 0, x64::Xmm::X0);
     else
       out().movOffsetReg(x64::Reg::R11, 0, x64::Reg::Rax);
     popTemp();
@@ -834,8 +979,14 @@ void CodeGenerator::generateMemberAddress(const reader::MemberExpr &member) {
 void CodeGenerator::generateArguments(const std::vector<reader::ExprPtr> &arguments) {
   for (const auto &argument : arguments) {
     generateExpression(argument);
+    const auto destination = annotations_->argumentTypes.find(argument.get());
+    TypePtr storedType = typeOf(argument);
+    if (destination != annotations_->argumentTypes.end()) {
+      emitCoerce(destination->second, storedType);
+      storedType = destination->second;
+    }
     const long long temp = pushTemp();
-    storeValue(temp, typeOf(argument));
+    storeValue(temp, storedType);
   }
   const std::size_t count = arguments.size();
   const bool padded = count % 2 == 1;
@@ -880,31 +1031,60 @@ void CodeGenerator::formatByType(const TypePtr &type) {
   case TypeKind::Number:
     helpers_.use("literals");
     helpers_.use("number_writer");
-    out().call("rma_write_number");
+    out().call("jsmm_write_number");
     break;
   case TypeKind::Boolean:
     helpers_.use("literals");
     helpers_.use("literal_writers");
     out().movRegReg(x64::Reg::Rdi, x64::Reg::Rax);
-    out().call("rma_write_bool");
+    out().call("jsmm_write_bool");
     break;
   case TypeKind::Null:
     helpers_.use("literals");
     helpers_.use("literal_writers");
-    out().call("rma_write_null");
+    out().call("jsmm_write_null");
     break;
   case TypeKind::Undefined:
   case TypeKind::Variable:
     helpers_.use("literals");
     helpers_.use("literal_writers");
-    out().call("rma_write_undefined");
+    out().call("jsmm_write_undefined");
     break;
   case TypeKind::Array: formatArrayValue(resolved); break;
+  case TypeKind::Union: formatUnionValue(resolved); break;
   default:
     out().movRegReg(x64::Reg::Rdi, x64::Reg::Rax);
-    out().call("rma_cat_str");
+    out().call("jsmm_cat_str");
     break;
   }
+}
+
+void CodeGenerator::formatUnionValue(const TypePtr &type) {
+  const TypePtr payload = unionPayload(type);
+  const long long temp = pushTemp();
+  out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
+  out().movRegOffset(x64::Reg::Rcx, x64::Reg::Rax, 0);
+  out().cmpRegImm(x64::Reg::Rcx, unionTagPayload);
+  const std::string nullishLabel = newLabel(".Lunionnullish");
+  const std::string undefinedLabel = newLabel(".Lunionundefined");
+  const std::string endLabel = newLabel(".Lunionend");
+  out().jcc(x64::Cond::B, nullishLabel);
+  loadGp(temp, x64::Reg::Rax);
+  out().movRegOffset(x64::Reg::Rax, x64::Reg::Rax, 8);
+  if (isNumber(payload)) out().movqXmmReg(x64::Xmm::X0, x64::Reg::Rax);
+  formatByType(payload);
+  out().jmp(endLabel);
+  out().label(nullishLabel);
+  helpers_.use("literals");
+  helpers_.use("literal_writers");
+  out().cmpRegImm(x64::Reg::Rcx, unionTagUndefined);
+  out().jcc(x64::Cond::E, undefinedLabel);
+  out().call("jsmm_write_null");
+  out().jmp(endLabel);
+  out().label(undefinedLabel);
+  out().call("jsmm_write_undefined");
+  out().label(endLabel);
+  popTemp();
 }
 
 void CodeGenerator::formatArray(const reader::ExprPtr &expression) {
@@ -916,7 +1096,7 @@ void CodeGenerator::formatNewline() {
   helpers_.use("string_writer");
   helpers_.use("literals");
   out().leaLabel(x64::Reg::Rdi, internString("\n"));
-  out().call("rma_cat_str");
+  out().call("jsmm_cat_str");
 }
 
 void CodeGenerator::formatArrayValue(const TypePtr &type) {
@@ -932,7 +1112,7 @@ void CodeGenerator::formatArrayValue(const TypePtr &type) {
   out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
   out().movOffsetReg(x64::Reg::Rbp, indexTemp, x64::Reg::Rax);
 
-  out().call("rma_write_lbracket");
+  out().call("jsmm_write_lbracket");
   const std::string loopLabel = newLabel(".Larray");
   const std::string doneLabel = newLabel(".Larraydone");
   const std::string skipLabel = newLabel(".Larraysep");
@@ -944,7 +1124,7 @@ void CodeGenerator::formatArrayValue(const TypePtr &type) {
   out().jcc(x64::Cond::AE, doneLabel);
   out().testRegReg(x64::Reg::Rax, x64::Reg::Rax);
   out().jcc(x64::Cond::E, skipLabel);
-  out().call("rma_write_separator");
+  out().call("jsmm_write_separator");
   out().label(skipLabel);
   loadGp(indexTemp, x64::Reg::Rax);
   loadGp(arrayTemp, x64::Reg::R11);
@@ -962,7 +1142,7 @@ void CodeGenerator::formatArrayValue(const TypePtr &type) {
   out().movOffsetReg(x64::Reg::Rbp, indexTemp, x64::Reg::Rax);
   out().jmp(loopLabel);
   out().label(doneLabel);
-  out().call("rma_write_rbracket");
+  out().call("jsmm_write_rbracket");
   popTemp();
   popTemp();
 }
@@ -981,8 +1161,9 @@ void CodeGenerator::generateCall(const reader::ExprPtr &expr, const reader::Call
     return;
   }
 
-  long long calleeTemp = -1;
-  if (!direct) {
+  long long calleeTemp = 0;
+  const bool indirect = !direct;
+  if (indirect) {
     generateExpression(call.callee);
     calleeTemp = pushTemp();
     out().movOffsetReg(x64::Reg::Rbp, calleeTemp, x64::Reg::Rax);
@@ -1000,7 +1181,7 @@ void CodeGenerator::generateCall(const reader::ExprPtr &expr, const reader::Call
   const std::size_t pushed = count + (count % 2 == 1 ? 1 : 0);
   out().addRegImm(x64::Reg::Rsp, static_cast<long long>(8 * pushed));
   for (std::size_t i = 0; i < count; ++i) popTemp();
-  if (calleeTemp >= 0) popTemp();
+  if (indirect) popTemp();
   if (isNumber(typeOf(expr))) out().movqXmmReg(x64::Xmm::X0, x64::Reg::Rax);
 }
 
@@ -1186,4 +1367,4 @@ std::string CodeGenerator::generate(const reader::Program &program,
   return assembly.text();
 }
 
-} // namespace rma::emit
+} // namespace jsmm::emit

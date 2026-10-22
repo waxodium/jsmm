@@ -3,7 +3,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace rma::emit::x64 {
+namespace jsmm::emit::x64 {
 
 const char *Assembly::name(Reg reg) {
   switch (reg) {

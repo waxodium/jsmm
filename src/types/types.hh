@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace rma::types {
+namespace jsmm::types {
 
 enum class TypeKind {
   Number,
@@ -55,7 +55,10 @@ public:
   std::string show(TypePtr type);
 
 private:
+  std::string showType(TypePtr type);
+
   int nextId_ = 0;
+  int showCounter_ = 0;
   TypePtr number_;
   TypePtr string_;
   TypePtr boolean_;
@@ -64,4 +67,4 @@ private:
   TypePtr never_;
 };
 
-} // namespace rma::types
+} // namespace jsmm::types

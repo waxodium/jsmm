@@ -1,7 +1,7 @@
 #pragma once
 
-#include "reader/ast.hh"
 #include "errors/errors.hh"
+#include "reader/ast.hh"
 #include "reader/lexer.hh"
 
 #include <string>
@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rma::reader {
+namespace jsmm::reader {
 
 class Parser final {
 public:
@@ -66,6 +66,7 @@ private:
   ExprPtr parsePrimary();
   ExprPtr parseObjectLiteral();
   ExprPtr parseArrayLiteral();
+  std::shared_ptr<TypeExpr> parseTypeAnnotation();
 
   static const std::unordered_map<std::string, InfixParselet> &infixParselets();
   static const std::unordered_map<std::string, PrefixParser> &prefixParselets();
@@ -75,4 +76,4 @@ private:
   std::size_t index_ = 0;
 };
 
-} // namespace rma::reader
+} // namespace jsmm::reader

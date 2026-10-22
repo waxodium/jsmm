@@ -1,6 +1,6 @@
 #include "builtins/builtin.hh"
 
-namespace rma::builtins {
+namespace jsmm::builtins {
 
 BuiltinRegistry &BuiltinRegistry::instance() {
   static BuiltinRegistry registry;
@@ -19,4 +19,4 @@ const BuiltinSpec *BuiltinRegistry::find(const std::string &name) const {
 
 const std::vector<BuiltinSpec> &BuiltinRegistry::all() const { return builtins_; }
 
-} // namespace rma::builtins
+} // namespace jsmm::builtins

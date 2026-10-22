@@ -4,7 +4,7 @@
 
 #include <vector>
 
-namespace rma::types {
+namespace jsmm::types {
 
 struct TypeScheme {
   std::vector<int> variables;
@@ -14,4 +14,4 @@ struct TypeScheme {
 TypePtr instantiate(const TypeScheme &scheme, TypeContext &context);
 TypeScheme generalize(TypePtr type, const std::vector<TypePtr> &environment, TypeContext &context);
 
-} // namespace rma::types
+} // namespace jsmm::types

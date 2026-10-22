@@ -5,11 +5,11 @@
 #include <map>
 #include <vector>
 
-namespace rma::types {
+namespace jsmm::types {
 
 using Substitution = std::map<int, TypePtr>;
 
 std::vector<int> freeTypeVariables(TypePtr type, TypeContext &context);
 TypePtr substitute(TypePtr type, const Substitution &mapping, TypeContext &context);
 
-} // namespace rma::types
+} // namespace jsmm::types

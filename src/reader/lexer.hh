@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rma::reader {
+namespace jsmm::reader {
 
 enum class TokenKind { End, Identifier, Keyword, NumberLiteral, StringLiteral, Punctuator };
 
@@ -57,4 +57,4 @@ private:
   bool failed_ = false;
 };
 
-} // namespace rma::reader
+} // namespace jsmm::reader

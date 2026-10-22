@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace rma::types {
+namespace jsmm::types {
 
 struct Annotations {
   std::unordered_map<const reader::Expr *, TypePtr> expressionTypes;
@@ -21,6 +21,8 @@ struct Annotations {
   std::unordered_map<const reader::FunctionDeclaration *, TypePtr> functionResults;
   std::unordered_map<std::string, TypePtr> topLevelTypes;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypes;
+  std::unordered_map<const reader::VariableDeclarator *, TypePtr> declaredTypes;
+  std::unordered_map<const reader::Expr *, TypePtr> argumentTypes;
 };
 
 class Checker final : public builtins::InferContext {
@@ -41,6 +43,8 @@ public:
   [[noreturn]] void report(const reader::SourceRange &range, const std::string &message) override;
   void requireUnify(TypePtr left, TypePtr right, const reader::SourceRange &range,
                     const std::string &what) override;
+  void requireAssignable(TypePtr value, TypePtr target, const reader::SourceRange &range,
+                         const std::string &what);
   void requireConcreteType(TypePtr type, const reader::SourceRange &range) override;
   void deferCheck(std::function<void()> check) override;
 
@@ -90,6 +94,9 @@ private:
   void requireKind(TypePtr type, TypeKind kind, const reader::SourceRange &range,
                    const std::string &what);
   TypePtr annotate(const reader::ExprPtr &expr, TypePtr type);
+  TypePtr resolveAnnotation(const reader::TypeExpr &annotation, const reader::SourceRange &range);
+  static bool isNullish(TypePtr type);
+  static TypePtr unionPayload(TypePtr type);
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
   void inferFunctionBody(const FunctionEntry &entry, Scope *parentScope);
@@ -138,4 +145,4 @@ private:
   int loopDepth_ = 0;
 };
 
-} // namespace rma::types
+} // namespace jsmm::types

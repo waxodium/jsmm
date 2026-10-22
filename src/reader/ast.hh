@@ -6,7 +6,7 @@
 #include <variant>
 #include <vector>
 
-namespace rma::reader {
+namespace jsmm::reader {
 
 struct SourcePosition {
   std::size_t line = 1;
@@ -103,9 +103,15 @@ struct Expr {
         range(sourceRange) {}
 };
 
+struct TypeExpr {
+  std::vector<std::string> names;
+  SourceRange range;
+};
+
 struct VariableDeclarator {
   std::string name;
   ExprPtr initializer;
+  std::shared_ptr<TypeExpr> annotation;
 };
 
 struct VariableDeclaration {
@@ -173,4 +179,4 @@ struct Program {
   StatementList statements;
 };
 
-} // namespace rma::reader
+} // namespace jsmm::reader

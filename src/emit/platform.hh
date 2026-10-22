@@ -2,7 +2,7 @@
 
 #include "emit/helpers.hh"
 
-namespace rma::emit {
+namespace jsmm::emit {
 
 void registerPlatformHelpers(HelperRegistry &registry);
 

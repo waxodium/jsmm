@@ -5,7 +5,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace rma::types {
+namespace jsmm::types {
 
 TypeContext::TypeContext() {
   number_ = std::make_shared<Type>();
@@ -87,6 +87,11 @@ TypePtr TypeContext::resolve(TypePtr type) {
 }
 
 std::string TypeContext::show(TypePtr type) {
+  showCounter_ = 0;
+  return showType(std::move(type));
+}
+
+std::string TypeContext::showType(TypePtr type) {
   type = resolve(type);
   if (type == nullptr) return "?";
   switch (type->kind) {
@@ -96,15 +101,15 @@ std::string TypeContext::show(TypePtr type) {
   case TypeKind::Null: return "null";
   case TypeKind::Undefined: return "undefined";
   case TypeKind::Never: return "never";
-  case TypeKind::Variable: return "t" + std::to_string(type->id);
+  case TypeKind::Variable: return "t" + std::to_string(++showCounter_);
   case TypeKind::Function: {
     std::string out = "(";
     for (std::size_t i = 0; i < type->parameters.size(); ++i) {
       if (i != 0) out += ", ";
-      out += show(type->parameters[i]);
+      out += showType(type->parameters[i]);
     }
     out += ") -> ";
-    out += show(type->result);
+    out += showType(type->result);
     return out;
   }
   case TypeKind::Struct: {
@@ -113,17 +118,17 @@ std::string TypeContext::show(TypePtr type) {
       if (i != 0) out += ", ";
       out += type->fields[i].first;
       out += ": ";
-      out += show(type->fields[i].second);
+      out += showType(type->fields[i].second);
     }
     out += " }";
     return out;
   }
-  case TypeKind::Array: return show(type->element) + "[]";
+  case TypeKind::Array: return showType(type->element) + "[]";
   case TypeKind::Union: {
     std::string out;
     for (std::size_t i = 0; i < type->members.size(); ++i) {
       if (i != 0) out += " | ";
-      out += show(type->members[i]);
+      out += showType(type->members[i]);
     }
     return out;
   }
@@ -131,4 +136,4 @@ std::string TypeContext::show(TypePtr type) {
   return "?";
 }
 
-} // namespace rma::types
+} // namespace jsmm::types

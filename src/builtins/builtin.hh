@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rma::builtins {
+namespace jsmm::builtins {
 
 using reader::CallExpr;
 using reader::ExprPtr;
@@ -71,4 +71,4 @@ private:
 
 void declareCat(BuiltinRegistry &registry);
 
-} // namespace rma::builtins
+} // namespace jsmm::builtins

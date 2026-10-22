@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rma::emit::x64 {
+namespace jsmm::emit::x64 {
 
 enum class Reg { Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi, R8, R9, R10, R11 };
 

@@ -2,7 +2,7 @@
 
 #include <set>
 
-namespace rma::types {
+namespace jsmm::types {
 
 std::vector<int> freeTypeVariables(TypePtr type, TypeContext &context) {
   std::set<int> collected;
@@ -65,4 +65,4 @@ TypePtr substitute(TypePtr type, const Substitution &mapping, TypeContext &conte
   }
 }
 
-} // namespace rma::types
+} // namespace jsmm::types

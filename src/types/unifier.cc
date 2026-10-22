@@ -4,7 +4,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace rma::types {
+namespace jsmm::types {
 
 Unifier::Unifier(TypeContext &context) : context_(context) {}
 
@@ -80,46 +80,93 @@ void Unifier::restore(const std::vector<std::pair<Type *, TypePtr>> &links) {
   for (const auto &entry : links) entry.first->link = entry.second;
 }
 
+bool Unifier::membersMatch(const std::vector<TypePtr> &from, const std::vector<TypePtr> &to) {
+  for (const auto &member : from) {
+    bool matched = false;
+    for (const auto &candidate : to) {
+      const auto attempt = snapshot(member, candidate);
+      if (unify(member, candidate)) {
+        matched = true;
+        break;
+      }
+      restore(attempt);
+    }
+    if (!matched) return false;
+  }
+  return true;
+}
+
+bool Unifier::assignable(TypePtr value, TypePtr target) {
+  value = context_.resolve(std::move(value));
+  target = context_.resolve(std::move(target));
+  if (value == nullptr || target == nullptr) return false;
+  if (value == target) return true;
+  if (value->kind == TypeKind::Never || target->kind == TypeKind::Never) return true;
+  if (value->kind == TypeKind::Variable) return bind(value, target);
+  if (target->kind == TypeKind::Variable) return bind(target, value);
+
+  const bool valueUnion = value->kind == TypeKind::Union;
+  const bool targetUnion = target->kind == TypeKind::Union;
+
+  if (valueUnion && targetUnion) {
+    const auto links = snapshot(value, target);
+    for (const auto &member : value->members) {
+      if (!memberAssignable(member, target->members)) {
+        restore(links);
+        return false;
+      }
+    }
+    return true;
+  }
+  if (targetUnion) {
+    const auto links = snapshot(value, target);
+    for (const auto &candidate : target->members) {
+      const auto attempt = snapshot(value, candidate);
+      if (assignable(value, candidate)) return true;
+      restore(attempt);
+    }
+    restore(links);
+    return false;
+  }
+  if (valueUnion) {
+    const auto links = snapshot(value, target);
+    for (const auto &member : value->members) {
+      if (!assignable(member, target)) {
+        restore(links);
+        return false;
+      }
+    }
+    return true;
+  }
+  return unify(value, target);
+}
+
+bool Unifier::memberAssignable(TypePtr value, const std::vector<TypePtr> &candidates) {
+  for (const auto &candidate : candidates) {
+    const auto attempt = snapshot(value, candidate);
+    if (assignable(value, candidate)) return true;
+    restore(attempt);
+  }
+  return false;
+}
+
 bool Unifier::unifyUnion(TypePtr left, TypePtr right) {
   const auto links = snapshot(left, right);
   bool ok = true;
   if (left->kind == TypeKind::Union && right->kind == TypeKind::Union) {
-    for (const auto &member : left->members) {
-      bool matched = false;
-      for (const auto &candidate : right->members) {
-        if (unify(member, candidate)) {
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) {
-      for (const auto &member : right->members) {
-        bool matched = false;
-        for (const auto &candidate : left->members) {
-          if (unify(member, candidate)) {
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) {
-          ok = false;
-          break;
-        }
-      }
-    }
+    ok = membersMatch(left->members, right->members) &&
+         membersMatch(right->members, left->members);
   } else {
-    TypePtr other = left->kind == TypeKind::Union ? right : left;
-    TypePtr unionType = left->kind == TypeKind::Union ? left : right;
+    const TypePtr other = left->kind == TypeKind::Union ? right : left;
+    const TypePtr unionType = left->kind == TypeKind::Union ? left : right;
+    ok = false;
     for (const auto &member : unionType->members) {
-      if (!unify(member, other)) {
-        ok = false;
+      const auto attempt = snapshot(member, other);
+      if (unify(member, other)) {
+        ok = true;
         break;
       }
+      restore(attempt);
     }
   }
   if (!ok) restore(links);
@@ -164,4 +211,4 @@ bool Unifier::unify(TypePtr left, TypePtr right) {
   }
 }
 
-} // namespace rma::types
+} // namespace jsmm::types
