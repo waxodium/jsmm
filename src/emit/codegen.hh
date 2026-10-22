@@ -109,6 +109,7 @@ private:
   std::vector<long long> temps_;
   FunctionState state_;
   bool generatingEntry_ = false;
+  int varTargetScopeIndex_ = -1;
   std::unordered_map<std::string, long long> topLevelOffsets_;
   std::unordered_map<std::string, bool> topLevelIsNumber_;
 };

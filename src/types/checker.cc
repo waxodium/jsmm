@@ -73,6 +73,13 @@ Checker::Binding *Checker::lookupBinding(const std::string &name) {
   return nullptr;
 }
 
+Checker::Scope *Checker::lookupVarScope() {
+  for (Scope *scope = currentScope_; scope != nullptr; scope = scope->parent) {
+    if (scope->isFunction || scope->parent == nullptr) return scope;
+  }
+  return currentScope_;
+}
+
 std::vector<TypePtr> Checker::environmentTypes() const {
   std::vector<TypePtr> types;
   for (const Scope *scope = currentScope_; scope != nullptr; scope = scope->parent)
@@ -85,8 +92,7 @@ std::vector<TypePtr> Checker::environmentTypes() const {
   fail(range, message, errors::ErrorCode::TYPE_CANNOT_UNIFY);
 }
 
-[[noreturn]] void Checker::fail(const reader::SourceRange &range,
-                                const std::string &message,
+[[noreturn]] void Checker::fail(const reader::SourceRange &range, const std::string &message,
                                 errors::ErrorCode code) const {
   throw errors::ErrorException{errors::ErrorStatus{code, message, range}};
 }
@@ -107,8 +113,9 @@ void Checker::requireKind(TypePtr type, TypeKind kind, const reader::SourceRange
   }
   type = context_.resolve(std::move(type));
   if (type == nullptr || type->kind != kind)
-    fail(range, what + ": expected `" + std::string(kindName(kind)) + "', got `" +
-                    context_.show(type) + "'",
+    fail(range,
+         what + ": expected `" + std::string(kindName(kind)) + "', got `" + context_.show(type) +
+             "'",
          errors::ErrorCode::TYPE_EXPECTED_KIND);
 }
 
@@ -137,7 +144,8 @@ void Checker::hoistFunctions(const reader::Program &program,
 }
 
 void Checker::inferFunctionBody(const FunctionEntry &entry, Scope *parentScope) {
-  pushScope(parentScope);
+  Scope *funcScope = pushScope(parentScope);
+  funcScope->isFunction = true;
   for (std::size_t i = 0; i < entry.declaration->parameters.size(); ++i) {
     Binding binding;
     binding.scheme = TypeScheme{{}, entry.parameters[i]};
@@ -172,7 +180,8 @@ void Checker::inferStatement(const reader::Statement &statement) {
             Binding binding;
             binding.scheme = generalize(type, environmentTypes(), context_);
             binding.isConst = node.kind == "const";
-            currentScope_->bindings.insert_or_assign(declarator.name, std::move(binding));
+            Scope *target = (node.kind == "var") ? lookupVarScope() : currentScope_;
+            target->bindings.insert_or_assign(declarator.name, std::move(binding));
           }
         } else if constexpr (std::is_same_v<T, reader::ExpressionStatement>) {
           (void)inferExpression(node.expression);
@@ -181,8 +190,9 @@ void Checker::inferStatement(const reader::Statement &statement) {
             fail(statement.range, "function declarations must appear at the top level",
                  errors::ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL);
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
-          if (returnTargets_.empty()) fail(statement.range, "'return' outside of a function body",
-                                           errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION);
+          if (returnTargets_.empty())
+            fail(statement.range, "'return' outside of a function body",
+                 errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION);
           const TypePtr type =
               node.argument != nullptr ? inferExpression(node.argument) : context_.undefined();
           requireUnify(returnTargets_.back(), type, statement.range, "return value");
@@ -221,11 +231,13 @@ void Checker::inferStatement(const reader::Statement &statement) {
           --loopDepth_;
           popScope();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
-          if (loopDepth_ == 0) fail(statement.range, "'break' outside of a loop",
-                                    errors::ErrorCode::TYPE_BREAK_OUTSIDE_LOOP);
+          if (loopDepth_ == 0)
+            fail(statement.range, "'break' outside of a loop",
+                 errors::ErrorCode::TYPE_BREAK_OUTSIDE_LOOP);
         } else if constexpr (std::is_same_v<T, reader::ContinueStatement>) {
-          if (loopDepth_ == 0) fail(statement.range, "'continue' outside of a loop",
-                                    errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP);
+          if (loopDepth_ == 0)
+            fail(statement.range, "'continue' outside of a loop",
+                 errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP);
         }
       },
       statement.node);
@@ -396,7 +408,8 @@ TypePtr Checker::targetType(const reader::ExprPtr &target) {
     if (resolution.isStruct) annotations_.structFieldIndices.emplace(member, resolution.fieldIndex);
     return resolution.elementType;
   }
-  fail(target->range, "invalid assignment target", errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET);
+  fail(target->range, "invalid assignment target",
+       errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET);
 }
 
 TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member) {
@@ -460,14 +473,15 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
       std::vector<TypePtr> arguments;
       for (const auto &argument : call.arguments) arguments.push_back(inferExpression(argument));
       if (!builtin->variadic && arguments.size() != builtin->minimumArguments)
-        fail(expr->range, "'" + builtin->name + "' expects " +
-                              std::to_string(builtin->minimumArguments) + " arguments, got " +
-                              std::to_string(arguments.size()),
+        fail(expr->range,
+             "'" + builtin->name + "' expects " + std::to_string(builtin->minimumArguments) +
+                 " arguments, got " + std::to_string(arguments.size()),
              errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS);
       if (builtin->variadic && arguments.size() < builtin->minimumArguments)
-        fail(expr->range, "'" + builtin->name + "' expects at least " +
-                              std::to_string(builtin->minimumArguments) + " arguments, got " +
-                              std::to_string(arguments.size()),
+        fail(expr->range,
+             "'" + builtin->name + "' expects at least " +
+                 std::to_string(builtin->minimumArguments) + " arguments, got " +
+                 std::to_string(arguments.size()),
              errors::ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS);
       return builtin->infer(*this, arguments, expr->range);
     }
@@ -479,8 +493,9 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
   if (resolved != nullptr && resolved->kind == TypeKind::Function) {
     arity = resolved->parameters.size();
     if (arity != call.arguments.size())
-      fail(expr->range, "call target expects " + std::to_string(arity) + " arguments, got " +
-                            std::to_string(call.arguments.size()),
+      fail(expr->range,
+           "call target expects " + std::to_string(arity) + " arguments, got " +
+               std::to_string(call.arguments.size()),
            errors::ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS);
   }
 
@@ -499,8 +514,9 @@ TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectEx
     bool duplicate = false;
     for (const auto &field : fields)
       if (field.first == property.key) duplicate = true;
-    if (duplicate) fail(expr->range, "duplicate property '" + property.key + "' in object literal",
-                        errors::ErrorCode::TYPE_DUPLICATE_PROPERTY);
+    if (duplicate)
+      fail(expr->range, "duplicate property '" + property.key + "' in object literal",
+           errors::ErrorCode::TYPE_DUPLICATE_PROPERTY);
     fields.emplace_back(property.key, inferExpression(property.value));
   }
   return context_.structType(std::move(fields));

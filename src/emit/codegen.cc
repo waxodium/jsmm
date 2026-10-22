@@ -155,8 +155,10 @@ void CodeGenerator::generateDeclaration(const reader::VariableDeclaration &decla
     if (declarator.initializer != nullptr) {
       generateExpression(declarator.initializer);
       const long long offset = allocateSlot();
-      scopes_.back().slots.insert_or_assign(declarator.name,
-                                            Slot{offset, declaration.kind == "const"});
+      Scope &target = (declaration.kind == "var" && varTargetScopeIndex_ >= 0)
+                          ? scopes_[varTargetScopeIndex_]
+                          : scopes_.back();
+      target.slots.insert_or_assign(declarator.name, Slot{offset, declaration.kind == "const"});
       storeValue(offset, typeOf(declarator.initializer));
       if (generatingEntry_) {
         topLevelOffsets_.emplace(declarator.name, offset);
@@ -165,7 +167,10 @@ void CodeGenerator::generateDeclaration(const reader::VariableDeclaration &decla
     } else {
       out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
       const long long offset = allocateSlot();
-      scopes_.back().slots.insert_or_assign(declarator.name, Slot{offset, false});
+      Scope &target = (declaration.kind == "var" && varTargetScopeIndex_ >= 0)
+                          ? scopes_[varTargetScopeIndex_]
+                          : scopes_.back();
+      target.slots.insert_or_assign(declarator.name, Slot{offset, false});
       out().movOffsetReg(x64::Reg::Rbp, offset, x64::Reg::Rax);
       if (generatingEntry_) {
         topLevelOffsets_.emplace(declarator.name, offset);
@@ -959,6 +964,7 @@ std::string CodeGenerator::generateFunction(const reader::FunctionDeclaration &d
       found != annotations_->functionResults.end() ? found->second : context_->undefined();
 
   beginScope();
+  varTargetScopeIndex_ = static_cast<int>(scopes_.size()) - 1;
   std::vector<long long> parameterOffsets;
   for (const auto &parameter : declaration.parameters) {
     const long long offset = allocateSlot();
@@ -1022,6 +1028,7 @@ std::string CodeGenerator::generateEntry(const reader::Program &program) {
   out().movOffsetReg(x64::Reg::R11, 0, x64::Reg::Rbp);
 
   beginScope();
+  varTargetScopeIndex_ = static_cast<int>(scopes_.size()) - 1;
   generateStatements(program.statements);
   out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
   out().label(state_.returnLabel);

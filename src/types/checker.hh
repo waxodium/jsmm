@@ -47,6 +47,7 @@ private:
   struct Scope {
     std::unordered_map<std::string, Binding> bindings;
     Scope *parent = nullptr;
+    bool isFunction = false;
   };
 
   struct FunctionEntry {
@@ -66,6 +67,7 @@ private:
   Scope *pushScope(Scope *parent);
   void popScope();
   Binding *lookupBinding(const std::string &name);
+  Scope *lookupVarScope();
   std::vector<TypePtr> environmentTypes() const;
 
   [[noreturn]] void fail(const reader::SourceRange &range, const std::string &message) const;
