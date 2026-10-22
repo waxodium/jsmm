@@ -29,6 +29,8 @@ public:
   [[noreturn]] virtual void report(const SourceRange &range, const std::string &message) = 0;
   virtual void requireUnify(TypePtr left, TypePtr right, const SourceRange &range,
                             const std::string &what) = 0;
+  virtual void requireConcreteType(TypePtr type, const SourceRange &range) = 0;
+  virtual void deferCheck(std::function<void()> check) = 0;
 };
 
 class EmitContext {

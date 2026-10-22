@@ -66,10 +66,12 @@ private:
   long long pushTemp();
   void popTemp();
   long long tempOffset(std::size_t depth) const;
+  long long slotForDeclaration(const std::string &name);
 
   void storeValue(long long offset, types::TypePtr type);
   void loadGp(long long offset, x64::Reg reg);
   void loadXmm(long long offset, x64::Xmm reg);
+  void emitZeroValue(types::TypePtr type);
 
   types::TypePtr typeOf(const reader::ExprPtr &expr) const;
   bool isNumber(types::TypePtr type) const;
@@ -112,6 +114,7 @@ private:
   int varTargetScopeIndex_ = -1;
   std::unordered_map<std::string, long long> topLevelOffsets_;
   std::unordered_map<std::string, bool> topLevelIsNumber_;
+  std::unordered_map<std::string, long long> entrySlots_;
 };
 
 } // namespace rma::emit

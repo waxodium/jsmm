@@ -55,6 +55,63 @@ void Checker::requireUnify(TypePtr left, TypePtr right, const reader::SourceRang
                     context_.show(rightCopy) + "'");
 }
 
+void Checker::requireConcreteType(TypePtr type, const reader::SourceRange &range) {
+  (void)range;
+  pinType(type);
+  concreteTypes_.push_back(std::move(type));
+}
+
+void Checker::deferCheck(std::function<void()> check) {
+  deferredChecks_.push_back(std::move(check));
+}
+
+void Checker::runDeferredChecks() {
+  for (const auto &check : deferredChecks_) check();
+}
+
+void Checker::pinType(TypePtr type) {
+  std::vector<TypePtr> freeVariables;
+  collectFreeVariables(std::move(type), freeVariables);
+  for (const TypePtr &variable : freeVariables) pinnedTypes_.push_back(variable);
+}
+
+void Checker::collectFreeVariables(TypePtr type, std::vector<TypePtr> &out) {
+  std::vector<TypePtr> worklist{std::move(type)};
+  std::unordered_set<int> visited;
+  while (!worklist.empty()) {
+    TypePtr current = context_.resolve(worklist.back());
+    worklist.pop_back();
+    if (current == nullptr) continue;
+    if (current->kind == TypeKind::Variable) {
+      if (current->link == nullptr) out.push_back(current);
+      continue;
+    }
+    if (!visited.insert(current->id).second) continue;
+    switch (current->kind) {
+    case TypeKind::Function:
+      worklist.insert(worklist.end(), current->parameters.begin(), current->parameters.end());
+      worklist.push_back(current->result);
+      break;
+    case TypeKind::Struct:
+      for (const auto &field : current->fields) worklist.push_back(field.second);
+      break;
+    case TypeKind::Array: worklist.push_back(current->element); break;
+    case TypeKind::Union:
+      for (const auto &member : current->members) worklist.push_back(member);
+      break;
+    default: break;
+    }
+  }
+}
+
+void Checker::collectQuantifiedVariables(std::set<int> &out) const {
+  for (const auto &scope : scopePool_)
+    for (const auto &entry : scope->bindings)
+      for (const int id : entry.second.scheme.variables) out.insert(id);
+  for (const auto &entry : rootScope_.bindings)
+    for (const int id : entry.second.scheme.variables) out.insert(id);
+}
+
 Checker::Scope *Checker::pushScope(Scope *parent) {
   scopePool_.push_back(std::make_unique<Scope>());
   Scope *scope = scopePool_.back().get();
@@ -168,21 +225,27 @@ void Checker::inferStatements(const reader::StatementList &statements) {
   for (const auto &statement : statements) inferStatement(statement);
 }
 
+void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
+  for (const auto &declarator : declaration.declarations) {
+    const bool initialized = declarator.initializer != nullptr;
+    const TypePtr type =
+        initialized ? inferExpression(declarator.initializer) : context_.variable();
+    Binding binding;
+    binding.scheme =
+        initialized ? generalize(type, environmentTypes(), context_) : TypeScheme{{}, type};
+    binding.isConst = declaration.kind == "const";
+    Scope *target = (declaration.kind == "var") ? lookupVarScope() : currentScope_;
+    target->bindings.insert_or_assign(declarator.name, std::move(binding));
+    if (!initialized) declarationTypeVars_.emplace(&declarator, type);
+  }
+}
+
 void Checker::inferStatement(const reader::Statement &statement) {
   std::visit(
       [&](const auto &node) {
         using T = std::decay_t<decltype(node)>;
         if constexpr (std::is_same_v<T, reader::VariableDeclaration>) {
-          for (const auto &declarator : node.declarations) {
-            const TypePtr type = declarator.initializer != nullptr
-                                     ? inferExpression(declarator.initializer)
-                                     : context_.variable();
-            Binding binding;
-            binding.scheme = generalize(type, environmentTypes(), context_);
-            binding.isConst = node.kind == "const";
-            Scope *target = (node.kind == "var") ? lookupVarScope() : currentScope_;
-            target->bindings.insert_or_assign(declarator.name, std::move(binding));
-          }
+          inferDeclaration(node);
         } else if constexpr (std::is_same_v<T, reader::ExpressionStatement>) {
           (void)inferExpression(node.expression);
         } else if constexpr (std::is_same_v<T, reader::FunctionDeclaration>) {
@@ -221,7 +284,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
           --loopDepth_;
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
           pushScope(currentScope_);
-          if (node.init != nullptr) inferStatement(reader::Statement{*node.init, statement.range});
+          if (node.init != nullptr) inferDeclaration(*node.init);
           if (node.condition != nullptr)
             requireKind(inferExpression(node.condition), TypeKind::Boolean, node.condition->range,
                         "for condition must be boolean");
@@ -295,7 +358,8 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
 
 TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary) {
   if (unary.op == "typeof") {
-    (void)inferExpression(unary.operand);
+    const TypePtr operand = inferExpression(unary.operand);
+    requireConcreteType(operand, unary.operand->range);
     return context_.string();
   }
   if (unary.op == "void") {
@@ -402,9 +466,16 @@ TypePtr Checker::targetType(const reader::ExprPtr &target) {
   if (const auto *member = std::get_if<reader::MemberExpr>(&target->node)) {
     const TypePtr objectType = inferExpression(member->object);
     const MemberResolution resolution = resolveMember(objectType, *member);
-    if (!resolution.valid)
+    if (!resolution.valid) {
+      const TypePtr resolved = context_.resolve(objectType);
+      if (resolved != nullptr && resolved->kind == TypeKind::Variable) {
+        const TypePtr resultType = context_.variable();
+        deferMember(target, *member, objectType, resultType);
+        return resultType;
+      }
       fail(target->range, "invalid assignment target",
            errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET);
+    }
     if (resolution.isStruct) annotations_.structFieldIndices.emplace(member, resolution.fieldIndex);
     return resolution.elementType;
   }
@@ -420,11 +491,89 @@ TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberEx
     if (resolved != nullptr && resolved->kind == TypeKind::Array)
       fail(expr->range, "array element access requires a computed index",
            errors::ErrorCode::TYPE_ARRAY_ELEMENT_ACCESS_REQUIRES_COMPUTED_INDEX);
+    if (resolved != nullptr && resolved->kind == TypeKind::Variable) {
+      const TypePtr resultType = context_.variable();
+      deferMember(expr, member, objectType, resultType);
+      return resultType;
+    }
     fail(expr->range, "member access is not supported on `" + context_.show(objectType) + "'",
          errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED);
   }
   if (resolution.isStruct) annotations_.structFieldIndices.emplace(&member, resolution.fieldIndex);
   return resolution.elementType;
+}
+
+void Checker::deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
+                          TypePtr objectType, TypePtr resultType) {
+  PendingMember pending;
+  pending.expression = expr.get();
+  pending.member = &member;
+  pending.objectType = std::move(objectType);
+  pending.resultType = std::move(resultType);
+  pending.range = expr->range;
+  pendingMembers_.push_back(std::move(pending));
+  memberResults_.push_back(pendingMembers_.back().resultType);
+  requireConcreteType(pendingMembers_.back().objectType, pending.range);
+  pinType(pendingMembers_.back().resultType);
+}
+
+void Checker::resolvePendingMembers() {
+  for (std::size_t index = 0; index < pendingMembers_.size(); ++index) {
+    const PendingMember pending = pendingMembers_[index];
+    const MemberResolution resolution = resolveMember(pending.objectType, *pending.member);
+    if (!resolution.valid) {
+      const TypePtr resolved = context_.resolve(pending.objectType);
+      if (resolved != nullptr && resolved->kind == TypeKind::Array)
+        fail(pending.range, "array element access requires a computed index",
+             errors::ErrorCode::TYPE_ARRAY_ELEMENT_ACCESS_REQUIRES_COMPUTED_INDEX);
+      fail(pending.range,
+           "member access is not supported on `" + context_.show(pending.objectType) + "'",
+           errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED);
+    }
+    requireUnify(pending.resultType, resolution.elementType, pending.range, "member access type");
+    if (resolution.isStruct)
+      annotations_.structFieldIndices.emplace(pending.member, resolution.fieldIndex);
+    annotations_.expressionTypes.insert_or_assign(pending.expression,
+                                                  context_.resolve(pending.resultType));
+  }
+}
+
+void Checker::bindUnresolvedTypes(bool excludeMemberResults) {
+  std::set<int> quantified;
+  collectQuantifiedVariables(quantified);
+  std::set<int> excluded;
+  if (excludeMemberResults) {
+    for (const TypePtr &result : memberResults_) {
+      std::vector<TypePtr> freeVariables;
+      collectFreeVariables(result, freeVariables);
+      for (const TypePtr &variable : freeVariables) excluded.insert(variable->id);
+    }
+  }
+  for (const TypePtr &type : concreteTypes_) {
+    std::vector<TypePtr> freeVariables;
+    collectFreeVariables(type, freeVariables);
+    for (const TypePtr &variable : freeVariables) {
+      if (quantified.contains(variable->id)) continue;
+      if (excluded.contains(variable->id)) continue;
+      requireUnify(variable, context_.undefined(), reader::SourceRange{},
+                   "unresolved type defaults to undefined");
+    }
+  }
+}
+
+void Checker::recordTopLevelTypes() {
+  for (const auto &entry : rootScope_.bindings)
+    annotations_.topLevelTypes.emplace(entry.first, context_.resolve(entry.second.scheme.type));
+  for (const auto &entry : declarationTypeVars_)
+    annotations_.declarationTypes.emplace(entry.first, context_.resolve(entry.second));
+}
+
+void Checker::finalize() {
+  bindUnresolvedTypes(true);
+  resolvePendingMembers();
+  bindUnresolvedTypes(false);
+  runDeferredChecks();
+  recordTopLevelTypes();
 }
 
 Checker::MemberResolution Checker::resolveMember(TypePtr objectType,
@@ -503,8 +652,10 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
   parameters.reserve(call.arguments.size());
   for (const auto &argument : call.arguments) parameters.push_back(inferExpression(argument));
   const TypePtr result = context_.variable();
+  const bool calleeIsFunction = resolved != nullptr && resolved->kind == TypeKind::Function;
   requireUnify(callee, context_.functionType(std::move(parameters), result), expr->range,
-               "call target must be a function");
+               calleeIsFunction ? "call arguments do not match the parameter types"
+                                : "call target must be a function");
   return result;
 }
 
@@ -549,32 +700,33 @@ Annotations Checker::check(const reader::Program &program) {
   std::vector<FunctionEntry> functions;
   hoistFunctions(program, functions);
 
-  // Phase 1: Infer all top-level variable declarations first so they are in
-  // scope when function bodies are type-checked.
   for (const auto &statement : program.statements) {
     if (std::holds_alternative<reader::VariableDeclaration>(statement.node)) {
       inferStatement(statement);
     }
   }
 
-  // Phase 2: Infer function bodies (can now see top-level variables).
   for (const auto &entry : functions) {
+    pinnedTypes_.clear();
     inferFunctionBody(entry, &rootScope_);
     const TypePtr type = context_.functionType(entry.parameters, entry.result);
     rootScope_.bindings.erase(entry.declaration->name);
     Binding binding;
-    binding.scheme = generalize(type, environmentTypes(), context_);
+    std::vector<TypePtr> environment = environmentTypes();
+    for (const TypePtr &pinned : pinnedTypes_) environment.push_back(pinned);
+    binding.scheme = generalize(type, environment, context_);
     binding.isConst = true;
     rootScope_.bindings.insert_or_assign(entry.declaration->name, std::move(binding));
   }
 
-  // Phase 3: Infer remaining top-level statements.
   for (const auto &statement : program.statements) {
     if (std::holds_alternative<reader::VariableDeclaration>(statement.node) ||
         std::holds_alternative<reader::FunctionDeclaration>(statement.node))
       continue;
     inferStatement(statement);
   }
+
+  finalize();
   return std::move(annotations_);
 }
 

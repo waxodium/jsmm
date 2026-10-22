@@ -30,6 +30,12 @@ TypePtr inferCat(InferContext &context, const std::vector<types::TypePtr> &argum
     if (!formattable(context, argument))
       context.report(range,
                      "cat() cannot format a value of type `" + context.showType(argument) + "'");
+    context.requireConcreteType(argument, range);
+    context.deferCheck([&context, argument, range]() {
+      if (formattable(context, argument)) return;
+      context.report(range,
+                     "cat() cannot format a value of type `" + context.showType(argument) + "'");
+    });
   }
   return context.undefinedType();
 }

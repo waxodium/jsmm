@@ -150,6 +150,8 @@ rma_literal_neg_infinity:
 rma_literal_newline:
   .quad 1
   .ascii "\n"
+rma_literal_empty_string:
+  .quad 0
 )ASM";
 
 constexpr const char *literalWriterText = R"ASM(.section .text
