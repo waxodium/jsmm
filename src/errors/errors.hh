@@ -65,6 +65,7 @@ enum class ErrorCode : std::uint16_t {
   TYPE_CANNOT_UNIFY,
   TYPE_EXPECTED_KIND,
   TYPE_CANNOT_ASSIGN_TO_CONST,
+  TYPE_DUPLICATE_BINDING,
   TYPE_INVALID_ASSIGNMENT_TARGET,
   TYPE_ARRAY_ELEMENT_ACCESS_REQUIRES_COMPUTED_INDEX,
   TYPE_MEMBER_ACCESS_NOT_SUPPORTED,
@@ -205,6 +206,8 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "expected type";
     case ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST:
       return "cannot assign to constant binding";
+    case ErrorCode::TYPE_DUPLICATE_BINDING:
+      return "duplicate binding";
     case ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET:
       return "invalid assignment target";
     case ErrorCode::TYPE_ARRAY_ELEMENT_ACCESS_REQUIRES_COMPUTED_INDEX:

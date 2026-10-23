@@ -208,10 +208,14 @@ TypePtr Checker::resolveAnnotation(const reader::TypeExpr &annotation,
   for (const std::string &name : annotation.names) {
     TypePtr member;
     if (name == "number") member = context_.number();
-    else if (name == "string") member = context_.string();
-    else if (name == "boolean") member = context_.boolean();
-    else if (name == "null") member = context_.null();
-    else if (name == "undefined") member = context_.undefined();
+    else if (name == "string")
+      member = context_.string();
+    else if (name == "boolean")
+      member = context_.boolean();
+    else if (name == "null")
+      member = context_.null();
+    else if (name == "undefined")
+      member = context_.undefined();
     else
       fail(range, "unknown type name '" + name + "'", errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME);
     bool duplicate = false;
@@ -251,23 +255,80 @@ void Checker::hoistFunctions(const reader::Program &program,
   }
 }
 
+void Checker::hoistVarDeclarations(const reader::StatementList &statements, Scope *target) {
+  const auto hoistDeclaration = [&](const reader::VariableDeclaration &declaration) {
+    if (declaration.kind != "var") return;
+    for (const auto &declarator : declaration.declarations) {
+      if (target->bindings.contains(declarator.name)) continue;
+      TypePtr type = declarator.annotation != nullptr
+                         ? resolveAnnotation(*declarator.annotation, declarator.annotation->range)
+                         : context_.variable();
+      Binding binding;
+      binding.scheme = TypeScheme{{}, std::move(type)};
+      binding.isConst = false;
+      binding.hoistedVar = true;
+      target->bindings.emplace(declarator.name, std::move(binding));
+    }
+  };
+  for (const auto &statement : statements) {
+    if (const auto *declaration = std::get_if<reader::VariableDeclaration>(&statement.node)) {
+      hoistDeclaration(*declaration);
+    } else if (const auto *block = std::get_if<reader::BlockStatement>(&statement.node)) {
+      hoistVarDeclarations(block->statements, target);
+    } else if (const auto *ifStatement = std::get_if<reader::IfStatement>(&statement.node)) {
+      hoistVarDeclarations(ifStatement->consequent, target);
+      hoistVarDeclarations(ifStatement->alternate, target);
+    } else if (const auto *whileStatement = std::get_if<reader::WhileStatement>(&statement.node)) {
+      hoistVarDeclarations(whileStatement->body, target);
+    } else if (const auto *forStatement = std::get_if<reader::ForStatement>(&statement.node)) {
+      if (forStatement->init != nullptr) hoistDeclaration(*forStatement->init);
+      hoistVarDeclarations(forStatement->body, target);
+    }
+  }
+}
+
 void Checker::inferFunctionBody(const FunctionEntry &entry, Scope *parentScope) {
   Scope *funcScope = pushScope(parentScope);
   funcScope->isFunction = true;
   for (std::size_t i = 0; i < entry.declaration->parameters.size(); ++i) {
     Binding binding;
     binding.scheme = TypeScheme{{}, entry.parameters[i]};
-    binding.isConst = true;
+    binding.isConst = false;
     currentScope_->bindings.emplace(entry.declaration->parameters[i], std::move(binding));
   }
   inFunction_ = true;
+  functionReturnsValue_ = false;
   returnTargets_.push_back(entry.result);
+  hoistVarDeclarations(entry.declaration->body, funcScope);
   inferStatements(entry.declaration->body);
   returnTargets_.pop_back();
   inFunction_ = false;
-  if (!definitelyReturns(entry.declaration->body))
-    requireUnify(entry.result, context_.undefined(), entry.range,
-                 "function without a guaranteed return unifies its result with undefined");
+  if (!definitelyReturns(entry.declaration->body)) {
+    if (!functionReturnsValue_) {
+      requireUnify(entry.result, context_.undefined(), entry.range,
+                   "function without a guaranteed return unifies its result with undefined");
+    } else {
+      const TypePtr resolved = context_.resolve(entry.result);
+      bool hasUndefined = false;
+      if (resolved != nullptr && resolved->kind == TypeKind::Union) {
+        for (const TypePtr &member : resolved->members) {
+          const TypePtr current = context_.resolve(member);
+          if (current != nullptr && current->kind == TypeKind::Undefined) hasUndefined = true;
+        }
+      } else if (resolved != nullptr && resolved->kind == TypeKind::Undefined) {
+        hasUndefined = true;
+      }
+      if (resolved == nullptr || resolved.get() == entry.result.get()) {
+        requireUnify(entry.result, context_.undefined(), entry.range,
+                     "function without a guaranteed return unifies its result with undefined");
+      } else if (!hasUndefined) {
+        std::vector<TypePtr> members =
+            resolved->kind == TypeKind::Union ? resolved->members : std::vector<TypePtr>{resolved};
+        members.push_back(context_.undefined());
+        entry.result->link = context_.unionType(std::move(members));
+      }
+    }
+  }
   annotations_.functionResults.emplace(entry.declaration, context_.resolve(entry.result));
   popScope();
 }
@@ -279,26 +340,74 @@ void Checker::inferStatements(const reader::StatementList &statements) {
 void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
   for (const auto &declarator : declaration.declarations) {
     const bool initialized = declarator.initializer != nullptr;
+    const bool isVar = declaration.kind == "var";
+    Scope *target = isVar ? lookupVarScope() : currentScope_;
+    Binding *existing = nullptr;
+    if (isVar) {
+      const auto found = target->bindings.find(declarator.name);
+      if (found != target->bindings.end()) existing = &found->second;
+    } else if (target->bindings.contains(declarator.name)) {
+      const reader::SourceRange range =
+          declarator.initializer != nullptr
+              ? declarator.initializer->range
+              : (declarator.annotation != nullptr ? declarator.annotation->range
+                                                  : reader::SourceRange{});
+      fail(range, "cannot declare '" + declarator.name + "' twice in the same scope",
+           errors::ErrorCode::TYPE_DUPLICATE_BINDING);
+    }
+
     TypePtr type;
+    const bool replaceHoisted = existing != nullptr && existing->hoistedVar &&
+                                target != &rootScope_ &&
+                                (initialized || declarator.annotation != nullptr);
     if (declarator.annotation != nullptr) {
       type = resolveAnnotation(*declarator.annotation, declarator.annotation->range);
       annotations_.declaredTypes.emplace(&declarator, context_.resolve(type));
-      if (initialized) {
-        const TypePtr valueType = inferExpression(declarator.initializer);
+      if (existing != nullptr && !replaceHoisted)
+        requireUnify(type, existing->scheme.type, declarator.annotation->range, "declared type");
+    }
+
+    if (initialized) {
+      const TypePtr valueType = inferExpression(declarator.initializer);
+      if (declarator.annotation != nullptr) {
         requireAssignable(valueType, type, declarator.initializer->range,
                           "assigned value must unify with the declared type");
+      } else if (existing != nullptr && !replaceHoisted) {
+        requireAssignable(valueType, existing->scheme.type, declarator.initializer->range,
+                          "assigned value must unify with the declared type");
+      } else {
+        type = valueType;
       }
-    } else {
-      type = initialized ? inferExpression(declarator.initializer) : context_.variable();
+    } else if (declarator.annotation == nullptr) {
+      type = existing != nullptr ? existing->scheme.type : context_.variable();
     }
-    Binding binding;
-    binding.scheme =
-        initialized ? generalize(type, environmentTypes(), context_) : TypeScheme{{}, type};
-    binding.isConst = declaration.kind == "const";
-    Scope *target = (declaration.kind == "var") ? lookupVarScope() : currentScope_;
-    target->bindings.insert_or_assign(declarator.name, std::move(binding));
-    if (!initialized && declarator.annotation == nullptr)
-      declarationTypeVars_.emplace(&declarator, type);
+
+    if (replaceHoisted) {
+      Binding binding;
+      binding.scheme =
+          initialized ? generalize(type, environmentTypes(), context_) : TypeScheme{{}, type};
+      binding.isConst = false;
+      target->bindings.insert_or_assign(declarator.name, std::move(binding));
+    } else if (existing != nullptr) {
+      existing->isConst = false;
+    } else {
+      Binding binding;
+      binding.scheme =
+          initialized ? generalize(type, environmentTypes(), context_) : TypeScheme{{}, type};
+      binding.isConst = declaration.kind == "const";
+      target->bindings.insert_or_assign(declarator.name, std::move(binding));
+    }
+
+    if (!initialized && declarator.annotation == nullptr) {
+      const TypePtr resolved =
+          existing != nullptr ? context_.resolve(existing->scheme.type) : nullptr;
+      if (!replaceHoisted &&
+          (existing == nullptr || (resolved != nullptr && resolved->kind == TypeKind::Variable)))
+        declarationTypeVars_.emplace(&declarator, type);
+    }
+
+    if (topLevelSequential_ && declaration.kind == "var")
+      activeTopLevelVars_.insert(declarator.name);
   }
 }
 
@@ -318,6 +427,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
           if (returnTargets_.empty())
             fail(statement.range, "'return' outside of a function body",
                  errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION);
+          if (node.argument != nullptr) functionReturnsValue_ = true;
           const TypePtr type =
               node.argument != nullptr ? inferExpression(node.argument) : context_.undefined();
           requireAssignable(type, returnTargets_.back(), statement.range, "return value");
@@ -347,12 +457,15 @@ void Checker::inferStatement(const reader::Statement &statement) {
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
           pushScope(currentScope_);
           if (node.init != nullptr) inferDeclaration(*node.init);
+          if (node.initExpression != nullptr) (void)inferExpression(node.initExpression);
           if (node.condition != nullptr)
             requireKind(inferExpression(node.condition), TypeKind::Boolean, node.condition->range,
                         "for condition must be boolean");
           if (node.update != nullptr) (void)inferExpression(node.update);
           ++loopDepth_;
+          pushScope(currentScope_);
           inferStatements(node.body);
+          popScope();
           --loopDepth_;
           popScope();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
@@ -409,8 +522,12 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
 
 TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
                                  const reader::IdentifierExpr &identifier) {
-  if (const Binding *binding = lookupBinding(identifier.name))
+  if (const Binding *binding = lookupBinding(identifier.name)) {
+    if (topLevelSequential_ && binding->hoistedVar &&
+        !activeTopLevelVars_.contains(identifier.name))
+      return context_.undefined();
     return instantiate(binding->scheme, context_);
+  }
   if (builtins::BuiltinRegistry::instance().find(identifier.name) != nullptr)
     fail(expr->range, "builtin '" + identifier.name + "' cannot be used as a value",
          errors::ErrorCode::TYPE_BUILTIN_CANNOT_BE_USED_AS_VALUE);
@@ -476,10 +593,8 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     if (binary.op == op) {
       const TypePtr leftResolved = context_.resolve(left);
       const TypePtr rightResolved = context_.resolve(right);
-      const bool leftUnion =
-          leftResolved != nullptr && leftResolved->kind == TypeKind::Union;
-      const bool rightUnion =
-          rightResolved != nullptr && rightResolved->kind == TypeKind::Union;
+      const bool leftUnion = leftResolved != nullptr && leftResolved->kind == TypeKind::Union;
+      const bool rightUnion = rightResolved != nullptr && rightResolved->kind == TypeKind::Union;
       if (leftUnion || rightUnion) {
         if (leftUnion && rightUnion) {
           requireUnify(left, right, expr->range, "equality operands must have the same type");
@@ -487,8 +602,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
         }
         const TypePtr other = leftUnion ? rightResolved : leftResolved;
         if (!isNullish(other))
-          fail(expr->range,
-               "a nullable value may only be compared with null or undefined",
+          fail(expr->range, "a nullable value may only be compared with null or undefined",
                errors::ErrorCode::TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH);
         return context_.boolean();
       }
@@ -510,7 +624,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
       const TypePtr payload = unionPayload(leftResolved);
       if (payload == nullptr) return right;
       requireAssignable(right, payload, expr->range,
-                       "nullish coalescing right operand must unify with the payload type");
+                        "nullish coalescing right operand must unify with the payload type");
       return payload;
     }
     if (leftResolved != nullptr && leftResolved->kind == TypeKind::Variable &&
@@ -543,8 +657,7 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
   annotations_.expressionTypes.insert_or_assign(assignment.target.get(), target);
   const TypePtr value = inferExpression(assignment.value);
   if (assignment.op == "=") {
-    requireAssignable(value, target, expr->range,
-                       "assigned value must unify with the target type");
+    requireAssignable(value, target, expr->range, "assigned value must unify with the target type");
     return target;
   }
   requireKind(target, TypeKind::Number, expr->range,
@@ -633,7 +746,7 @@ void Checker::resolvePendingMembers() {
            errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED);
     }
     requireAssignable(resolution.elementType, pending.resultType, pending.range,
-                       "member access type");
+                      "member access type");
     if (resolution.isStruct)
       annotations_.structFieldIndices.emplace(pending.member, resolution.fieldIndex);
     annotations_.expressionTypes.insert_or_assign(pending.expression,
@@ -659,7 +772,7 @@ void Checker::bindUnresolvedTypes(bool excludeMemberResults) {
       if (quantified.contains(variable->id)) continue;
       if (excluded.contains(variable->id)) continue;
       requireAssignable(context_.undefined(), variable, reader::SourceRange{},
-                         "unresolved type defaults to undefined");
+                        "unresolved type defaults to undefined");
     }
   }
 }
@@ -794,7 +907,8 @@ TypePtr Checker::inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr
     const TypePtr currentResolved = context_.resolve(current);
     const bool elementUnion =
         elementResolved != nullptr && elementResolved->kind == TypeKind::Union;
-    const bool currentUnion = currentResolved != nullptr && currentResolved->kind == TypeKind::Union;
+    const bool currentUnion =
+        currentResolved != nullptr && currentResolved->kind == TypeKind::Union;
     if (elementUnion && !currentUnion) {
       requireAssignable(current, element, expr->range,
                         "array elements must unify to a single type");
@@ -826,6 +940,7 @@ Annotations Checker::check(const reader::Program &program) {
   annotations_ = Annotations{};
   std::vector<FunctionEntry> functions;
   hoistFunctions(program, functions);
+  hoistVarDeclarations(program.statements, &rootScope_);
 
   for (const auto &statement : program.statements) {
     if (std::holds_alternative<reader::VariableDeclaration>(statement.node)) {
@@ -846,12 +961,19 @@ Annotations Checker::check(const reader::Program &program) {
     rootScope_.bindings.insert_or_assign(entry.declaration->name, std::move(binding));
   }
 
+  topLevelSequential_ = true;
+  activeTopLevelVars_.clear();
   for (const auto &statement : program.statements) {
-    if (std::holds_alternative<reader::VariableDeclaration>(statement.node) ||
-        std::holds_alternative<reader::FunctionDeclaration>(statement.node))
+    if (const auto *declaration = std::get_if<reader::VariableDeclaration>(&statement.node)) {
+      if (declaration->kind == "var")
+        for (const auto &declarator : declaration->declarations)
+          activeTopLevelVars_.insert(declarator.name);
       continue;
+    }
+    if (std::holds_alternative<reader::FunctionDeclaration>(statement.node)) continue;
     inferStatement(statement);
   }
+  topLevelSequential_ = false;
 
   finalize();
   return std::move(annotations_);

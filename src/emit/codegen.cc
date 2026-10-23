@@ -23,6 +23,28 @@ constexpr long long unionCellSize = 16;
 
 long long alignFrame(long long bytes) { return (bytes + 15) / 16 * 16; }
 
+void collectVarDeclarations(const reader::StatementList &statements,
+                            std::vector<const reader::VariableDeclarator *> &declarators) {
+  for (const auto &statement : statements) {
+    if (const auto *declaration = std::get_if<reader::VariableDeclaration>(&statement.node)) {
+      if (declaration->kind != "var") continue;
+      for (const auto &declarator : declaration->declarations) declarators.push_back(&declarator);
+    } else if (const auto *block = std::get_if<reader::BlockStatement>(&statement.node)) {
+      collectVarDeclarations(block->statements, declarators);
+    } else if (const auto *ifStatement = std::get_if<reader::IfStatement>(&statement.node)) {
+      collectVarDeclarations(ifStatement->consequent, declarators);
+      collectVarDeclarations(ifStatement->alternate, declarators);
+    } else if (const auto *whileStatement = std::get_if<reader::WhileStatement>(&statement.node)) {
+      collectVarDeclarations(whileStatement->body, declarators);
+    } else if (const auto *forStatement = std::get_if<reader::ForStatement>(&statement.node)) {
+      if (forStatement->init != nullptr && forStatement->init->kind == "var")
+        for (const auto &declarator : forStatement->init->declarations)
+          declarators.push_back(&declarator);
+      collectVarDeclarations(forStatement->body, declarators);
+    }
+  }
+}
+
 std::string typeofName(TypePtr type) {
   switch (type->kind) {
   case TypeKind::Number: return "number";
@@ -311,11 +333,17 @@ void CodeGenerator::generateDeclaration(const reader::VariableDeclaration &decla
         topLevelOffsets_.emplace(declarator.name, offset);
         topLevelIsNumber_.emplace(declarator.name, isNumber(storedType));
       }
+    } else if (declaration.kind == "var" && reuseExisting) {
     } else {
       target.slots.insert_or_assign(declarator.name, Slot{offset, false});
       TypePtr declaredType;
-      const auto found = annotations_->declarationTypes.find(&declarator);
-      if (found != annotations_->declarationTypes.end()) declaredType = found->second;
+      const auto declared = annotations_->declaredTypes.find(&declarator);
+      if (declared != annotations_->declaredTypes.end()) {
+        declaredType = declared->second;
+      } else {
+        const auto found = annotations_->declarationTypes.find(&declarator);
+        if (found != annotations_->declarationTypes.end()) declaredType = found->second;
+      }
       if (declaredType != nullptr) emitZeroValue(declaredType);
       else
         out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
@@ -392,6 +420,7 @@ void CodeGenerator::generateStatement(const reader::Statement &statement) {
           const std::string endLabel = newLabel(".Lforend");
           beginScope();
           if (node.init != nullptr) generateDeclaration(*node.init);
+          if (node.initExpression != nullptr) generateExpression(node.initExpression);
           out().label(conditionLabel);
           if (node.condition != nullptr) {
             generateExpression(node.condition);
@@ -402,7 +431,9 @@ void CodeGenerator::generateStatement(const reader::Statement &statement) {
           }
           out().label(bodyLabel);
           state_.loops.push_back({endLabel, updateLabel});
+          beginScope();
           generateStatements(node.body);
+          endScope();
           state_.loops.pop_back();
           out().label(updateLabel);
           if (node.update != nullptr) generateExpression(node.update);
@@ -474,15 +505,24 @@ void CodeGenerator::generateExpression(const reader::ExprPtr &expr) {
           out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
           const TypePtr structType = context_->resolve(typeOf(expr));
           for (std::size_t i = 0; i < node.properties.size(); ++i) {
+            std::size_t fieldIndex = i;
+            TypePtr declaredFieldType;
+            if (structType != nullptr && structType->kind == TypeKind::Struct) {
+              for (std::size_t field = 0; field < structType->fields.size(); ++field)
+                if (structType->fields[field].first == node.properties[i].key) {
+                  fieldIndex = field;
+                  declaredFieldType = structType->fields[field].second;
+                  break;
+                }
+            }
             generateExpression(node.properties[i].value);
             TypePtr fieldType = typeOf(node.properties[i].value);
-            if (structType != nullptr && structType->kind == TypeKind::Struct &&
-                i < structType->fields.size()) {
-              emitCoerce(structType->fields[i].second, fieldType);
-              fieldType = structType->fields[i].second;
+            if (declaredFieldType != nullptr) {
+              emitCoerce(declaredFieldType, fieldType);
+              fieldType = declaredFieldType;
             }
             loadGp(temp, x64::Reg::R11);
-            const long long displacement = static_cast<long long>(8 * i);
+            const long long displacement = static_cast<long long>(8 * fieldIndex);
             if (isNumber(fieldType))
               out().movsdOffsetXmm(x64::Reg::R11, displacement, x64::Xmm::X0);
             else
@@ -639,21 +679,37 @@ void CodeGenerator::generateRelational(const reader::BinaryExpr &binary) {
 }
 
 void CodeGenerator::generateBitwise(const reader::BinaryExpr &binary) {
+  helpers_.use("int32");
   generateExpression(binary.left);
+  out().call("jsmm_to_i32");
   const long long temp = pushTemp();
-  storeValue(temp, typeOf(binary.left));
+  out().movOffsetReg(x64::Reg::Rbp, temp, x64::Reg::Rax);
   generateExpression(binary.right);
-  out().cvttsd2si(x64::Reg::Rcx, x64::Xmm::X0);
-  loadXmm(temp, x64::Xmm::X0);
-  out().cvttsd2si(x64::Reg::R10, x64::Xmm::X0);
+  out().call("jsmm_to_i32");
+  out().movRegReg(x64::Reg::Rcx, x64::Reg::Rax);
+  loadGp(temp, x64::Reg::R10);
   popTemp();
+  const bool shift = binary.op == "<<" || binary.op == ">>" || binary.op == ">>>";
+  if (shift) {
+    out().movRegImm(x64::Reg::R11, 31);
+    out().andRegReg(x64::Reg::Rcx, x64::Reg::R11);
+  }
+  if (binary.op == ">>>") {
+    out().movRegReg(x64::Reg::Rax, x64::Reg::R10);
+    out().call("jsmm_u32_done");
+    out().movRegReg(x64::Reg::R10, x64::Reg::Rax);
+    out().shrCl(x64::Reg::R10);
+    out().cvtsi2sd(x64::Xmm::X0, x64::Reg::R10);
+    return;
+  }
   if (binary.op == "&") out().andRegReg(x64::Reg::R10, x64::Reg::Rcx);
   if (binary.op == "|") out().orRegReg(x64::Reg::R10, x64::Reg::Rcx);
   if (binary.op == "^") out().xorRegReg(x64::Reg::R10, x64::Reg::Rcx);
   if (binary.op == "<<") out().shlCl(x64::Reg::R10);
   if (binary.op == ">>") out().sarCl(x64::Reg::R10);
-  if (binary.op == ">>>") out().shrCl(x64::Reg::R10);
-  out().cvtsi2sd(x64::Xmm::X0, x64::Reg::R10);
+  out().movRegReg(x64::Reg::Rax, x64::Reg::R10);
+  out().call("jsmm_i32_done");
+  out().cvtsi2sd(x64::Xmm::X0, x64::Reg::Rax);
 }
 
 void CodeGenerator::generateEquality(const reader::BinaryExpr &binary) {
@@ -858,6 +914,29 @@ void CodeGenerator::generateUpdate(const reader::UpdateExpr &update) {
 void CodeGenerator::loadEntryFrame(x64::Reg reg) {
   out().leaLabel(reg, entryFrameSymbol);
   out().movRegOffset(reg, reg, 0);
+}
+
+void CodeGenerator::hoistVarSlots(const reader::StatementList &statements) {
+  std::vector<const reader::VariableDeclarator *> declarators;
+  collectVarDeclarations(statements, declarators);
+  for (const auto *declarator : declarators) {
+    if (scopes_.back().slots.contains(declarator->name)) continue;
+    if (generatingEntry_) {
+      const auto reserved = entrySlots_.find(declarator->name);
+      if (reserved != entrySlots_.end()) {
+        scopes_.back().slots.insert_or_assign(declarator->name, Slot{reserved->second, false});
+        continue;
+      }
+    }
+    const long long offset = allocateSlot();
+    scopes_.back().slots.insert_or_assign(declarator->name, Slot{offset, false});
+    if (generatingEntry_) entrySlots_.emplace(declarator->name, offset);
+    TypePtr type;
+    const auto declared = annotations_->declaredTypes.find(declarator);
+    if (declared != annotations_->declaredTypes.end()) type = declared->second;
+    emitZeroValue(type);
+    storeValue(offset, type != nullptr ? type : context_->undefined());
+  }
 }
 
 void CodeGenerator::generateAssignment(const reader::AssignmentExpr &assignment) {
@@ -1218,8 +1297,12 @@ std::string CodeGenerator::generateFunction(const reader::FunctionDeclaration &d
   }
 
   out_ = &body;
+  hoistVarSlots(declaration.body);
   generateStatements(declaration.body);
-  out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
+  if (state_.resultType != nullptr && state_.resultType->kind == TypeKind::Union)
+    emitZeroValue(state_.resultType);
+  else
+    out().xorRegReg(x64::Reg::Rax, x64::Reg::Rax);
   out().label(state_.returnLabel);
   out().movRegReg(x64::Reg::Rsp, x64::Reg::Rbp);
   out().pop(x64::Reg::Rbp);
@@ -1277,6 +1360,8 @@ std::string CodeGenerator::generateEntry(const reader::Program &program) {
     }
   }
 
+  hoistVarSlots(program.statements);
+
   for (const auto &[name, offset] : reserved) {
     TypePtr type = nullptr;
     const auto found = annotations_->topLevelTypes.find(name);
@@ -1331,6 +1416,18 @@ std::string CodeGenerator::generate(const reader::Program &program,
         if (it != annotations_->topLevelTypes.end()) { isNum = isNumber(it->second); }
         topLevelIsNumber_.emplace(d.name, isNum);
       }
+    }
+    std::vector<const reader::VariableDeclarator *> hoisted;
+    collectVarDeclarations(program.statements, hoisted);
+    for (const auto *declarator : hoisted) {
+      if (topLevelOffsets_.contains(declarator->name)) continue;
+      ++topLevelSlotCount;
+      const long long offset = -8 * topLevelSlotCount;
+      topLevelOffsets_.emplace(declarator->name, offset);
+      bool isNum = false;
+      const auto it = annotations_->topLevelTypes.find(declarator->name);
+      if (it != annotations_->topLevelTypes.end()) isNum = isNumber(it->second);
+      topLevelIsNumber_.emplace(declarator->name, isNum);
     }
   }
 

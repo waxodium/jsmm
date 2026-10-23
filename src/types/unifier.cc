@@ -154,8 +154,7 @@ bool Unifier::unifyUnion(TypePtr left, TypePtr right) {
   const auto links = snapshot(left, right);
   bool ok = true;
   if (left->kind == TypeKind::Union && right->kind == TypeKind::Union) {
-    ok = membersMatch(left->members, right->members) &&
-         membersMatch(right->members, left->members);
+    ok = membersMatch(left->members, right->members) && membersMatch(right->members, left->members);
   } else {
     const TypePtr other = left->kind == TypeKind::Union ? right : left;
     const TypePtr unionType = left->kind == TypeKind::Union ? left : right;

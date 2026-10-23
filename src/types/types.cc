@@ -2,6 +2,7 @@
 
 #include "errors/errors.hh"
 
+#include <algorithm>
 #include <set>
 #include <stdexcept>
 
@@ -52,6 +53,8 @@ TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr resul
 }
 
 TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
+  std::sort(fields.begin(), fields.end(),
+            [](const auto &left, const auto &right) { return left.first < right.first; });
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Struct;
   type->id = nextId_++;

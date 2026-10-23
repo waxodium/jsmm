@@ -149,6 +149,7 @@ struct WhileStatement {
 
 struct ForStatement {
   std::unique_ptr<VariableDeclaration> init;
+  ExprPtr initExpression;
   ExprPtr condition;
   ExprPtr update;
   StatementList body;

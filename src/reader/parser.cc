@@ -196,9 +196,10 @@ Statement Parser::parseFunctionDeclaration() {
 }
 
 Statement Parser::parseReturnStatement() {
-  consume();
+  const Token &keyword = consume();
   ExprPtr argument;
-  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End)
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End &&
+      current().start.line == keyword.start.line)
     argument = parseExpression();
   optionalSemicolon();
   return Statement(ReturnStatement{std::move(argument)});
@@ -245,6 +246,7 @@ Statement Parser::parseForStatement() {
   if (!eat("("))
     fail("expected '(' after 'for'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FOR);
   std::unique_ptr<VariableDeclaration> init;
+  ExprPtr initExpression;
   if (current().lexeme == "let" || current().lexeme == "const" || current().lexeme == "var") {
     const std::string kind = consume().lexeme;
     VariableDeclaration declaration{kind, {}};
@@ -266,7 +268,7 @@ Statement Parser::parseForStatement() {
     } while (eat(","));
     init = std::make_unique<VariableDeclaration>(std::move(declaration));
   } else if (current().lexeme != ";") {
-    (void)parseExpression();
+    initExpression = parseExpression();
   }
   if (!eat(";"))
     fail("expected ';' after for-init", errors::ErrorCode::PARSE_EXPECTED_SEMICOLON_AFTER_FOR_INIT);
@@ -283,8 +285,8 @@ Statement Parser::parseForStatement() {
   if (!eat("{"))
     fail("expected '{' for for body", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_FOR_BODY);
   StatementList body = parseBlockBody();
-  return Statement(
-      ForStatement{std::move(init), std::move(condition), std::move(update), std::move(body)});
+  return Statement(ForStatement{std::move(init), std::move(initExpression), std::move(condition),
+                                std::move(update), std::move(body)});
 }
 
 Statement Parser::parseBreakStatement() {

@@ -72,6 +72,7 @@ private:
   void loadGp(long long offset, x64::Reg reg);
   void loadXmm(long long offset, x64::Xmm reg);
   void loadEntryFrame(x64::Reg reg);
+  void hoistVarSlots(const reader::StatementList &statements);
   void emitZeroValue(types::TypePtr type);
   void emitBox(types::TypePtr payloadType);
   void emitNullishCell(long long tag);

@@ -52,6 +52,7 @@ private:
   struct Binding {
     TypeScheme scheme;
     bool isConst = false;
+    bool hoistedVar = false;
   };
 
   struct Scope {
@@ -99,6 +100,7 @@ private:
   static TypePtr unionPayload(TypePtr type);
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
+  void hoistVarDeclarations(const reader::StatementList &statements, Scope *target);
   void inferFunctionBody(const FunctionEntry &entry, Scope *parentScope);
   void inferStatements(const reader::StatementList &statements);
   void inferStatement(const reader::Statement &statement);
@@ -141,6 +143,9 @@ private:
   std::vector<std::function<void()>> deferredChecks_;
   std::vector<TypePtr> concreteTypes_;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypeVars_;
+  std::unordered_set<std::string> activeTopLevelVars_;
+  bool topLevelSequential_ = false;
+  bool functionReturnsValue_ = false;
   bool inFunction_ = false;
   int loopDepth_ = 0;
 };

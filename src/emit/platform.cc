@@ -21,12 +21,54 @@ jsmm_alloc:
   mov rax, QWORD PTR [rip + jsmm_arena_pointer]
   lea rcx, [rax + rdi + 15]
   and rcx, -16
+  lea rdx, [rip + jsmm_arena_end]
+  cmp rcx, QWORD PTR [rdx]
+  jbe jsmm_alloc_commit
+  mov rsi, 67108864
+  cmp rdi, rsi
+  jbe jsmm_alloc_size
+  lea rsi, [rdi + 32]
+jsmm_alloc_size:
+  push rdi
+  xor edi, edi
+  mov edx, 3
+  mov r10d, 34
+  mov r8, -1
+  xor r9d, r9d
+  mov eax, 9
+  syscall
+  pop rdi
+  cmp rax, -4095
+  jae jsmm_alloc_oom
+  mov rdx, rax
+  lea rcx, [rax + rdi + 15]
+  and rcx, -16
+  add rdx, rsi
+  mov QWORD PTR [rip + jsmm_arena_pointer], rcx
+  mov QWORD PTR [rip + jsmm_arena_end], rdx
+  ret
+jsmm_alloc_commit:
   mov QWORD PTR [rip + jsmm_arena_pointer], rcx
   ret
+jsmm_alloc_oom:
+  mov eax, 1
+  mov edi, 2
+  lea rsi, [rip + jsmm_message_oom]
+  mov edx, jsmm_message_oom_end - jsmm_message_oom
+  syscall
+  mov edi, 1
+  mov eax, 60
+  syscall
 .section .data
 .align 8
 jsmm_arena_pointer:
   .quad jsmm_arena
+jsmm_arena_end:
+  .quad jsmm_arena + 67108864
+.section .rodata
+jsmm_message_oom:
+  .ascii "jsmm: out of memory\n"
+jsmm_message_oom_end:
 .section .bss
 .align 16
 jsmm_arena:
@@ -36,12 +78,35 @@ jsmm_arena:
 constexpr const char *moduloText = R"ASM(.section .text
 .globl jsmm_mod
 jsmm_mod:
+  pxor xmm2, xmm2
+  ucomisd xmm1, xmm2
+  jp jsmm_mod_nan
+  je jsmm_mod_nan
+  movq rax, xmm0
+  movabs rcx, 0x7FFFFFFFFFFFFFFF
+  and rax, rcx
+  movabs rcx, 0x7FF0000000000000
+  cmp rax, rcx
+  jae jsmm_mod_nan
+  movq rax, xmm1
+  movabs rcx, 0x7FFFFFFFFFFFFFFF
+  and rax, rcx
+  movabs rcx, 0x7FF0000000000000
+  cmp rax, rcx
+  je jsmm_mod_return
   movsd xmm2, xmm0
   divsd xmm0, xmm1
   cvttsd2si rax, xmm0
   cvtsi2sd xmm0, rax
   mulsd xmm0, xmm1
   subsd xmm2, xmm0
+  movsd xmm0, xmm2
+  ret
+jsmm_mod_return:
+  ret
+jsmm_mod_nan:
+  pxor xmm2, xmm2
+  divsd xmm2, xmm2
   movsd xmm0, xmm2
   ret
 )ASM";
@@ -80,6 +145,22 @@ jsmm_pow_unsupported:
 jsmm_message_pow:
   .ascii "jsmm: ** requires a non-negative integer exponent\n"
 jsmm_message_pow_end:
+)ASM";
+
+constexpr const char *int32Text = R"ASM(.section .text
+.globl jsmm_to_i32
+jsmm_to_i32:
+  cvttsd2si rax, xmm0
+  movsxd rax, eax
+  ret
+.globl jsmm_i32_done
+jsmm_i32_done:
+  movsxd rax, eax
+  ret
+.globl jsmm_u32_done
+jsmm_u32_done:
+  mov eax, eax
+  ret
 )ASM";
 
 constexpr const char *boundsText = R"ASM(.section .text
@@ -188,6 +269,11 @@ jsmm_write_rbracket:
 constexpr const char *numberWriterText = R"ASM(.section .text
 .globl jsmm_write_number
 jsmm_write_number:
+  push rbx
+  push r12
+  push r13
+  sub rsp, 128
+  mov rbx, rsp
   movq rax, xmm0
   mov r8, rax
   shr r8, 63
@@ -195,113 +281,251 @@ jsmm_write_number:
   and rax, rcx
   movabs rcx, 0x7FF0000000000000
   cmp rax, rcx
-  jne jsmm_number_finite
-  test r8, r8
-  lea rdi, [rip + jsmm_literal_infinity]
-  jz jsmm_number_special
-  lea rdi, [rip + jsmm_literal_neg_infinity]
-  jmp jsmm_number_special
-jsmm_number_finite:
+  je jsmm_number_inf
   ucomisd xmm0, xmm0
-  jnp jsmm_number_convert
-  lea rdi, [rip + jsmm_literal_nan]
-jsmm_number_special:
-  mov rdx, QWORD PTR [rdi]
-  lea rsi, [rdi + 8]
-  mov rax, 1
-  mov edi, 1
-  syscall
-  ret
-jsmm_number_convert:
-  push rbx
-  sub rsp, 64
-  mov rbx, rsp
-  xor r9, r9
-  pxor xmm1, xmm1
-  ucomisd xmm0, xmm1
-  jae jsmm_number_positive
+  jp jsmm_number_nan
+  test rax, rax
+  jz jsmm_number_zero
+  xor r9d, r9d
+  test r8, r8
+  jz jsmm_number_positive
   mov byte ptr [rbx], 45
-  mov r9, 1
+  inc r9
   movabs rax, 0x8000000000000000
   movq xmm1, rax
   xorpd xmm0, xmm1
 jsmm_number_positive:
-  mov rcx, 1000000
-  cvtsi2sd xmm2, rcx
-  mulsd xmm0, xmm2
-  cvttsd2si rax, xmm0
-  xor rdx, rdx
-  mov rcx, 1000000
-  div rcx
-  mov r10, rax
-  mov r11, rdx
+  movsd xmm1, QWORD PTR [rip + jsmm_number_epsilon]
+  ucomisd xmm0, xmm1
+  jb jsmm_number_scientific
+  movsd xmm1, QWORD PTR [rip + jsmm_number_large_limit]
+  ucomisd xmm0, xmm1
+  jae jsmm_number_scientific
+  movsd xmm1, QWORD PTR [rip + jsmm_number_plain_limit]
+  ucomisd xmm0, xmm1
+  jae jsmm_number_large
+  cvttsd2si r12, xmm0
+  cvtsi2sd xmm1, r12
+  movsd xmm2, xmm0
+  subsd xmm2, xmm1
+  mulsd xmm2, QWORD PTR [rip + jsmm_number_million]
+  addsd xmm2, QWORD PTR [rip + jsmm_number_half]
+  cvttsd2si r13, xmm2
+  cmp r13, 1000000
+  jb jsmm_number_normal_ready
+  inc r12
+  xor r13d, r13d
+jsmm_number_normal_ready:
+  mov rax, r12
+  call jsmm_number_int
+  mov rdx, r13
+  mov ecx, 6
+  call jsmm_number_frac
   test r10, r10
-  jnz jsmm_number_integer
-  mov byte ptr [rbx + r9], 48
-  inc r9
-  jmp jsmm_number_fraction
-jsmm_number_integer:
-  mov r8, 32
-jsmm_number_integer_loop:
-  xor rdx, rdx
-  mov rcx, 10
-  div rcx
-  add rdx, 48
-  mov byte ptr [rbx + r8], dl
-  dec r8
-  test rax, rax
-  jnz jsmm_number_integer_loop
-  inc r8
-jsmm_number_integer_copy:
-  mov al, byte ptr [rbx + r8]
-  mov byte ptr [rbx + r9], al
-  inc r9
-  inc r8
-  cmp r8, 32
-  jbe jsmm_number_integer_copy
-jsmm_number_fraction:
-  test r11, r11
   jz jsmm_number_emit
   mov byte ptr [rbx + r9], 46
   inc r9
-  mov r8, 5
-jsmm_number_fraction_digit:
-  mov rax, r11
-  xor rdx, rdx
-  mov rcx, 10
-  div rcx
-  mov r11, rax
-  add rdx, 48
-  mov byte ptr [rbx + r8 + 36], dl
-  dec r8
-  jns jsmm_number_fraction_digit
-  mov r8, 36
-  mov rcx, 42
-jsmm_number_fraction_copy:
-  mov al, byte ptr [rbx + r8]
+  xor ecx, ecx
+jsmm_number_normal_copy:
+  mov al, byte ptr [rbx + rcx + 48]
   mov byte ptr [rbx + r9], al
   inc r9
+  inc rcx
+  cmp rcx, r10
+  jb jsmm_number_normal_copy
+  jmp jsmm_number_emit
+jsmm_number_large:
+  xor ecx, ecx
+  movsd xmm1, QWORD PTR [rip + jsmm_number_plain_limit]
+jsmm_number_large_loop:
+  ucomisd xmm0, xmm1
+  jb jsmm_number_large_ready
+  divsd xmm0, QWORD PTR [rip + jsmm_number_ten]
+  inc ecx
+  jmp jsmm_number_large_loop
+jsmm_number_large_ready:
+  cvttsd2si r12, xmm0
+  mov r13, rcx
+  mov rax, r12
+  call jsmm_number_int
+  mov rcx, r13
+  test rcx, rcx
+  jz jsmm_number_emit
+jsmm_number_large_zero:
+  mov byte ptr [rbx + r9], 48
+  inc r9
+  dec rcx
+  jnz jsmm_number_large_zero
+  jmp jsmm_number_emit
+jsmm_number_scientific:
+  xor r12d, r12d
+  movsd xmm1, QWORD PTR [rip + jsmm_number_ten]
+jsmm_number_scientific_big:
+  ucomisd xmm0, xmm1
+  jb jsmm_number_scientific_small_start
+  divsd xmm0, QWORD PTR [rip + jsmm_number_ten]
+  inc r12
+  jmp jsmm_number_scientific_big
+jsmm_number_scientific_small_start:
+  movsd xmm1, QWORD PTR [rip + jsmm_number_one]
+jsmm_number_scientific_small:
+  ucomisd xmm0, xmm1
+  jae jsmm_number_scientific_ready
+  mulsd xmm0, QWORD PTR [rip + jsmm_number_ten]
+  dec r12
+  jmp jsmm_number_scientific_small
+jsmm_number_scientific_ready:
+  cvttsd2si r8, xmm0
+  cvtsi2sd xmm1, r8
+  movsd xmm2, xmm0
+  subsd xmm2, xmm1
+  mulsd xmm2, QWORD PTR [rip + jsmm_number_billion]
+  addsd xmm2, QWORD PTR [rip + jsmm_number_half]
+  cvttsd2si r13, xmm2
+  cmp r13, 1000000000
+  jb jsmm_number_scientific_ready2
   inc r8
-  cmp r8, rcx
-  jb jsmm_number_fraction_copy
-jsmm_number_trim:
-  cmp r9, 2
-  jbe jsmm_number_emit
-  cmp byte ptr [rbx + r9 - 1], 48
-  jne jsmm_number_emit
-  cmp byte ptr [rbx + r9 - 2], 46
-  je jsmm_number_emit
-  dec r9
-  jmp jsmm_number_trim
+  xor r13d, r13d
+  cmp r8, 10
+  jb jsmm_number_scientific_ready2
+  mov r8d, 1
+  inc r12
+jsmm_number_scientific_ready2:
+  mov rax, r8
+  add rax, 48
+  mov byte ptr [rbx + r9], al
+  inc r9
+  mov rdx, r13
+  mov ecx, 9
+  call jsmm_number_frac
+  test r10, r10
+  jz jsmm_number_scientific_exp
+  mov byte ptr [rbx + r9], 46
+  inc r9
+  xor ecx, ecx
+jsmm_number_scientific_copy:
+  mov al, byte ptr [rbx + rcx + 48]
+  mov byte ptr [rbx + r9], al
+  inc r9
+  inc rcx
+  cmp rcx, r10
+  jb jsmm_number_scientific_copy
+jsmm_number_scientific_exp:
+  mov byte ptr [rbx + r9], 101
+  inc r9
+  test r12, r12
+  jns jsmm_number_scientific_plus
+  mov byte ptr [rbx + r9], 45
+  inc r9
+  neg r12
+  jmp jsmm_number_scientific_digits
+jsmm_number_scientific_plus:
+  mov byte ptr [rbx + r9], 43
+  inc r9
+jsmm_number_scientific_digits:
+  mov rax, r12
+  call jsmm_number_int
+  jmp jsmm_number_emit
+jsmm_number_zero:
+  mov byte ptr [rbx], 48
+  mov r9, 1
+  jmp jsmm_number_emit
+jsmm_number_nan:
+  lea rdi, [rip + jsmm_literal_nan]
+  jmp jsmm_number_special
+jsmm_number_inf:
+  test r8, r8
+  lea rdi, [rip + jsmm_literal_infinity]
+  jz jsmm_number_special
+  lea rdi, [rip + jsmm_literal_neg_infinity]
+jsmm_number_special:
+  mov rdx, QWORD PTR [rdi]
+  lea rsi, [rdi + 8]
+  mov eax, 1
+  mov edi, 1
+  syscall
+  jmp jsmm_number_done
 jsmm_number_emit:
   mov rsi, rbx
   mov rdx, r9
-  mov rax, 1
+  mov eax, 1
   mov edi, 1
   syscall
-  add rsp, 64
+jsmm_number_done:
+  add rsp, 128
+  pop r13
+  pop r12
   pop rbx
   ret
+jsmm_number_int:
+  lea rdi, [rbx + 80]
+  test rax, rax
+  jnz jsmm_number_int_loop
+  dec rdi
+  mov byte ptr [rdi], 48
+  jmp jsmm_number_int_copy
+jsmm_number_int_loop:
+  xor rdx, rdx
+  mov r11, 10
+  div r11
+  add dl, 48
+  dec rdi
+  mov byte ptr [rdi], dl
+  test rax, rax
+  jnz jsmm_number_int_loop
+jsmm_number_int_copy:
+  lea rsi, [rbx + 80]
+jsmm_number_int_copy_loop:
+  cmp rdi, rsi
+  jae jsmm_number_int_done
+  mov al, byte ptr [rdi]
+  mov byte ptr [rbx + r9], al
+  inc rdi
+  inc r9
+  jmp jsmm_number_int_copy_loop
+jsmm_number_int_done:
+  ret
+jsmm_number_frac:
+  lea rdi, [rbx + rcx + 47]
+  mov r10, rcx
+  mov rax, rdx
+jsmm_number_frac_loop:
+  xor rdx, rdx
+  mov r11, 10
+  div r11
+  add dl, 48
+  mov byte ptr [rdi], dl
+  dec rdi
+  dec rcx
+  jnz jsmm_number_frac_loop
+jsmm_number_frac_trim:
+  test r10, r10
+  jz jsmm_number_frac_done
+  lea rdi, [rbx + r10 + 47]
+  cmp byte ptr [rdi], 48
+  jne jsmm_number_frac_done
+  dec r10
+  jmp jsmm_number_frac_trim
+jsmm_number_frac_done:
+  ret
+.section .rodata
+.align 8
+jsmm_number_epsilon:
+  .quad 0x3eb0c6f7a0b5ed8d
+jsmm_number_plain_limit:
+  .quad 0x43abc16d674ec800
+jsmm_number_large_limit:
+  .quad 0x444b1ae4d6e2ef50
+jsmm_number_million:
+  .quad 0x412e848000000000
+jsmm_number_billion:
+  .quad 0x41cdcd6500000000
+jsmm_number_half:
+  .quad 0x3fe0000000000000
+jsmm_number_ten:
+  .quad 0x4024000000000000
+jsmm_number_one:
+  .quad 0x3ff0000000000000
 )ASM";
 
 } // namespace
@@ -312,6 +536,7 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(allocSymbol), allocText);
   registry.declare(std::string(moduloSymbol), moduloText);
   registry.declare(std::string(powerSymbol), powerText);
+  registry.declare("int32", int32Text);
   registry.declare(std::string(boundsSymbol), boundsText);
   registry.declare("string_writer", stringWriterText);
   registry.declare("literals", literalText);
