@@ -37,6 +37,7 @@ private:
   [[noreturn]] void fail(const std::string &message) const;
   [[noreturn]] void fail(const std::string &message, errors::ErrorCode code) const;
   void optionalSemicolon();
+  void ensureSemicolonOrASI();
 
   Statement parseStatement();
   Statement parseEmptyStatement();
@@ -44,6 +45,7 @@ private:
   Statement parseDeclaration();
   Statement parseFunctionDeclaration();
   Statement parseReturnStatement();
+  Statement parseThrowStatement();
   Statement parseBlock();
   StatementList parseBlockBody();
   Statement parseIfStatement();
@@ -51,6 +53,8 @@ private:
   Statement parseForStatement();
   Statement parseBreakStatement();
   Statement parseContinueStatement();
+  Statement parseLabeledStatement();
+  bool peekNextIsColon() const;
 
   ExprPtr parseExpression(int minimumBindingPower = 1);
   ExprPtr parsePrefix();

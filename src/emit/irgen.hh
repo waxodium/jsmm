@@ -24,7 +24,7 @@ struct LoweredModule {
 class IrGenerator final : public builtins::EmitContext {
 public:
   LoweredModule generate(const reader::Program &program, const types::Annotations &annotations,
-                         types::TypeContext &context);
+                         const types::TypeContext &context);
 
   void emitArgument(const reader::ExprPtr &) override;
   void moveResultToArgumentRegister() override;
@@ -113,6 +113,8 @@ private:
   bool sameLayout(types::TypePtr left, types::TypePtr right) const;
 
   void collectVarDeclarations(const reader::StatementList &statements,
+                              std::vector<const reader::VariableDeclarator *> &out) const;
+  void collectVarDeclarations(const std::unique_ptr<reader::Statement> &stmt,
                               std::vector<const reader::VariableDeclarator *> &out) const;
   void hoistVarSlots(const reader::StatementList &statements);
   void generateDeclaration(const reader::VariableDeclaration &declaration);

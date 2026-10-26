@@ -8,7 +8,6 @@
 
 namespace jsmm::errors {
 
-
 enum class ErrorCode : std::uint16_t {
   LEX_UNTERMINATED_STRING,
   LEX_UNESCAPED_LINE_TERMINATOR,
@@ -52,7 +51,11 @@ enum class ErrorCode : std::uint16_t {
   PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL,
   PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL,
   PARSE_EXPECTED_EXPRESSION,
+  PARSE_EXPECTED_COLON_AFTER_LABEL,
   PARSE_EXPECTED_TYPE_NAME,
+  PARSE_MISSING_SEMICOLON,
+  PARSE_UNEXPECTED_TOKEN_AFTER_BREAK,
+  PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE,
 
   TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL,
   TYPE_RETURN_OUTSIDE_FUNCTION,
@@ -97,7 +100,7 @@ enum class ErrorCode : std::uint16_t {
   CLI_ASSEMBLER_FAILED,
   CLI_LINKER_FAILED,
 
-  ErrorCodeCount  // sentinel
+  ErrorCodeCount
 };
 
 constexpr std::string_view errorMessage(ErrorCode code) {
@@ -185,8 +188,16 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "expected ']' after array literal";
     case ErrorCode::PARSE_EXPECTED_EXPRESSION:
       return "expected expression";
+    case ErrorCode::PARSE_EXPECTED_COLON_AFTER_LABEL:
+      return "expected ':' after label";
     case ErrorCode::PARSE_EXPECTED_TYPE_NAME:
       return "expected a type name";
+    case ErrorCode::PARSE_MISSING_SEMICOLON:
+      return "missing semicolon before statement";
+    case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_BREAK:
+      return "unexpected token after 'break'";
+    case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE:
+      return "unexpected token after 'continue'";
 
     case ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL:
       return "function declarations must appear at the top level";
@@ -274,19 +285,12 @@ constexpr std::string_view errorMessage(ErrorCode code) {
   }
 }
 
-/*
-Carries error code, 
-
-- optional detail text
-- source range.
-*/
 struct ErrorStatus {
   ErrorCode code = ErrorCode::ErrorCodeCount;
   std::string detail;
   reader::SourceRange range{};
 };
 
-// `jsmm: <code> <message> [<detail>] at <file>:<line>:<col>`.
 class ErrorException : public std::runtime_error {
 public:
   explicit ErrorException(ErrorStatus status)

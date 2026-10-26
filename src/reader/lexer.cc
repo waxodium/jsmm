@@ -343,7 +343,7 @@ void Lexer::setError(std::string message, SourcePosition at) {
   error_ = {std::move(message), at};
 }
 
-SourcePosition Lexer::position() const noexcept { return {line_, column_}; }
+SourcePosition Lexer::position() const noexcept { return {static_cast<std::uint32_t>(line_), static_cast<std::uint32_t>(column_)}; }
 
 void Lexer::finish(Token &token, TokenKind kind, std::size_t startOffset,
                    SourcePosition startPosition) {

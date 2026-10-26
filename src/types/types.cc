@@ -8,7 +8,7 @@
 
 namespace jsmm::types {
 
-TypeContext::TypeContext() {
+TypeContext::TypeContext() : nextId_(0) {
   number_ = std::make_shared<Type>();
   number_->kind = TypeKind::Number;
   number_->id = nextId_++;
@@ -29,12 +29,29 @@ TypeContext::TypeContext() {
   never_->id = nextId_++;
 }
 
-TypePtr TypeContext::number() { return number_; }
-TypePtr TypeContext::string() { return string_; }
-TypePtr TypeContext::boolean() { return boolean_; }
-TypePtr TypeContext::null() { return null_; }
-TypePtr TypeContext::undefined() { return undefined_; }
-TypePtr TypeContext::never() { return never_; }
+TypePtr TypeContext::number() const {
+  return number_;
+}
+
+TypePtr TypeContext::string() const {
+  return string_;
+}
+
+TypePtr TypeContext::boolean() const {
+  return boolean_;
+}
+
+TypePtr TypeContext::null() const {
+  return null_;
+}
+
+TypePtr TypeContext::undefined() const {
+  return undefined_;
+}
+
+TypePtr TypeContext::never() const {
+  return never_;
+}
 
 TypePtr TypeContext::variable() {
   auto type = std::make_shared<Type>();
@@ -78,7 +95,7 @@ TypePtr TypeContext::unionType(std::vector<TypePtr> members) {
   return type;
 }
 
-TypePtr TypeContext::resolve(TypePtr type) {
+TypePtr TypeContext::resolve(TypePtr type) const {
   std::set<int> seen;
   while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr) {
     if (!seen.insert(type->id).second)

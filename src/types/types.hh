@@ -39,26 +39,26 @@ class TypeContext final {
 public:
   TypeContext();
 
-  TypePtr number();
-  TypePtr string();
-  TypePtr boolean();
-  TypePtr null();
-  TypePtr undefined();
-  TypePtr never();
+  TypePtr number() const;
+  TypePtr string() const;
+  TypePtr boolean() const;
+  TypePtr null() const;
+  TypePtr undefined() const;
+  TypePtr never() const;
   TypePtr variable();
   TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
   TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
   TypePtr arrayType(TypePtr element);
   TypePtr unionType(std::vector<TypePtr> members);
 
-  TypePtr resolve(TypePtr type);
+  TypePtr resolve(TypePtr type) const;
   std::string show(TypePtr type);
 
 private:
   std::string showType(TypePtr type);
 
-  int nextId_ = 0;
-  int showCounter_ = 0;
+  int nextId_;
+  int showCounter_;
   TypePtr number_;
   TypePtr string_;
   TypePtr boolean_;

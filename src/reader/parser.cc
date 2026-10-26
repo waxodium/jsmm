@@ -46,10 +46,14 @@ const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParse
 const std::unordered_map<std::string, Parser::PrefixParser> &Parser::prefixParselets() {
   using P = Parser;
   static const std::unordered_map<std::string, P::PrefixParser> table{
-      {"!", &P::parseUnaryPrefix},      {"~", &P::parseUnaryPrefix},
-      {"+", &P::parseUnaryPrefix},      {"-", &P::parseUnaryPrefix},
-      {"++", &P::parseUpdatePrefix},    {"--", &P::parseUpdatePrefix},
-      {"typeof", &P::parseUnaryPrefix}, {"void", &P::parseUnaryPrefix},
+      {"!", &P::parseUnaryPrefix},
+      {"~", &P::parseUnaryPrefix},
+      {"+", &P::parseUnaryPrefix},
+      {"-", &P::parseUnaryPrefix},
+      {"++", &P::parseUpdatePrefix},
+      {"--", &P::parseUpdatePrefix},
+      {"typeof", &P::parseUnaryPrefix},
+      {"void", &P::parseUnaryPrefix},
       {"delete", &P::parseUnaryPrefix}};
   return table;
 }
@@ -93,9 +97,21 @@ const Token &Parser::consume() {
 
 void Parser::optionalSemicolon() { (void)eat(";"); }
 
+void Parser::ensureSemicolonOrASI() {
+  if (eat(";")) return;
+  if (current().kind == TokenKind::End) return;
+  if (current().lexeme == "}") return;
+  if (current().start.line > tokens_.at(index_ > 0 ? index_ - 1 : 0).end.line) return;
+  if (current().kind == TokenKind::Keyword ||
+      current().kind == TokenKind::Identifier ||
+      current().lexeme == "{") {
+    fail("missing semicolon before statement", errors::ErrorCode::PARSE_MISSING_SEMICOLON);
+  }
+}
+
 Program Parser::parse() {
   Program program;
-  while (current().kind != TokenKind::End) program.statements.push_back(parseStatement());
+  while (current().kind != TokenKind::End) program.statements.push_back(std::make_unique<Statement>(parseStatement()));
   return program;
 }
 
@@ -107,6 +123,7 @@ Statement Parser::parseStatement() {
       if (keyword == "let" || keyword == "const" || keyword == "var") return parseDeclaration();
       if (keyword == "function") return parseFunctionDeclaration();
       if (keyword == "return") return parseReturnStatement();
+      if (keyword == "throw") return parseThrowStatement();
       if (keyword == "if") return parseIfStatement();
       if (keyword == "while") return parseWhileStatement();
       if (keyword == "for") return parseForStatement();
@@ -116,6 +133,9 @@ Statement Parser::parseStatement() {
     }
     if (current().lexeme == "{") return parseBlock();
     if (current().lexeme == ";") return parseEmptyStatement();
+    if (current().kind == TokenKind::Identifier && peekNextIsColon()) {
+      return parseLabeledStatement();
+    }
     return parseExpressionStatement();
   }();
   statement.range = SourceRange{start, tokens_.at(index_ == 0 ? 0 : index_ - 1).end};
@@ -125,13 +145,13 @@ Statement Parser::parseStatement() {
 Statement Parser::parseEmptyStatement() {
   const SourcePosition start = current().start;
   consume();
-  return Statement(BlockStatement{}, SourceRange{start, tokens_.at(index_ - 1).end});
+  return Statement(ExpressionStatement{nullptr}, SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 Statement Parser::parseExpressionStatement() {
   auto expression = parseExpression();
-  optionalSemicolon();
-  return Statement(ExpressionStatement{std::move(expression)});
+  ensureSemicolonOrASI();
+  return Statement(ExpressionStatement{std::move(expression)}, SourceRange{});
 }
 
 Statement Parser::parseDeclaration() {
@@ -151,9 +171,9 @@ Statement Parser::parseDeclaration() {
            errors::ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER);
     }
     declaration.declarations.push_back(
-        {std::move(name), std::move(initializer), std::move(annotation)});
+        {name, std::move(initializer), std::move(annotation)});
   } while (eat(","));
-  optionalSemicolon();
+  ensureSemicolonOrASI();
   return Statement(std::move(declaration));
 }
 
@@ -174,7 +194,7 @@ Statement Parser::parseFunctionDeclaration() {
   consume();
   if (current().kind != TokenKind::Identifier)
     fail("expected function name", errors::ErrorCode::PARSE_EXPECTED_FUNCTION_NAME);
-  FunctionDeclaration function{consume().lexeme, {}, {}};
+  FunctionDeclaration function{consume().lexeme, {}, nullptr};
   if (!eat("("))
     fail("expected '(' after function name",
          errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME);
@@ -182,7 +202,7 @@ Statement Parser::parseFunctionDeclaration() {
     do {
       if (current().kind != TokenKind::Identifier)
         fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
-      function.parameters.push_back(consume().lexeme);
+      function.parameters.push_back({consume().lexeme, {}});
     } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after parameters",
@@ -191,18 +211,41 @@ Statement Parser::parseFunctionDeclaration() {
   if (!eat("{"))
     fail("expected '{' before function body",
          errors::ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY);
-  function.body = parseBlockBody();
+  auto body = std::make_unique<BlockStatement>();
+  body->statements = parseBlockBody();
+  function.body = std::move(body);
+  ensureSemicolonOrASI();
   return Statement(std::move(function));
 }
 
 Statement Parser::parseReturnStatement() {
   const Token &keyword = consume();
-  ExprPtr argument;
-  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End &&
-      current().start.line == keyword.start.line)
-    argument = parseExpression();
-  optionalSemicolon();
-  return Statement(ReturnStatement{std::move(argument)});
+  const std::size_t keywordLine = keyword.start.line;
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
+    if (current().start.line > keywordLine) {
+      // ASI: LineTerminator after 'return' inserts semicolon, argument is undefined
+      return Statement(ReturnStatement{nullptr}, SourceRange{keyword.start, keyword.end});
+    }
+    ExprPtr argument = parseExpression();
+    ensureSemicolonOrASI();
+    return Statement(ReturnStatement{std::move(argument)}, SourceRange{keyword.start, keyword.end});
+  }
+  return Statement(ReturnStatement{nullptr}, SourceRange{keyword.start, keyword.end});
+}
+
+Statement Parser::parseThrowStatement() {
+  const Token &keyword = consume();
+  const std::size_t keywordLine = keyword.start.line;
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
+    if (current().start.line > keywordLine) {
+      // ASI: LineTerminator after 'throw' inserts semicolon, argument is undefined
+      return Statement(ThrowStatement{nullptr}, SourceRange{keyword.start, keyword.end});
+    }
+    ExprPtr argument = parseExpression();
+    ensureSemicolonOrASI();
+    return Statement(ThrowStatement{std::move(argument)}, SourceRange{keyword.start, keyword.end});
+  }
+  return Statement(ThrowStatement{nullptr}, SourceRange{keyword.start, keyword.end});
 }
 
 Statement Parser::parseIfStatement() {
@@ -221,7 +264,7 @@ Statement Parser::parseIfStatement() {
     if (eat("{")) {
       alternate = parseBlockBody();
     } else {
-      alternate.push_back(parseStatement());
+      alternate.push_back(std::make_unique<Statement>(parseStatement()));
     }
   }
   return Statement(IfStatement{std::move(condition), std::move(consequent), std::move(alternate)});
@@ -264,7 +307,7 @@ Statement Parser::parseForStatement() {
              errors::ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER);
       }
       declaration.declarations.push_back(
-          {std::move(name), std::move(initializer), std::move(annotation)});
+          {name, std::move(initializer), std::move(annotation)});
     } while (eat(","));
     init = std::make_unique<VariableDeclaration>(std::move(declaration));
   } else if (current().lexeme != ";") {
@@ -291,27 +334,53 @@ Statement Parser::parseForStatement() {
 
 Statement Parser::parseBreakStatement() {
   const SourcePosition start = current().start;
-  consume();
-  optionalSemicolon();
-  return Statement(BreakStatement{}, SourceRange{start, tokens_.at(index_ - 1).end});
+  const Token &keyword = consume();
+  const std::size_t keywordLine = keyword.start.line;
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
+    if (current().start.line > keywordLine) {
+      // ASI: LineTerminator after 'break' inserts semicolon
+      return Statement(BreakStatement{}, SourceRange{start, keyword.end});
+    }
+    if (current().kind == TokenKind::Identifier) {
+      // break label; same line - label is part of break statement
+      auto label = std::make_shared<Identifier>(Identifier{consume().lexeme, {}});
+      return Statement(BreakStatement{label}, SourceRange{start, tokens_.at(index_ - 1).end});
+    }
+    fail("unexpected token after 'break'", errors::ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_BREAK);
+  }
+  return Statement(BreakStatement{}, SourceRange{start, keyword.end});
 }
 
 Statement Parser::parseContinueStatement() {
   const SourcePosition start = current().start;
-  consume();
-  optionalSemicolon();
-  return Statement(ContinueStatement{}, SourceRange{start, tokens_.at(index_ - 1).end});
+  const Token &keyword = consume();
+  const std::size_t keywordLine = keyword.start.line;
+  if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
+    if (current().start.line > keywordLine) {
+      // ASI: LineTerminator after 'continue' inserts semicolon
+      return Statement(ContinueStatement{}, SourceRange{start, keyword.end});
+    }
+    if (current().kind == TokenKind::Identifier) {
+      // continue label; same line - label is part of continue statement
+      auto label = std::make_shared<Identifier>(Identifier{consume().lexeme, {}});
+      return Statement(ContinueStatement{label}, SourceRange{start, tokens_.at(index_ - 1).end});
+    }
+    fail("unexpected token after 'continue'", errors::ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE);
+  }
+  return Statement(ContinueStatement{}, SourceRange{start, keyword.end});
 }
 
 Statement Parser::parseBlock() {
   consume();
-  return Statement(BlockStatement{parseBlockBody()});
+  auto body = std::make_unique<BlockStatement>();
+  body->statements = parseBlockBody();
+  return Statement(BlockStatement{std::move(body->statements)}, SourceRange{});
 }
 
 StatementList Parser::parseBlockBody() {
   StatementList statements;
   while (current().kind != TokenKind::End && current().lexeme != "}")
-    statements.push_back(parseStatement());
+    statements.push_back(std::make_unique<Statement>(parseStatement()));
   if (!eat("}"))
     fail("expected '}' to close block", errors::ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK);
   return statements;
@@ -340,7 +409,7 @@ ExprPtr Parser::parseUnaryPrefix() {
   const SourcePosition start = current().start;
   const std::string op = consume().lexeme;
   auto operand = parsePrefix();
-  return std::make_shared<Expr>(UnaryExpr{op, std::move(operand)},
+  return std::make_shared<Expression>(UnaryExpr{op, std::move(operand)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
@@ -348,14 +417,14 @@ ExprPtr Parser::parseUpdatePrefix() {
   const SourcePosition start = current().start;
   const std::string op = consume().lexeme;
   auto target = parsePrefix();
-  return std::make_shared<Expr>(UpdateExpr{op, true, std::move(target)},
+  return std::make_shared<Expression>(UpdateExpr{op, true, std::move(target)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseUpdatePostfix(ExprPtr expression) {
   const SourcePosition start = expression->range.start;
   const std::string op = consume().lexeme;
-  return std::make_shared<Expr>(UpdateExpr{op, false, std::move(expression)},
+  return std::make_shared<Expression>(UpdateExpr{op, false, std::move(expression)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
@@ -363,14 +432,14 @@ ExprPtr Parser::parseBinaryInfix(ExprPtr left, const std::string &op, OperatorIn
   const SourcePosition start = left->range.start;
   auto right = parseExpression(info.bindingPower + (info.rightAssociative ? 0 : 1));
   const SourceRange sourceRange{start, right->range.end};
-  return std::make_shared<Expr>(BinaryExpr{op, std::move(left), std::move(right)}, sourceRange);
+  return std::make_shared<Expression>(BinaryExpr{op, std::move(left), std::move(right)}, sourceRange);
 }
 
 ExprPtr Parser::parseAssignmentInfix(ExprPtr left, const std::string &op, OperatorInfo info) {
   const SourcePosition start = left->range.start;
   auto right = parseExpression(info.bindingPower);
   const SourceRange sourceRange{start, right->range.end};
-  return std::make_shared<Expr>(AssignmentExpr{op, std::move(left), std::move(right)}, sourceRange);
+  return std::make_shared<Expression>(AssignmentExpr{op, std::move(left), std::move(right)}, sourceRange);
 }
 
 ExprPtr Parser::parsePostfix(ExprPtr expression) {
@@ -392,7 +461,7 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
       fail("expected ')' after call arguments",
            errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS);
   }
-  return std::make_shared<Expr>(CallExpr{std::move(expression), std::move(arguments)},
+  return std::make_shared<Expression>(CallExpr{std::move(expression), std::move(arguments)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
@@ -403,7 +472,7 @@ ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
   if (property.kind != TokenKind::Identifier && property.kind != TokenKind::Keyword)
     fail("expected property name after '.'",
          errors::ErrorCode::PARSE_EXPECTED_PROPERTY_NAME_AFTER_DOT);
-  return std::make_shared<Expr>(MemberExpr{std::move(expression), property.lexeme, {}, false},
+  return std::make_shared<Expression>(MemberExpr{std::move(expression), property.lexeme, nullptr, false},
                                 SourceRange{start, property.end});
 }
 
@@ -414,7 +483,7 @@ ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
   if (!eat("]"))
     fail("expected ']' after computed property",
          errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
-  return std::make_shared<Expr>(MemberExpr{std::move(expression), {}, std::move(property), true},
+  return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, std::move(property), true},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
@@ -434,16 +503,16 @@ ExprPtr Parser::parsePrimary() {
   const Token token = consume();
   const SourceRange sourceRange{token.start, token.end};
   if (token.kind == TokenKind::NumberLiteral)
-    return std::make_shared<Expr>(NumberLiteralExpr{token.lexeme}, sourceRange);
+    return std::make_shared<Expression>(NumberLiteralExpr{token.lexeme}, sourceRange);
   if (token.kind == TokenKind::StringLiteral)
-    return std::make_shared<Expr>(StringLiteralExpr{token.text}, sourceRange);
+    return std::make_shared<Expression>(StringLiteralExpr{token.text}, sourceRange);
   if (token.lexeme == "true" || token.lexeme == "false")
-    return std::make_shared<Expr>(BooleanLiteralExpr{token.lexeme == "true"}, sourceRange);
-  if (token.lexeme == "null") return std::make_shared<Expr>(NullLiteralExpr{}, sourceRange);
+    return std::make_shared<Expression>(BooleanLiteralExpr{token.lexeme == "true"}, sourceRange);
+  if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
   if (token.lexeme == "undefined")
-    return std::make_shared<Expr>(UndefinedLiteralExpr{}, sourceRange);
+    return std::make_shared<Expression>(UndefinedLiteralExpr{}, sourceRange);
   if (token.kind == TokenKind::Identifier)
-    return std::make_shared<Expr>(IdentifierExpr{token.lexeme}, sourceRange);
+    return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
   if (token.kind == TokenKind::Keyword)
     fail("unsupported keyword '" + token.lexeme + "'",
          errors::ErrorCode::PARSE_UNSUPPORTED_KEYWORD);
@@ -474,7 +543,7 @@ ExprPtr Parser::parseObjectLiteral() {
       fail("expected '}' after object literal",
            errors::ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL);
   }
-  return std::make_shared<Expr>(std::move(object), SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expression>(std::move(object), SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseArrayLiteral() {
@@ -486,7 +555,22 @@ ExprPtr Parser::parseArrayLiteral() {
       fail("expected ']' after array literal",
            errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
   }
-  return std::make_shared<Expr>(std::move(array), SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expression>(std::move(array), SourceRange{start, tokens_.at(index_ - 1).end});
+}
+
+bool Parser::peekNextIsColon() const {
+  if (index_ + 1 >= tokens_.size()) return false;
+  return tokens_[index_ + 1].lexeme == ":";
+}
+
+Statement Parser::parseLabeledStatement() {
+  const SourcePosition start = current().start;
+  const std::string label = consume().lexeme;
+  if (!eat(":"))
+    fail("expected ':' after label", errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_LABEL);
+  auto statement = parseStatement();
+  return Statement(LabeledStatement{label, std::make_unique<Statement>(std::move(statement))},
+                   SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 } // namespace jsmm::reader

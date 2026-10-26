@@ -1,16 +1,17 @@
 #pragma once
 
-#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 namespace jsmm::reader {
 
 struct SourcePosition {
-  std::size_t line = 1;
-  std::size_t column = 1;
+  std::uint32_t line = 1;
+  std::uint32_t column = 1;
 };
 
 struct SourceRange {
@@ -18,9 +19,27 @@ struct SourceRange {
   SourcePosition end{};
 };
 
-struct Expr;
-using ExprPtr = std::shared_ptr<Expr>;
+struct Identifier {
+  std::string text;
+  SourceRange range{};
+};
 
+struct NumberLiteral {
+  std::string text;
+  SourceRange range{};
+};
+
+struct StringLiteral {
+  std::string text;
+  bool raw = false;
+  SourceRange range{};
+};
+
+struct Expression;
+
+using ExprPtr = std::shared_ptr<Expression>;
+
+// Expression node kinds.
 struct NumberLiteralExpr {
   std::string spelling;
 };
@@ -29,16 +48,13 @@ struct StringLiteralExpr {
   std::string value;
 };
 
-struct BooleanLiteralExpr {
-  bool value = false;
-};
-
-struct NullLiteralExpr {};
-
-struct UndefinedLiteralExpr {};
-
 struct IdentifierExpr {
   std::string name;
+};
+
+struct CallExpr {
+  ExprPtr callee;
+  std::vector<ExprPtr> arguments;
 };
 
 struct UnaryExpr {
@@ -54,130 +70,175 @@ struct BinaryExpr {
 
 struct UpdateExpr {
   std::string op;
-  bool prefix = false;
-  ExprPtr target;
+  bool prefix;
+  ExprPtr operand;
 };
 
 struct AssignmentExpr {
   std::string op;
-  ExprPtr target;
-  ExprPtr value;
+  ExprPtr left;
+  ExprPtr right;
 };
 
 struct MemberExpr {
   ExprPtr object;
   std::string property;
-  ExprPtr computedProperty;
-  bool computed = false;
-};
-
-struct ObjectProperty {
-  std::string key;
-  ExprPtr value;
+  ExprPtr computed;
+  bool computedFlag;
 };
 
 struct ObjectExpr {
-  std::vector<ObjectProperty> properties;
+  std::vector<std::pair<std::string, ExprPtr>> properties;
 };
 
 struct ArrayExpr {
   std::vector<ExprPtr> elements;
 };
 
-struct CallExpr {
-  ExprPtr callee;
-  std::vector<ExprPtr> arguments;
+struct BooleanLiteralExpr {
+  bool value;
 };
 
-struct Expr {
-  using Node =
-      std::variant<NumberLiteralExpr, StringLiteralExpr, BooleanLiteralExpr, NullLiteralExpr,
-                   UndefinedLiteralExpr, IdentifierExpr, UnaryExpr, BinaryExpr, UpdateExpr,
-                   AssignmentExpr, MemberExpr, ObjectExpr, ArrayExpr, CallExpr>;
-  Node node;
-  SourceRange range;
+struct NullLiteralExpr {};
 
-  template <class T>
-  explicit Expr(T value, SourceRange sourceRange = {})
-      : node(std::move(value)),
-        range(sourceRange) {}
-};
+struct UndefinedLiteralExpr {};
 
 struct TypeExpr {
   std::vector<std::string> names;
-  SourceRange range;
+  SourceRange range{};
+};
+
+// Statements.
+struct Statement;
+
+struct BlockStatement {
+  std::vector<std::unique_ptr<Statement>> statements;
+  SourceRange range{};
+};
+
+struct IfStatement {
+  ExprPtr condition;
+  std::vector<std::unique_ptr<Statement>> consequent;
+  std::vector<std::unique_ptr<Statement>> alternate;
+  SourceRange range{};
+};
+
+struct WhileStatement {
+  ExprPtr condition;
+  std::vector<std::unique_ptr<Statement>> body;
+  SourceRange range{};
 };
 
 struct VariableDeclarator {
   std::string name;
-  ExprPtr initializer;
-  std::shared_ptr<TypeExpr> annotation;
+  ExprPtr initializer = nullptr;
+  std::shared_ptr<TypeExpr> annotation = nullptr;
+  SourceRange range{};
 };
 
 struct VariableDeclaration {
   std::string kind;
   std::vector<VariableDeclarator> declarations;
-};
-
-struct ExpressionStatement {
-  ExprPtr expression;
-};
-
-struct Statement;
-using StatementList = std::vector<Statement>;
-
-struct FunctionDeclaration {
-  std::string name;
-  std::vector<std::string> parameters;
-  StatementList body;
-};
-
-struct BlockStatement {
-  StatementList statements;
-};
-
-struct IfStatement {
-  ExprPtr condition;
-  StatementList consequent;
-  StatementList alternate;
-};
-
-struct WhileStatement {
-  ExprPtr condition;
-  StatementList body;
+  SourceRange range{};
 };
 
 struct ForStatement {
-  std::unique_ptr<VariableDeclaration> init;
-  ExprPtr initExpression;
-  ExprPtr condition;
-  ExprPtr update;
-  StatementList body;
+  std::unique_ptr<VariableDeclaration> init = nullptr;
+  ExprPtr initExpression = nullptr;
+  ExprPtr condition = nullptr;
+  ExprPtr update = nullptr;
+  std::vector<std::unique_ptr<Statement>> body;
+  SourceRange range{};
+};
+
+struct FunctionParameter {
+  std::string name;
+  SourceRange range{};
+};
+
+struct FunctionDeclaration {
+  std::string name;
+  std::vector<FunctionParameter> parameters;
+  std::unique_ptr<BlockStatement> body;
+  SourceRange range{};
+};
+
+struct BreakStatement {
+  std::shared_ptr<Identifier> label = nullptr;
+  SourceRange range{};
+};
+
+struct ContinueStatement {
+  std::shared_ptr<Identifier> label = nullptr;
+  SourceRange range{};
 };
 
 struct ReturnStatement {
-  ExprPtr argument;
+  ExprPtr argument = nullptr;
+  SourceRange range{};
 };
 
-struct BreakStatement {};
+struct ThrowStatement {
+  ExprPtr argument = nullptr;
+  SourceRange range{};
+};
 
-struct ContinueStatement {};
+struct LabeledStatement {
+  std::string label;
+  std::unique_ptr<Statement> body;
+  SourceRange range{};
+};
 
+struct ExpressionStatement {
+  ExprPtr expression = nullptr;
+  SourceRange range{};
+};
+
+// The expression type wrapper: carries a typed node plus source range.
+struct Expression {
+  std::variant<
+    NumberLiteralExpr,
+    StringLiteralExpr,
+    IdentifierExpr,
+    CallExpr,
+    UnaryExpr,
+    BinaryExpr,
+    UpdateExpr,
+    AssignmentExpr,
+    MemberExpr,
+    ObjectExpr,
+    ArrayExpr,
+    BooleanLiteralExpr,
+    NullLiteralExpr,
+    UndefinedLiteralExpr
+  > node;
+  SourceRange range{};
+};
+
+// Statement is the wrapper carrying source range.
 struct Statement {
-  using Node = std::variant<VariableDeclaration, ExpressionStatement, FunctionDeclaration,
-                            ReturnStatement, BlockStatement, IfStatement, WhileStatement,
-                            ForStatement, BreakStatement, ContinueStatement>;
-  Node node;
-  SourceRange range;
-
-  template <class T>
-  explicit Statement(T value, SourceRange sourceRange = {})
-      : node(std::move(value)),
-        range(sourceRange) {}
+  std::variant<
+    BlockStatement,
+    VariableDeclaration,
+    FunctionDeclaration,
+    ExpressionStatement,
+    IfStatement,
+    WhileStatement,
+    ForStatement,
+    BreakStatement,
+    ContinueStatement,
+    ReturnStatement,
+    ThrowStatement,
+    LabeledStatement
+  > node;
+  SourceRange range{};
 };
+
+using StatementList = std::vector<std::unique_ptr<Statement>>;
 
 struct Program {
   StatementList statements;
+  SourceRange range{};
 };
 
 } // namespace jsmm::reader
