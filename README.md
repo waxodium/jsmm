@@ -8,15 +8,12 @@
     </tr>
 </table>
 
-[/dʒeɪ ɛs ɛm ɛm/](https://ipa-reader.com/?text=%2Fd%CA%92e%C9%AA%20%C9%9Bs%20%C9%9Bm%20%C9%9Bm%2F) can also be 
-**JS--/JavaScript--** or JavaScript decrement
+[/dʒeɪ ɛs ɛm ɛm/](https://ipa-reader.com/?text=%2Fd%CA%92e%C9%AA%20%C9%9Bs%20%C9%9Bm%20%C9%9Bm%2F) 
+can also be JavaScript decremented
 
 "**JSMM**" is a non-standard and statical subset of JavaScript programming language. 
  
 Source code of **Compiler Engine for JS minus-minus**
-
-jsmm took features concepts from [edon.js](https://github.com/waxodium/edon), 
-a dynamic JavaScript runtime that provides APIs for interacting with C.
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](./LICENSE)
 [![Platform: Linux x86_64](https://img.shields.io/badge/platform-Linux_x86_64-blue.svg)](#)
@@ -33,9 +30,6 @@ The compiler uses implicit type inference and static analysis to reject unsuppor
 
 
 *jsmm* excludes JavaScript built-ins, those includes `console`, `arrays`, `objects`
-
-(The compiler provides a single `cat()` function for concatenation. This engine is only compatible with __x86_64 linux__)
-
 
 | Operating System | Arch | Standing |
 | :--- | :--- | :--- | 

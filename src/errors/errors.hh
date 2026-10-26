@@ -79,6 +79,10 @@ enum class ErrorCode : std::uint16_t {
   TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH,
 
   CODEGEN_UNKNOWN_RUNTIME_HELPER,
+  CODEGEN_TARGET_UNAVAILABLE,
+  CODEGEN_OBJECT_EMISSION_FAILED,
+  CODEGEN_EXECUTABLE_LINK_FAILED,
+  CODEGEN_LINK_FAILED,
 
   IO_CANNOT_OPEN_SOURCE_FILE,
   IO_CANNOT_OPEN_FILE_FOR_WRITING,
@@ -233,6 +237,14 @@ constexpr std::string_view errorMessage(ErrorCode code) {
 
     case ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER:
       return "unknown runtime helper";
+    case ErrorCode::CODEGEN_TARGET_UNAVAILABLE:
+      return "target unavailable";
+    case ErrorCode::CODEGEN_OBJECT_EMISSION_FAILED:
+      return "object emission failed";
+    case ErrorCode::CODEGEN_EXECUTABLE_LINK_FAILED:
+      return "executable link failed";
+    case ErrorCode::CODEGEN_LINK_FAILED:
+      return "module link failed";
 
     case ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE:
       return "cannot open source file";

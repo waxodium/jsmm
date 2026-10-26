@@ -1,7 +1,7 @@
 #include "builtins/builtin.hh"
-#include "emit/codegen.hh"
+#include "emit/writebin.hh"
+#include "emit/irgen.hh"
 #include "errors/errors.hh"
-#include "io/platform.hh"
 #include "reader/lexer.hh"
 #include "reader/parser.hh"
 #include "types/checker.hh"
@@ -92,28 +92,11 @@ int main(int argc, char *argv[]) {
     jsmm::types::Checker checker;
     const jsmm::types::Annotations annotations = checker.check(program);
 
-    jsmm::emit::CodeGenerator codegen;
-    const std::string assembly = codegen.generate(program, annotations, checker.context());
+    jsmm::emit::IrGenerator generator;
+    jsmm::emit::LoweredModule lowered =
+        generator.generate(program, annotations, checker.context());
 
-    const std::string assemblyPath = outputPath + ".s";
-    const std::string objectPath = outputPath + ".o";
-
-    jsmm::io::writeFile(assemblyPath, assembly);
-
-    const std::vector<std::string> assembler = {"as", "--64", "-o", objectPath, assemblyPath};
-    if (const int status = jsmm::io::runCommand(assembler); status != 0)
-      throw jsmm::errors::ErrorException{jsmm::errors::ErrorStatus{
-          jsmm::errors::ErrorCode::CLI_ASSEMBLER_FAILED,
-          "assembler failed with status " + std::to_string(status)}};
-
-    const std::vector<std::string> linker = {"ld", "-o", outputPath, objectPath};
-    if (const int status = jsmm::io::runCommand(linker); status != 0)
-      throw jsmm::errors::ErrorException{jsmm::errors::ErrorStatus{
-          jsmm::errors::ErrorCode::CLI_LINKER_FAILED,
-          "linker failed with status " + std::to_string(status)}};
-
-    jsmm::io::removeFile(assemblyPath);
-    jsmm::io::removeFile(objectPath);
+    jsmm::emit::emitExecutable(std::move(lowered.module), outputPath);
   } catch (const jsmm::errors::ErrorException &error) {
     const auto &status = error.status();
     std::cerr << jsmm::errors::formatError(status) << '\n';

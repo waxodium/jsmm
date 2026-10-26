@@ -54,7 +54,7 @@ jsmm_alloc_oom:
   mov eax, 1
   mov edi, 2
   lea rsi, [rip + jsmm_message_oom]
-  mov edx, jsmm_message_oom_end - jsmm_message_oom
+  mov edx, offset jsmm_message_oom_len
   syscall
   mov edi, 1
   mov eax, 60
@@ -69,7 +69,8 @@ jsmm_arena_end:
 jsmm_message_oom:
   .ascii "jsmm: out of memory\n"
 jsmm_message_oom_end:
-.section .bss
+.set jsmm_message_oom_len, jsmm_message_oom_end - jsmm_message_oom
+.section .bss,"aw",@nobits
 .align 16
 jsmm_arena:
   .zero 67108864
@@ -136,7 +137,7 @@ jsmm_pow_unsupported:
   mov eax, 1
   mov edi, 2
   lea rsi, [rip + jsmm_message_pow]
-  mov edx, jsmm_message_pow_end - jsmm_message_pow
+  mov edx, offset jsmm_message_pow_len
   syscall
   mov edi, 1
   mov eax, 60
@@ -145,6 +146,7 @@ jsmm_pow_unsupported:
 jsmm_message_pow:
   .ascii "jsmm: ** requires a non-negative integer exponent\n"
 jsmm_message_pow_end:
+.set jsmm_message_pow_len, jsmm_message_pow_end - jsmm_message_pow
 )ASM";
 
 constexpr const char *int32Text = R"ASM(.section .text
@@ -169,7 +171,7 @@ jsmm_oob:
   mov eax, 1
   mov edi, 2
   lea rsi, [rip + jsmm_message_bounds]
-  mov edx, jsmm_message_bounds_end - jsmm_message_bounds
+  mov edx, offset jsmm_message_bounds_len
   syscall
   mov edi, 1
   mov eax, 60
@@ -178,6 +180,7 @@ jsmm_oob:
 jsmm_message_bounds:
   .ascii "jsmm: array index out of bounds\n"
 jsmm_message_bounds_end:
+.set jsmm_message_bounds_len, jsmm_message_bounds_end - jsmm_message_bounds
 )ASM";
 
 constexpr const char *entryFrameText = R"ASM(.section .bss
