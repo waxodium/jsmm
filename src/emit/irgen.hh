@@ -175,4 +175,4 @@ private:
   EmitValue lastValue_;
 };
 
-}
+} // namespace jsmm::emit

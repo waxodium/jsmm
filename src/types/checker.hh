@@ -12,8 +12,7 @@
 
 namespace jsmm::types {
 
-struct Annotations
-{
+struct Annotations {
   std::unordered_map<const reader::Expression *, TypePtr> expressionTypes;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypes;
   std::unordered_map<const reader::Expression *, TypePtr> argumentTypes;
@@ -41,7 +40,7 @@ private:
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
   void hoistVarDeclarations(const reader::StatementList &statements, Scope *scope);
   void hoistVarDeclarations(const std::unique_ptr<reader::Statement> &stmt, Scope *scope);
-  void inferFunctionBody(FunctionEntry &entry, Scope *parentScope);
+  void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body, Scope *parentScope);
   void inferStatements(const reader::StatementList &statements);
   void inferDeclaration(const reader::VariableDeclaration &declaration);
   void inferStatement(const reader::Statement &statement);
@@ -53,8 +52,8 @@ private:
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
   TypePtr targetType(const reader::ExprPtr &target);
   TypePtr inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member);
-  void deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member, TypePtr objectType,
-                   TypePtr result);
+  void deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
+                   TypePtr objectType, TypePtr result);
   void resolvePendingMembers();
   void bindUnresolvedTypes(bool excludeMemberResults);
   void recordTopLevelTypes();
