@@ -129,7 +129,6 @@ Statement Parser::parseStatement() {
       if (keyword == "for") return parseForStatement();
       if (keyword == "break") return parseBreakStatement();
       if (keyword == "continue") return parseContinueStatement();
-      fail("unsupported keyword '" + keyword + "'", errors::ErrorCode::PARSE_UNSUPPORTED_KEYWORD);
     }
     if (current().lexeme == "{") return parseBlock();
     if (current().lexeme == ";") return parseEmptyStatement();
@@ -223,7 +222,6 @@ Statement Parser::parseReturnStatement() {
   const std::size_t keywordLine = keyword.start.line;
   if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
     if (current().start.line > keywordLine) {
-      // ASI: LineTerminator after 'return' inserts semicolon, argument is undefined
       return Statement(ReturnStatement{nullptr}, SourceRange{keyword.start, keyword.end});
     }
     ExprPtr argument = parseExpression();
@@ -238,7 +236,6 @@ Statement Parser::parseThrowStatement() {
   const std::size_t keywordLine = keyword.start.line;
   if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
     if (current().start.line > keywordLine) {
-      // ASI: LineTerminator after 'throw' inserts semicolon, argument is undefined
       return Statement(ThrowStatement{nullptr}, SourceRange{keyword.start, keyword.end});
     }
     ExprPtr argument = parseExpression();
@@ -255,17 +252,10 @@ Statement Parser::parseIfStatement() {
   if (!eat(")"))
     fail("expected ')' after if condition",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION);
-  if (!eat("{"))
-    fail("expected '{' for if consequent",
-         errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_IF_CONSEQUENT);
-  StatementList consequent = parseBlockBody();
+  StatementList consequent = parseConsequent();
   StatementList alternate;
   if (eat("else")) {
-    if (eat("{")) {
-      alternate = parseBlockBody();
-    } else {
-      alternate.push_back(std::make_unique<Statement>(parseStatement()));
-    }
+    alternate = parseConsequent();
   }
   return Statement(IfStatement{std::move(condition), std::move(consequent), std::move(alternate)});
 }
@@ -278,9 +268,7 @@ Statement Parser::parseWhileStatement() {
   if (!eat(")"))
     fail("expected ')' after while condition",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_CONDITION);
-  if (!eat("{"))
-    fail("expected '{' for while body", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_WHILE_BODY);
-  StatementList body = parseBlockBody();
+  StatementList body = parseConsequent();
   return Statement(WhileStatement{std::move(condition), std::move(body)});
 }
 
@@ -325,9 +313,7 @@ Statement Parser::parseForStatement() {
   if (!eat(")"))
     fail("expected ')' after for clauses",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_FOR_CLAUSES);
-  if (!eat("{"))
-    fail("expected '{' for for body", errors::ErrorCode::PARSE_EXPECTED_LBRACE_FOR_FOR_BODY);
-  StatementList body = parseBlockBody();
+  StatementList body = parseConsequent();
   return Statement(ForStatement{std::move(init), std::move(initExpression), std::move(condition),
                                 std::move(update), std::move(body)});
 }
@@ -357,11 +343,9 @@ Statement Parser::parseContinueStatement() {
   const std::size_t keywordLine = keyword.start.line;
   if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
     if (current().start.line > keywordLine) {
-      // ASI: LineTerminator after 'continue' inserts semicolon
       return Statement(ContinueStatement{}, SourceRange{start, keyword.end});
     }
     if (current().kind == TokenKind::Identifier) {
-      // continue label; same line - label is part of continue statement
       auto label = std::make_shared<Identifier>(Identifier{consume().lexeme, {}});
       return Statement(ContinueStatement{label}, SourceRange{start, tokens_.at(index_ - 1).end});
     }
@@ -384,6 +368,15 @@ StatementList Parser::parseBlockBody() {
   if (!eat("}"))
     fail("expected '}' to close block", errors::ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK);
   return statements;
+}
+
+StatementList Parser::parseConsequent() {
+  if (eat("{")) {
+    return parseBlockBody();
+  }
+  StatementList list;
+  list.push_back(std::make_unique<Statement>(parseStatement()));
+  return list;
 }
 
 ExprPtr Parser::parseExpression(int minimumBindingPower) {
@@ -511,11 +504,8 @@ ExprPtr Parser::parsePrimary() {
   if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
   if (token.lexeme == "undefined")
     return std::make_shared<Expression>(UndefinedLiteralExpr{}, sourceRange);
-  if (token.kind == TokenKind::Identifier)
+  if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword)
     return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
-  if (token.kind == TokenKind::Keyword)
-    fail("unsupported keyword '" + token.lexeme + "'",
-         errors::ErrorCode::PARSE_UNSUPPORTED_KEYWORD);
   fail("expected expression", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
 }
 

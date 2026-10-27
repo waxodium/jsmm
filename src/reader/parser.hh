@@ -48,6 +48,7 @@ private:
   Statement parseThrowStatement();
   Statement parseBlock();
   StatementList parseBlockBody();
+  StatementList parseConsequent();
   Statement parseIfStatement();
   Statement parseWhileStatement();
   Statement parseForStatement();

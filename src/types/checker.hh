@@ -83,6 +83,9 @@ private:
 
   std::vector<FunctionEntry> functions_;
   std::vector<Scope> scopes_;
+  std::vector<FunctionEntry *> currentFunctions_;
+  int loopDepth_ = 0;
+  std::vector<std::vector<TypePtr>> returnTypeStack_;
   std::vector<std::pair<const reader::Expression *, reader::MemberExpr>> pendingMembers_;
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
   TypeContext typeContext_;

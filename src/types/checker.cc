@@ -1,7 +1,6 @@
 #include "types/checker.hh"
-
 #include "errors/errors.hh"
-
+#include "builtins/builtin.hh"
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -87,14 +86,24 @@ void Checker::inferFunctionBody(FunctionEntry &entry, Scope *parentScope) {
   (void)parentScope;
   Scope scope;
   for (const auto &parameter : entry.declaration.parameters)
-    scope.bindings.insert_or_assign(parameter.name, nullptr);
+    scope.bindings.insert_or_assign(parameter.name, numberType());
   scopes_.push_back(std::move(scope));
+  currentFunctions_.push_back(&entry);
+  returnTypeStack_.emplace_back();
   for (const auto &stmt : entry.declaration.body->statements)
     inferStatement(*stmt);
   scopes_.pop_back();
+  currentFunctions_.pop_back();
+
   entry.returnType = undefinedType();
-  if (definitelyReturns(entry.declaration.body->statements))
-    entry.returnType = undefinedType();
+  for (const auto &rt : returnTypeStack_.back()) {
+    if (entry.returnType == nullptr || entry.returnType->kind == TypeKind::Undefined) {
+      entry.returnType = rt;
+    } else if (!unifies(entry.returnType, rt, "return")) {
+      entry.returnType = typeContext_.unionType({entry.returnType, rt});
+    }
+  }
+  returnTypeStack_.pop_back();
 }
 
 void Checker::inferStatements(const reader::StatementList &statements) {
@@ -140,23 +149,15 @@ void Checker::inferStatement(const reader::Statement &statement) {
               break;
             }
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
-          const auto function = std::find_if(
-              functions_.begin(), functions_.end(),
-              [&](const FunctionEntry &entry) { return entry.parentScope == &scopes_.back(); });
-          if (function != functions_.end()) {
-            if (node.argument != nullptr) {
-              const TypePtr argument = inferExpression(node.argument);
-              if (!unifies(function->returnType, argument, "return"))
-                throw errors::ErrorException{
-                    errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, "return", statement.range}};
-            } else {
-              if (!unifies(function->returnType, undefinedType(), "return"))
-                throw errors::ErrorException{
-                    errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, "return", statement.range}};
-            }
-          } else {
+          if (currentFunctions_.empty()) {
             throw errors::ErrorException{
                 errors::ErrorStatus{errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION, "return", statement.range}};
+          }
+          if (node.argument != nullptr) {
+            const TypePtr argument = inferExpression(node.argument);
+            returnTypeStack_.back().push_back(argument);
+          } else {
+            returnTypeStack_.back().push_back(undefinedType());
           }
         } else if constexpr (std::is_same_v<T, reader::BlockStatement>) {
           scopes_.push_back(Scope{});
@@ -168,17 +169,27 @@ void Checker::inferStatement(const reader::Statement &statement) {
           inferStatements(node.alternate);
         } else if constexpr (std::is_same_v<T, reader::WhileStatement>) {
           (void)inferExpression(node.condition);
+          ++loopDepth_;
           inferStatements(node.body);
+          --loopDepth_;
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
           if (node.init != nullptr) inferDeclaration(*node.init);
           if (node.initExpression != nullptr) (void)inferExpression(node.initExpression);
           if (node.condition != nullptr) (void)inferExpression(node.condition);
           if (node.update != nullptr) (void)inferExpression(node.update);
+          ++loopDepth_;
           inferStatements(node.body);
+          --loopDepth_;
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
-          (void)node.label;
+          if (loopDepth_ == 0) {
+            throw errors::ErrorException{
+                errors::ErrorStatus{errors::ErrorCode::TYPE_BREAK_OUTSIDE_LOOP, "break", statement.range}};
+          }
         } else if constexpr (std::is_same_v<T, reader::ContinueStatement>) {
-          (void)node.label;
+          if (loopDepth_ == 0) {
+            throw errors::ErrorException{
+                errors::ErrorStatus{errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP, "continue", statement.range}};
+          }
         } else if constexpr (std::is_same_v<T, reader::ThrowStatement>) {
           (void)inferExpression(node.argument);
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
@@ -233,20 +244,26 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr, const reader::Iden
     const auto found = scope->bindings.find(identifier.name);
     if (found != scope->bindings.end()) {
       if (found->second != nullptr) return found->second;
+      return undefinedType();
     }
   }
   for (const auto &function : functions_) {
     if (function.declaration.name == identifier.name) {
       std::vector<TypePtr> parameterTypes;
       parameterTypes.reserve(function.declaration.parameters.size());
-      (void)function.declaration.parameters;
-      TypePtr calleeType = this->makeFunctionType(undefinedType(), std::move(parameterTypes));
+      for (const auto &param : function.declaration.parameters) {
+        (void)param;
+        parameterTypes.push_back(nullptr);
+      }
+      TypePtr resultType = function.returnType ? function.returnType : undefinedType();
+      TypePtr calleeType = this->makeFunctionType(resultType, std::move(parameterTypes));
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
+      annotations_.expressionTypes.insert_or_assign(expr.get(), calleeType);
       return calleeType;
     }
   }
-  annotations_.argumentTypes.insert_or_assign(expr.get(), nullptr);
-  return nullptr;
+  throw errors::ErrorException{
+      errors::ErrorStatus{errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER, identifier.name, expr->range}};
 }
 
 TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary) {
@@ -354,17 +371,25 @@ TypePtr Checker::targetType(const reader::ExprPtr &target) {
 }
 
 TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member) {
-  TypePtr objectType = inferExpression(member.object);
+  TypePtr objectType = resolve(inferExpression(member.object));
   if (member.computedFlag) {
     TypePtr indexType = inferExpression(member.computed);
     if (!isNumber(indexType))
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", expr->range}};
     annotations_.argumentTypes.insert_or_assign(expr.get(), objectType);
-    return objectType;
+    if (objectType != nullptr && objectType->kind == TypeKind::Array)
+      return objectType->element;
+    return undefinedType();
   }
   annotations_.argumentTypes.insert_or_assign(expr.get(), objectType);
-  return objectType;
+  if (objectType != nullptr && objectType->kind == TypeKind::Struct) {
+    for (const auto &[fieldName, fieldType] : objectType->fields) {
+      if (fieldName == member.property)
+        return fieldType;
+    }
+  }
+  return undefinedType();
 }
 
 void Checker::deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
@@ -384,8 +409,9 @@ void Checker::bindUnresolvedTypes(bool excludeMemberResults) {
 }
 
 void Checker::recordTopLevelTypes() {
-  (void)pendingMembers_;
-  (void)pendingTypeResolutions_;
+  for (auto &function : functions_) {
+    if (function.returnType == nullptr) function.returnType = undefinedType();
+  }
 }
 
 void Checker::finalize() {
@@ -456,6 +482,24 @@ bool Checker::definitelyReturns(const reader::StatementList &statements) const {
 }
 
 TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call) {
+  if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node)) {
+    if (const builtins::BuiltinSpec *builtin = builtins::BuiltinRegistry::instance().find(identifier->name)) {
+      if (!builtin->variadic && call.arguments.size() != builtin->minimumArguments) {
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS, identifier->name, expr->range}};
+      }
+      if (call.arguments.size() < builtin->minimumArguments) {
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS,
+                                identifier->name, expr->range}};
+      }
+      for (const auto &arg : call.arguments) (void)inferExpression(arg);
+      TypePtr calleeType = this->makeFunctionType(undefinedType(), {});
+      annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
+      annotations_.expressionTypes.insert_or_assign(expr.get(), calleeType);
+      return calleeType;
+    }
+  }
   const TypePtr target = inferExpression(call.callee);
   annotations_.argumentTypes.insert_or_assign(expr.get(), target);
 
@@ -463,11 +507,42 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
     throw errors::ErrorException{
         errors::ErrorStatus{errors::ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS, "call", expr->range}};
 
+  if (target->parameters.size() != call.arguments.size()) {
+    throw errors::ErrorException{
+        errors::ErrorStatus{errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS, "call", expr->range}};
+  }
+
+  for (std::size_t i = 0; i < call.arguments.size(); ++i) {
+    const TypePtr argType = inferExpression(call.arguments[i]);
+    (void)unifies(target->parameters[i], argType, "call");
+  }
+
   return target->result;
 }
 
-TypePtr Checker::inferObject(const reader::ExprPtr &, const reader::ObjectExpr &) { return undefinedType(); }
+TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object) {
+  (void)expr;
+  std::vector<std::pair<std::string, TypePtr>> fields;
+  fields.reserve(object.properties.size());
+  for (const auto &[key, value] : object.properties) {
+    TypePtr type = inferExpression(value);
+    fields.emplace_back(key, type);
+  }
+  return typeContext_.structType(std::move(fields));
+}
 
-TypePtr Checker::inferArray(const reader::ExprPtr &, const reader::ArrayExpr &) { return undefinedType(); }
+TypePtr Checker::inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array) {
+  (void)expr;
+  TypePtr element = undefinedType();
+  for (const auto &elem : array.elements) {
+    TypePtr elemType = inferExpression(elem);
+    if (element == nullptr || element->kind == TypeKind::Undefined) {
+      element = elemType;
+    } else if (!unifies(element, elemType, "array")) {
+      element = typeContext_.unionType({element, elemType});
+    }
+  }
+  return typeContext_.arrayType(element);
+}
 
 } // namespace jsmm::types
