@@ -65,6 +65,11 @@ bool IrGenerator::isNumber(types::TypePtr type) const {
   return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Byte;
 }
 
+bool IrGenerator::isString(types::TypePtr type) const {
+  const TypePtr resolved = resolve(std::move(type));
+  return resolved != nullptr && resolved->kind == TypeKind::String;
+}
+
 types::TypePtr IrGenerator::unionPayload(types::TypePtr type) const {
   type = resolve(std::move(type));
   if (type == nullptr || type->kind != TypeKind::Union) return nullptr;
@@ -303,6 +308,14 @@ llvm::Function *IrGenerator::boundsFunction() { return runtimeFunction("jsmm_oob
 
 llvm::Function *IrGenerator::stringEqualFunction() {
   return runtimeFunction("jsmm_str_eq", i64Type_, {i64Type_, i64Type_});
+}
+
+llvm::Function *IrGenerator::stringConcatFunction() {
+  return runtimeFunction("jsmm_str_cat", i64Type_, {i64Type_, i64Type_});
+}
+
+llvm::Function *IrGenerator::stringCompareFunction() {
+  return runtimeFunction("jsmm_str_cmp", i64Type_, {i64Type_, i64Type_});
 }
 
 llvm::Function *IrGenerator::throwFunction() {
@@ -1018,7 +1031,12 @@ IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &bin
 IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
   EmitValue right = generateExpression(binary.right);
-  if (binary.op == "+") return EmitValue{builder_->CreateFAdd(left.value, right.value), true};
+  if (binary.op == "+") {
+    if (isString(typeOf(binary.left)) && isString(typeOf(binary.right)))
+      return EmitValue{builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)}),
+                       false};
+    return EmitValue{builder_->CreateFAdd(left.value, right.value), true};
+  }
   if (binary.op == "-") return EmitValue{builder_->CreateFSub(left.value, right.value), true};
   if (binary.op == "*") return EmitValue{builder_->CreateFMul(left.value, right.value), true};
   if (binary.op == "/") return EmitValue{builder_->CreateFDiv(left.value, right.value), true};
@@ -1068,7 +1086,17 @@ IrGenerator::EmitValue IrGenerator::generateRelational(const reader::BinaryExpr 
   EmitValue left = generateExpression(binary.left);
   EmitValue right = generateExpression(binary.right);
   llvm::Value *comparison = nullptr;
-  if (isNumber(typeOf(binary.left)) && isNumber(typeOf(binary.right))) {
+  if (isString(typeOf(binary.left)) && isString(typeOf(binary.right))) {
+    llvm::Value *ordering =
+        builder_->CreateCall(stringCompareFunction(), {asRaw(left), asRaw(right)});
+    if (binary.op == "<") comparison = builder_->CreateICmpSLT(ordering, i64(0));
+    else if (binary.op == ">")
+      comparison = builder_->CreateICmpSGT(ordering, i64(0));
+    else if (binary.op == "<=")
+      comparison = builder_->CreateICmpSLE(ordering, i64(0));
+    else
+      comparison = builder_->CreateICmpSGE(ordering, i64(0));
+  } else if (isNumber(typeOf(binary.left)) && isNumber(typeOf(binary.right))) {
     if (binary.op == "<") comparison = builder_->CreateFCmpOLT(left.value, right.value);
     else if (binary.op == ">")
       comparison = builder_->CreateFCmpOGT(left.value, right.value);
@@ -1179,7 +1207,13 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
 
   if (assignment.op != "=") {
     EmitValue current = loadSlot(address, targetType);
-    if (assignment.op == "+=")
+    const bool stringAppend = assignment.op == "+=" && isString(targetType) && isString(valueType);
+    if (stringAppend) {
+      value =
+          EmitValue{builder_->CreateCall(stringConcatFunction(), {asRaw(current), asRaw(value)}),
+                    false};
+      valueType = types_->string();
+    } else if (assignment.op == "+=")
       value = EmitValue{builder_->CreateFAdd(current.value, value.value), true};
     else if (assignment.op == "-=")
       value = EmitValue{builder_->CreateFSub(current.value, value.value), true};
@@ -1192,7 +1226,7 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
     else
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, assignment.left->range}};
-    valueType = types_->number();
+    if (!stringAppend) valueType = types_->number();
   }
 
   value = coerce(targetType, valueType, value);

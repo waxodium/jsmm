@@ -243,6 +243,66 @@ jsmm_str_eq_false:
   ret
 )ASM";
 
+constexpr const char *stringConcatText = R"ASM(.section .text
+.globl jsmm_str_cat
+jsmm_str_cat:
+  push rbx
+  push r12
+  push r13
+  mov rbx, rdi
+  mov r12, rsi
+  mov r13, QWORD PTR [rbx]
+  add r13, QWORD PTR [r12]
+  lea rdi, [r13 + 8]
+  call jsmm_alloc
+  mov QWORD PTR [rax], r13
+  lea rdi, [rax + 8]
+  lea rsi, [rbx + 8]
+  mov rcx, QWORD PTR [rbx]
+  rep movsb
+  lea rsi, [r12 + 8]
+  mov rcx, QWORD PTR [r12]
+  rep movsb
+  pop r13
+  pop r12
+  pop rbx
+  ret
+)ASM";
+
+constexpr const char *stringCompareText = R"ASM(.section .text
+.globl jsmm_str_cmp
+jsmm_str_cmp:
+  mov r10, QWORD PTR [rdi]
+  mov r11, QWORD PTR [rsi]
+  mov r8, r10
+  cmp r8, r11
+  cmova r8, r11
+  lea rdi, [rdi + 8]
+  lea rsi, [rsi + 8]
+  xor ecx, ecx
+jsmm_str_cmp_loop:
+  cmp rcx, r8
+  jae jsmm_str_cmp_suffix
+  mov al, BYTE PTR [rdi + rcx]
+  cmp al, BYTE PTR [rsi + rcx]
+  jb jsmm_str_cmp_less
+  ja jsmm_str_cmp_greater
+  inc rcx
+  jmp jsmm_str_cmp_loop
+jsmm_str_cmp_suffix:
+  cmp r10, r11
+  jb jsmm_str_cmp_less
+  ja jsmm_str_cmp_greater
+  xor eax, eax
+  ret
+jsmm_str_cmp_less:
+  mov eax, -1
+  ret
+jsmm_str_cmp_greater:
+  mov eax, 1
+  ret
+)ASM";
+
 constexpr const char *literalText = R"ASM(.section .rodata
 jsmm_literal_true:
   .quad 4
@@ -586,6 +646,8 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(boundsSymbol), boundsText);
   registry.declare("string_writer", stringWriterText);
   registry.declare("string_equal", stringEqualText);
+  registry.declare("string_concat", stringConcatText);
+  registry.declare("string_compare", stringCompareText);
   registry.declare("throw", throwText);
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);

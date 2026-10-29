@@ -28,6 +28,11 @@ bool Checker::isNumber(TypePtr type) const {
   return type != nullptr && (type->kind == TypeKind::Number || type->kind == TypeKind::Byte);
 }
 
+bool Checker::isString(TypePtr type) const {
+  type = resolve(std::move(type));
+  return type != nullptr && type->kind == TypeKind::String;
+}
+
 Annotations Checker::check(const reader::Program &program) {
   deferredChecks_.clear();
   inferenceVariables_.clear();
@@ -532,6 +537,8 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     return booleanType();
   }
 
+  if (binary.op == "+" && isString(left) && isString(right)) return stringType();
+
   if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
       binary.op == "%" || binary.op == "**") {
     const TypePtr resolvedLeft = resolve(left);
@@ -548,6 +555,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
   }
 
   if (binary.op == "<" || binary.op == ">" || binary.op == "<=" || binary.op == ">=") {
+    if (isString(left) && isString(right)) return booleanType();
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
@@ -601,6 +609,10 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
   }
 
   if (assignment.op != "=") {
+    if (assignment.op == "+=" && isString(target) && isString(right)) {
+      annotations_.argumentTypes.insert_or_assign(expr.get(), right);
+      return stringType();
+    }
     if (!requireNumeric(target) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, expr->range}};

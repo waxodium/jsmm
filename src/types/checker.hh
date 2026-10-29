@@ -106,6 +106,7 @@ private:
   TypePtr resolve(TypePtr type) const { return typeContext_.resolve(type); }
   TypePtr unionPayload(TypePtr type) const;
   bool isNumber(TypePtr type) const;
+  bool isString(TypePtr type) const;
   bool requireNumeric(TypePtr type);
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
   bool definitelyReturns(const reader::StatementList &statements) const;

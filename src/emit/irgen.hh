@@ -65,6 +65,7 @@ private:
   types::TypePtr typeOf(const reader::ExprPtr &expression) const;
   types::TypePtr resolve(types::TypePtr type) const;
   bool isNumber(types::TypePtr type) const;
+  bool isString(types::TypePtr type) const;
   types::TypePtr unionPayload(types::TypePtr type) const;
 
   llvm::Constant *i64(std::uint64_t value) const;
@@ -110,6 +111,8 @@ private:
   llvm::Function *powerFunction();
   llvm::Function *boundsFunction();
   llvm::Function *stringEqualFunction();
+  llvm::Function *stringConcatFunction();
+  llvm::Function *stringCompareFunction();
   llvm::Function *throwFunction();
 
   llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);

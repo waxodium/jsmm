@@ -9,10 +9,10 @@ namespace {
 const std::unordered_set<std::string> keywords = {
     "async",    "await",    "break",      "case",    "catch", "class",    "const",
     "continue", "debugger", "default",    "delete",  "do",    "else",     "enum",
-    "export",   "extends",  "false",      "finally", "for",   "function", "if",
-    "import",   "in",       "instanceof", "int",     "let",   "new",      "null",
+    "export",   "extends",  "false",      "finally", "for",   "if",
+    "import",   "in",       "instanceof", "int",     "new",   "null",
     "number",   "return",   "signed",   "static",     "super",   "switch", "this",   "throw",
-    "try",      "typeof",   "true",     "unsigned",   "var",     "void",  "while",    "with",
+    "try",      "typeof",   "true",     "unsigned",  "void",  "while",    "with",
     "yield",    "bytes",    "type",    "auto",  "string",   "bool",   "boolean",
     "byte"};
 

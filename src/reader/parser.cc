@@ -122,11 +122,9 @@ Statement Parser::parseStatement() {
   Statement statement = [&]() {
     if (current().kind == TokenKind::Keyword) {
       const std::string &keyword = current().lexeme;
-      if (keyword == "let" || keyword == "const" || keyword == "var" || keyword == "number" ||
-          keyword == "string" || keyword == "bool" || keyword == "boolean" || keyword == "bytes" ||
+      if (keyword == "const" || keyword == "number" || keyword == "string" ||
+          keyword == "bool" || keyword == "boolean" || keyword == "bytes" ||
           keyword == "byte" || keyword == "auto" || keyword == "void") {
-        // Check for function declaration: type name(params) { ... }
-        // or type1, type2 name(params) { ... }
         bool isFuncDecl = false;
         if (index_ + 3 < tokens_.size() &&
             tokens_[index_ + 2].lexeme == "(" &&
@@ -141,10 +139,6 @@ Statement Parser::parseStatement() {
         if (isFuncDecl)
           return parseFunctionDeclaration(false);
         return parseDeclaration();
-      }
-      if (keyword == "function") {
-        consume(); // consume 'function'
-        return parseFunctionDeclaration(true);
       }
       if (keyword == "type") return parseTypeDeclaration();
       if (keyword == "return") return parseReturnStatement();
@@ -184,7 +178,7 @@ Statement Parser::parseExpressionStatement() {
 
 Statement Parser::parseDeclaration() {
   const std::string kind = consume().lexeme;
-  const bool isQualifier = (kind == "const" || kind == "let" || kind == "var");
+  const bool isQualifier = (kind == "const");
   const auto isBuiltinType = [](const std::string &text) {
     return text == "number" || text == "string" || text == "bool" || text == "boolean" ||
            text == "byte" || text == "bytes" || text == "auto" || text == "void" ||
@@ -250,7 +244,6 @@ Statement Parser::parseDeclaration() {
     if (current().kind != TokenKind::Identifier)
       fail("expected binding name", errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
     const std::string name = consume().lexeme;
-    // Handle array size after variable name: name[size] (C-style array declaration)
     if (eat("[")) {
       if (current().kind != TokenKind::NumberLiteral)
         fail("expected array size", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
@@ -299,7 +292,6 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
     if (eat("*")) annotation->pointer = true;
   } while (eat("|") || eat(","));
 
-  // Handle array size: type[size]
   if (eat("[")) {
     if (current().kind != TokenKind::NumberLiteral)
       fail("expected array size", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
@@ -310,7 +302,6 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
            errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
   }
 
-  // Handle int(size, signed/unsigned) type expressions
   if (!annotation->names.empty() && annotation->names[0] == "int" && annotation->names.size() == 1 &&
       !annotation->pointer) {
     if (eat("(")) {
@@ -357,7 +348,6 @@ Statement Parser::parseFunctionDeclaration(bool hasFunctionKeyword) {
          errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME);
   if (!eat(")")) {
     do {
-      // Skip parameter type if present (type name)
       if (current().kind == TokenKind::Keyword &&
           (current().lexeme == "number" || current().lexeme == "string" ||
            current().lexeme == "bool" || current().lexeme == "boolean" ||
@@ -444,7 +434,7 @@ Statement Parser::parseForStatement() {
     fail("expected '(' after 'for'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FOR);
   std::unique_ptr<VariableDeclaration> init;
   ExprPtr initExpression;
-  if (current().lexeme == "let" || current().lexeme == "const" || current().lexeme == "var") {
+  if (current().lexeme == "const") {
     const std::string kind = consume().lexeme;
     VariableDeclaration declaration{kind, {}};
     do {
@@ -490,11 +480,9 @@ Statement Parser::parseBreakStatement() {
   const std::size_t keywordLine = keyword.start.line;
   if (current().lexeme != ";" && current().lexeme != "}" && current().kind != TokenKind::End) {
     if (current().start.line > keywordLine) {
-      // ASI: LineTerminator after 'break' inserts semicolon
       return Statement(BreakStatement{}, SourceRange{start, keyword.end});
     }
     if (current().kind == TokenKind::Identifier) {
-      // break label; same line - label is part of break statement
       auto label = std::make_shared<Identifier>(Identifier{consume().lexeme, {}});
       return Statement(BreakStatement{label}, SourceRange{start, tokens_.at(index_ - 1).end});
     }
@@ -716,7 +704,6 @@ ExprPtr Parser::parseArrayLiteral() {
   if (!eat("]")) {
     do {
       if (current().kind == TokenKind::NumberLiteral && peekNextIsColon()) {
-        // Designated slot initializer: [index: value, ...]
         array.hasDesignated = true;
         std::size_t index = std::stoull(consume().lexeme);
         if (!eat(":"))
