@@ -56,6 +56,12 @@ private:
     llvm::BasicBlock *continueBlock = nullptr;
   };
 
+  struct Label {
+    std::string name;
+    llvm::BasicBlock *breakBlock = nullptr;
+    llvm::BasicBlock *continueBlock = nullptr;
+  };
+
   types::TypePtr typeOf(const reader::ExprPtr &expression) const;
   types::TypePtr resolve(types::TypePtr type) const;
   bool isNumber(types::TypePtr type) const;
@@ -103,6 +109,15 @@ private:
   llvm::Function *moduloFunction();
   llvm::Function *powerFunction();
   llvm::Function *boundsFunction();
+  llvm::Function *stringEqualFunction();
+  llvm::Function *throwFunction();
+
+  llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);
+  llvm::Value *emitTruthy(EmitValue value, types::TypePtr type);
+  llvm::Value *emitNullish(EmitValue value, types::TypePtr type);
+  llvm::Value *emitUnionEquality(EmitValue left, types::TypePtr leftType, EmitValue right,
+                                 types::TypePtr rightType);
+  long long unionTagFor(types::TypePtr type) const;
 
   EmitValue emitZeroValue(types::TypePtr type);
   EmitValue emitNullishCell(long long tag);
@@ -129,7 +144,9 @@ private:
   EmitValue generateLogical(const reader::BinaryExpr &binary);
   EmitValue generateUpdate(const reader::UpdateExpr &update);
   EmitValue generateAssignment(const reader::AssignmentExpr &assignment);
-  llvm::Value *generateMemberAddress(const reader::MemberExpr &member);
+  llvm::Value *generateLValueAddress(const reader::ExprPtr &target);
+  llvm::Value *generateMemberAddress(const reader::MemberExpr &member,
+                                     const reader::SourceRange &range = {});
   EmitValue generateCall(const reader::ExprPtr &expression, const reader::CallExpr &call);
 
   void emitFormatValue(EmitValue value, types::TypePtr type);
@@ -170,8 +187,11 @@ private:
   llvm::AllocaInst *returnSlot_ = nullptr;
   types::TypePtr returnType_;
   std::vector<Loop> loops_;
+  std::vector<Label> labels_;
+  std::string pendingLoopLabel_;
   bool generatingEntry_ = false;
   EmitValue lastValue_;
+  int unionBlockCounter_ = 0;
 };
 
 } // namespace jsmm::emit

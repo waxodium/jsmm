@@ -1,5 +1,6 @@
 #pragma once
 
+#include "builtins/builtin.hh"
 #include "reader/ast.hh"
 #include "types/types.hh"
 
@@ -16,6 +17,7 @@ struct Annotations {
   std::unordered_map<const reader::Expression *, TypePtr> expressionTypes;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypes;
   std::unordered_map<const reader::Expression *, TypePtr> argumentTypes;
+  std::unordered_map<std::string, TypePtr> functionTypes;
 };
 
 class Checker {
@@ -35,7 +37,30 @@ private:
   struct FunctionEntry {
     reader::FunctionDeclaration declaration;
     TypePtr returnType;
+    std::vector<TypePtr> parameterTypes;
     Scope *parentScope = nullptr;
+  };
+
+  class BuiltinInference final : public builtins::InferContext {
+  public:
+    explicit BuiltinInference(Checker &checker) : checker_(checker) {}
+
+    TypePtr freshVariable() override;
+    TypePtr stringType() override;
+    TypePtr numberType() override;
+    TypePtr booleanType() override;
+    TypePtr undefinedType() override;
+    TypePtr resolveType(TypePtr type) override;
+    [[nodiscard]] std::string showType(TypePtr type) override;
+    [[noreturn]] void report(const reader::SourceRange &range,
+                             const std::string &message) override;
+    void requireUnify(TypePtr left, TypePtr right, const reader::SourceRange &range,
+                      const std::string &what) override;
+    void requireConcreteType(TypePtr type, const reader::SourceRange &range) override;
+    void deferCheck(std::function<void()> check) override;
+
+  private:
+    Checker &checker_;
   };
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
@@ -55,6 +80,8 @@ private:
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
   TypePtr targetType(const reader::ExprPtr &target);
   TypePtr inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member);
+  TypePtr memberResultType(const reader::MemberExpr &member, const reader::Expression &expression,
+                           TypePtr objectType);
   void deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
                    TypePtr objectType, TypePtr result);
   void resolvePendingMembers();
@@ -73,12 +100,14 @@ private:
   TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes) {
     return typeContext_.functionType(std::move(argumentTypes), std::move(returnType));
   }
+  TypePtr freshVariable();
 
   void insertDeclaredType(const reader::VariableDeclarator *declarator, TypePtr type);
   TypePtr resolve(TypePtr type) const { return typeContext_.resolve(type); }
   TypePtr unionPayload(TypePtr type) const;
   bool isNumber(TypePtr type) const;
-  bool unifies(TypePtr left, TypePtr right, std::string_view context) const;
+  bool requireNumeric(TypePtr type);
+  bool unifies(TypePtr left, TypePtr right, std::string_view context);
   bool definitelyReturns(const reader::StatementList &statements) const;
   bool isAddressable(const reader::ExprPtr &expr) const;
 
@@ -90,10 +119,14 @@ private:
   std::vector<FunctionEntry> functions_;
   std::vector<Scope> scopes_;
   std::vector<FunctionEntry *> currentFunctions_;
+  std::vector<std::pair<std::string, bool>> labels_;
   int loopDepth_ = 0;
   std::vector<std::vector<TypePtr>> returnTypeStack_;
   std::vector<std::pair<const reader::Expression *, reader::MemberExpr>> pendingMembers_;
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
+  std::vector<std::function<void()>> deferredChecks_;
+  std::vector<TypePtr> inferenceVariables_;
+  BuiltinInference builtinInference_{*this};
   TypeContext typeContext_;
   Annotations annotations_;
   std::unordered_map<std::string, TypePtr> typeAliases_;

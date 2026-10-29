@@ -17,6 +17,8 @@ std::unique_ptr<llvm::Module> createRuntimeModule(llvm::LLVMContext &context) {
   helpers.use(std::string(powerSymbol));
   helpers.use(std::string(boundsSymbol));
   helpers.use("string_writer");
+  helpers.use("string_equal");
+  helpers.use("throw");
   helpers.use("literals");
   helpers.use("literal_writers");
   helpers.use("number_writer");

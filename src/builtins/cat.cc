@@ -16,12 +16,26 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   case TypeKind::Number:
   case TypeKind::String:
   case TypeKind::Boolean:
+  case TypeKind::Byte:
   case TypeKind::Null:
+  case TypeKind::Never:
   case TypeKind::Variable: return true;
   case TypeKind::Array: return formattable(context, resolved->element);
   case TypeKind::Union: {
-    for (const types::TypePtr &member : resolved->members)
-      if (!formattable(context, member)) return false;
+    for (const types::TypePtr &member : resolved->members) {
+      const types::TypePtr inner = context.resolveType(member);
+      if (inner == nullptr) continue;
+      switch (inner->kind) {
+      case TypeKind::Number:
+      case TypeKind::String:
+      case TypeKind::Boolean:
+      case TypeKind::Byte:
+      case TypeKind::Null:
+      case TypeKind::Never:
+      case TypeKind::Variable: break;
+      default: return false;
+      }
+    }
     return true;
   }
   default: return false;

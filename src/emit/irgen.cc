@@ -71,7 +71,7 @@ types::TypePtr IrGenerator::unionPayload(types::TypePtr type) const {
   for (const TypePtr &member : type->members) {
     const TypePtr resolved = resolve(member);
     if (resolved == nullptr) continue;
-    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Null) continue;
+    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Never) continue;
     return resolved;
   }
   return nullptr;
@@ -301,6 +301,155 @@ llvm::Function *IrGenerator::powerFunction() {
 
 llvm::Function *IrGenerator::boundsFunction() { return runtimeFunction("jsmm_oob", voidType_, {}); }
 
+llvm::Function *IrGenerator::stringEqualFunction() {
+  return runtimeFunction("jsmm_str_eq", i64Type_, {i64Type_, i64Type_});
+}
+
+llvm::Function *IrGenerator::throwFunction() {
+  return runtimeFunction("jsmm_throw", voidType_, {});
+}
+
+llvm::Value *IrGenerator::stringEquals(llvm::Value *left, llvm::Value *right) {
+  llvm::Value *result = builder_->CreateCall(stringEqualFunction(), {left, right});
+  return builder_->CreateICmpNE(result, i64(0));
+}
+
+long long IrGenerator::unionTagFor(types::TypePtr type) const {
+  const TypePtr resolved = resolve(std::move(type));
+  if (resolved == nullptr) return unionTagPayload;
+  switch (resolved->kind) {
+  case TypeKind::Null: return unionTagNull;
+  case TypeKind::Number:
+  case TypeKind::Byte: return unionTagNumber;
+  case TypeKind::String: return unionTagString;
+  case TypeKind::Boolean: return unionTagBoolean;
+  default: return unionTagPayload;
+  }
+}
+
+llvm::Value *IrGenerator::emitTruthy(EmitValue value, types::TypePtr type) {
+  const TypePtr resolved = resolve(std::move(type));
+  llvm::Value *zeroFloat = llvm::ConstantFP::get(doubleType_, 0.0);
+  if (resolved == nullptr) return builder_->CreateICmpNE(asRaw(value), i64(0));
+  switch (resolved->kind) {
+  case TypeKind::Null:
+  case TypeKind::Never: return llvm::ConstantInt::getFalse(*context_);
+  case TypeKind::Number:
+  case TypeKind::Byte: return builder_->CreateFCmpONE(value.value, zeroFloat);
+  case TypeKind::String: {
+    llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(asRaw(value), 0));
+    return builder_->CreateICmpNE(length, i64(0));
+  }
+  case TypeKind::Union: {
+    llvm::Value *base = asRaw(value);
+    llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
+    llvm::Value *payload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));
+    llvm::Value *isNumber = builder_->CreateICmpEQ(tag, i64(unionTagNumber));
+    llvm::Value *isString = builder_->CreateICmpEQ(tag, i64(unionTagString));
+    llvm::Value *stringPointer =
+        builder_->CreateSelect(isString, payload, builder_->CreatePtrToInt(emptyString_, i64Type_));
+    llvm::Value *length =
+        builder_->CreateLoad(i64Type_, builder_->CreateIntToPtr(stringPointer, ptrType_));
+    llvm::Value *stringTruthy = builder_->CreateICmpNE(length, i64(0));
+    llvm::Value *numberTruthy =
+        builder_->CreateFCmpONE(builder_->CreateBitCast(payload, doubleType_), zeroFloat);
+    llvm::Value *payloadTruthy = builder_->CreateICmpNE(payload, i64(0));
+    llvm::Value *truthy = builder_->CreateSelect(
+        isNumber, numberTruthy, builder_->CreateSelect(isString, stringTruthy, payloadTruthy));
+    return builder_->CreateAnd(builder_->CreateICmpNE(tag, i64(unionTagNull)), truthy);
+  }
+  default: return builder_->CreateICmpNE(asRaw(value), i64(0));
+  }
+}
+
+llvm::Value *IrGenerator::emitNullish(EmitValue value, types::TypePtr type) {
+  const TypePtr resolved = resolve(std::move(type));
+  if (resolved == nullptr) return llvm::ConstantInt::getFalse(*context_);
+  switch (resolved->kind) {
+  case TypeKind::Null:
+  case TypeKind::Never: return llvm::ConstantInt::getTrue(*context_);
+  case TypeKind::Union: {
+    llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(asRaw(value), 0));
+    return builder_->CreateICmpEQ(tag, i64(unionTagNull));
+  }
+  default: return llvm::ConstantInt::getFalse(*context_);
+  }
+}
+
+llvm::Value *IrGenerator::emitUnionEquality(EmitValue left, types::TypePtr leftType,
+                                            EmitValue right, types::TypePtr rightType) {
+  llvm::Value *leftTag = nullptr;
+  llvm::Value *leftPayload = nullptr;
+  if (leftType != nullptr && leftType->kind == TypeKind::Union) {
+    llvm::Value *base = asRaw(left);
+    leftTag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
+    leftPayload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));
+  } else {
+    leftTag = i64(static_cast<std::uint64_t>(unionTagFor(leftType)));
+    leftPayload = asRaw(left);
+  }
+  llvm::Value *rightTag = nullptr;
+  llvm::Value *rightPayload = nullptr;
+  if (rightType != nullptr && rightType->kind == TypeKind::Union) {
+    llvm::Value *base = asRaw(right);
+    rightTag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
+    rightPayload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));
+  } else {
+    rightTag = i64(static_cast<std::uint64_t>(unionTagFor(rightType)));
+    rightPayload = asRaw(right);
+  }
+
+  llvm::Type *boolType = builder_->getInt1Ty();
+  llvm::BasicBlock *notEqualBlock = createBlock("union.eq.false");
+  llvm::BasicBlock *kindBlock = createBlock("union.eq.kind");
+  llvm::BasicBlock *numberCheckBlock = createBlock("union.eq.check.number");
+  llvm::BasicBlock *numberBlock = createBlock("union.eq.number");
+  llvm::BasicBlock *stringCheckBlock = createBlock("union.eq.check.string");
+  llvm::BasicBlock *stringBlock = createBlock("union.eq.string");
+  llvm::BasicBlock *valueBlock = createBlock("union.eq.value");
+  llvm::BasicBlock *mergeBlock = createBlock("union.eq.end");
+
+  builder_->CreateCondBr(builder_->CreateICmpEQ(leftTag, rightTag), kindBlock, notEqualBlock);
+
+  builder_->SetInsertPoint(notEqualBlock);
+  builder_->CreateBr(mergeBlock);
+
+  builder_->SetInsertPoint(kindBlock);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(leftTag, i64(unionTagNull)), mergeBlock,
+                         numberCheckBlock);
+
+  builder_->SetInsertPoint(numberCheckBlock);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(leftTag, i64(unionTagNumber)), numberBlock,
+                         stringCheckBlock);
+
+  builder_->SetInsertPoint(numberBlock);
+  llvm::Value *numberEqual =
+      builder_->CreateFCmpOEQ(builder_->CreateBitCast(leftPayload, doubleType_),
+                              builder_->CreateBitCast(rightPayload, doubleType_));
+  builder_->CreateBr(mergeBlock);
+
+  builder_->SetInsertPoint(stringCheckBlock);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(leftTag, i64(unionTagString)), stringBlock,
+                         valueBlock);
+
+  builder_->SetInsertPoint(stringBlock);
+  llvm::Value *stringEqual = stringEquals(leftPayload, rightPayload);
+  builder_->CreateBr(mergeBlock);
+
+  builder_->SetInsertPoint(valueBlock);
+  llvm::Value *valueEqual = builder_->CreateICmpEQ(leftPayload, rightPayload);
+  builder_->CreateBr(mergeBlock);
+
+  builder_->SetInsertPoint(mergeBlock);
+  auto *phi = builder_->CreatePHI(boolType, 5, "union.eq");
+  phi->addIncoming(numberEqual, numberBlock);
+  phi->addIncoming(stringEqual, stringBlock);
+  phi->addIncoming(valueEqual, valueBlock);
+  phi->addIncoming(llvm::ConstantInt::getTrue(*context_), kindBlock);
+  phi->addIncoming(llvm::ConstantInt::getFalse(*context_), notEqualBlock);
+  return phi;
+}
+
 IrGenerator::EmitValue IrGenerator::emitZeroValue(types::TypePtr type) {
   const TypePtr resolved = resolve(std::move(type));
   if (resolved == nullptr) return rawValue(i64(0));
@@ -411,6 +560,7 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
     if (origin->kind == TypeKind::Null) return emitNullishCell(unionTagNull);
     return emitBox(origin, value);
   }
+  if (origin->kind == TypeKind::Null) return emitZeroValue(target);
   if (target->kind == TypeKind::Struct && origin->kind == TypeKind::Struct)
     return convertStruct(target, origin, value);
   return value;
@@ -533,7 +683,7 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           endScope();
         } else if constexpr (std::is_same_v<T, reader::IfStatement>) {
           EmitValue condition = generateExpression(node.condition);
-          llvm::Value *test = builder_->CreateICmpNE(asRaw(condition), i64(0));
+          llvm::Value *test = emitTruthy(condition, typeOf(node.condition));
           llvm::BasicBlock *thenBlock = createBlock("if.then");
           llvm::BasicBlock *elseBlock = !node.alternate.empty() ? createBlock("if.else") : nullptr;
           llvm::BasicBlock *endBlock = createBlock("if.end");
@@ -558,14 +708,20 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           builder_->CreateBr(conditionBlock);
           builder_->SetInsertPoint(conditionBlock);
           EmitValue condition = generateExpression(node.condition);
-          builder_->CreateCondBr(builder_->CreateICmpNE(asRaw(condition), i64(0)), bodyBlock,
+          builder_->CreateCondBr(emitTruthy(condition, typeOf(node.condition)), bodyBlock,
                                  endBlock);
           builder_->SetInsertPoint(bodyBlock);
           loops_.push_back(Loop{endBlock, conditionBlock});
+          const bool labelled = !pendingLoopLabel_.empty();
+          if (labelled) {
+            labels_.push_back(Label{pendingLoopLabel_, endBlock, conditionBlock});
+            pendingLoopLabel_.clear();
+          }
           beginScope();
           generateStatements(node.body);
           endScope();
           loops_.pop_back();
+          if (labelled) labels_.pop_back();
           if (!terminated()) builder_->CreateBr(conditionBlock);
           builder_->SetInsertPoint(endBlock);
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
@@ -580,17 +736,23 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           builder_->SetInsertPoint(conditionBlock);
           if (node.condition != nullptr) {
             EmitValue condition = generateExpression(node.condition);
-            builder_->CreateCondBr(builder_->CreateICmpNE(asRaw(condition), i64(0)), bodyBlock,
+            builder_->CreateCondBr(emitTruthy(condition, typeOf(node.condition)), bodyBlock,
                                    endBlock);
           } else {
             builder_->CreateBr(bodyBlock);
           }
           builder_->SetInsertPoint(bodyBlock);
           loops_.push_back(Loop{endBlock, updateBlock});
+          const bool labelled = !pendingLoopLabel_.empty();
+          if (labelled) {
+            labels_.push_back(Label{pendingLoopLabel_, endBlock, updateBlock});
+            pendingLoopLabel_.clear();
+          }
           beginScope();
           generateStatements(node.body);
           endScope();
           loops_.pop_back();
+          if (labelled) labels_.pop_back();
           if (!terminated()) builder_->CreateBr(updateBlock);
           builder_->SetInsertPoint(updateBlock);
           if (node.update != nullptr) (void)generateExpression(node.update);
@@ -598,11 +760,56 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           builder_->SetInsertPoint(endBlock);
           endScope();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
-          builder_->CreateBr(loops_.back().breakBlock);
+          if (node.label != nullptr) {
+            llvm::BasicBlock *target = nullptr;
+            for (auto entry = labels_.rbegin(); entry != labels_.rend(); ++entry)
+              if (entry->name == node.label->text) {
+                target = entry->breakBlock;
+                break;
+              }
+            if (target == nullptr)
+              throw errors::ErrorException{errors::ErrorStatus{
+                  errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER, node.label->text, statement.range}};
+            builder_->CreateBr(target);
+          } else {
+            builder_->CreateBr(loops_.back().breakBlock);
+          }
         } else if constexpr (std::is_same_v<T, reader::ContinueStatement>) {
-          builder_->CreateBr(loops_.back().continueBlock);
+          if (node.label != nullptr) {
+            llvm::BasicBlock *target = nullptr;
+            for (auto entry = labels_.rbegin(); entry != labels_.rend(); ++entry)
+              if (entry->name == node.label->text && entry->continueBlock != nullptr) {
+                target = entry->continueBlock;
+                break;
+              }
+            if (target == nullptr)
+              throw errors::ErrorException{
+                  errors::ErrorStatus{errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP,
+                                      node.label->text, statement.range}};
+            builder_->CreateBr(target);
+          } else {
+            builder_->CreateBr(loops_.back().continueBlock);
+          }
+        } else if constexpr (std::is_same_v<T, reader::ThrowStatement>) {
+          if (node.argument != nullptr) (void)generateExpression(node.argument);
+          builder_->CreateCall(throwFunction());
+          builder_->CreateUnreachable();
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
-          generateStatement(*node.body);
+          if (node.body == nullptr) return;
+          const bool loopBody = std::holds_alternative<reader::WhileStatement>(node.body->node) ||
+                                std::holds_alternative<reader::ForStatement>(node.body->node);
+          if (loopBody) {
+            pendingLoopLabel_ = node.label;
+            generateStatement(*node.body);
+            pendingLoopLabel_.clear();
+          } else {
+            llvm::BasicBlock *endBlock = createBlock("label.end");
+            labels_.push_back(Label{node.label, endBlock, nullptr});
+            generateStatement(*node.body);
+            labels_.pop_back();
+            if (!terminated()) builder_->CreateBr(endBlock);
+            builder_->SetInsertPoint(endBlock);
+          }
         }
       },
       statement.node);
@@ -643,7 +850,7 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::AddressOfExpr>) {
           // For &member_expr, return the address directly without loading
           if (const auto *member = std::get_if<reader::MemberExpr>(&node.operand->node)) {
-            llvm::Value *addr = generateMemberAddress(*member);
+            llvm::Value *addr = generateMemberAddress(*member, node.operand->range);
             return rawValue(builder_->CreatePtrToInt(addr, i64Type_));
           }
           // For &*deref_expr, return the pointer value directly
@@ -676,7 +883,7 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::AssignmentExpr>) {
           return generateAssignment(node);
         } else if constexpr (std::is_same_v<T, reader::MemberExpr>) {
-          llvm::Value *address = generateMemberAddress(node);
+          llvm::Value *address = generateMemberAddress(node, expression->range);
           return loadSlot(builder_->CreateIntToPtr(address, ptrType_), typeOf(expression));
         } else if constexpr (std::is_same_v<T, reader::ObjectExpr>) {
           llvm::Value *base = allocate(8 * node.properties.size());
@@ -744,7 +951,7 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
 IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary) {
   if (unary.op == "!") {
     EmitValue operand = generateExpression(unary.operand);
-    llvm::Value *result = builder_->CreateICmpEQ(asRaw(operand), i64(0));
+    llvm::Value *result = builder_->CreateNot(emitTruthy(operand, typeOf(unary.operand)));
     return rawValue(builder_->CreateZExt(result, i64Type_));
   }
   if (unary.op == "~") {
@@ -758,7 +965,10 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
     EmitValue operand = generateExpression(unary.operand);
     return EmitValue{builder_->CreateFNeg(operand.value), true};
   }
-  if (unary.op == "+") return generateExpression(unary.operand);
+  if (unary.op == "+") {
+    EmitValue operand = generateExpression(unary.operand);
+    return EmitValue{builder_->CreateBitCast(asRaw(operand), doubleType_), true};
+  }
   if (unary.op == "typeof") {
     const TypePtr operandType = resolve(typeOf(unary.operand));
     EmitValue operand = generateExpression(unary.operand);
@@ -883,29 +1093,41 @@ IrGenerator::EmitValue IrGenerator::generateRelational(const reader::BinaryExpr 
 IrGenerator::EmitValue IrGenerator::generateEquality(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
   EmitValue right = generateExpression(binary.right);
+  const TypePtr leftType = resolve(typeOf(binary.left));
+  const TypePtr rightType = resolve(typeOf(binary.right));
   llvm::Value *equal = nullptr;
-  if (isNumber(typeOf(binary.left)) && isNumber(typeOf(binary.right)))
+  const bool leftUnion = leftType != nullptr && leftType->kind == TypeKind::Union;
+  const bool rightUnion = rightType != nullptr && rightType->kind == TypeKind::Union;
+  if (leftUnion || rightUnion) {
+    equal = emitUnionEquality(left, leftType, right, rightType);
+  } else if (isNumber(leftType) && isNumber(rightType)) {
     equal = builder_->CreateFCmpOEQ(left.value, right.value);
-  else
+  } else if (leftType != nullptr && rightType != nullptr && leftType->kind == TypeKind::String &&
+             rightType->kind == TypeKind::String) {
+    equal = stringEquals(asRaw(left), asRaw(right));
+  } else {
     equal = builder_->CreateICmpEQ(asRaw(left), asRaw(right));
+  }
   if (binary.op == "!=" || binary.op == "!==") equal = builder_->CreateNot(equal);
   return rawValue(builder_->CreateZExt(equal, i64Type_));
 }
 
 IrGenerator::EmitValue IrGenerator::generateLogical(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
+  const TypePtr leftType = typeOf(binary.left);
   llvm::Value *leftBits = asRaw(left);
-  llvm::Value *isTruthy = builder_->CreateICmpNE(leftBits, i64(0));
   llvm::BasicBlock *leftBlock = builder_->GetInsertBlock();
   llvm::BasicBlock *rightBlock = createBlock("logic.rhs");
   llvm::BasicBlock *endBlock = createBlock("logic.end");
   const bool andOp = binary.op == "&&";
   const bool nullish = binary.op == "??";
-  llvm::Value *takeLeft = nullish ? builder_->CreateICmpNE(leftBits, i64(0))
+  llvm::Value *isTruthy = emitTruthy(left, leftType);
+  llvm::Value *takeLeft = nullish ? builder_->CreateNot(emitNullish(left, leftType))
                                   : (andOp ? builder_->CreateNot(isTruthy) : isTruthy);
   builder_->CreateCondBr(takeLeft, endBlock, rightBlock);
   builder_->SetInsertPoint(rightBlock);
   EmitValue right = generateExpression(binary.right);
+  right = coerce(leftType, typeOf(binary.right), right);
   llvm::Value *rightBits = asRaw(right);
   llvm::BasicBlock *rightEnd = builder_->GetInsertBlock();
   if (!terminated()) builder_->CreateBr(endBlock);
@@ -917,9 +1139,32 @@ IrGenerator::EmitValue IrGenerator::generateLogical(const reader::BinaryExpr &bi
 }
 
 IrGenerator::EmitValue IrGenerator::generateUpdate(const reader::UpdateExpr &update) {
-  (void)update;
-  throw errors::ErrorException{
-      errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "++", {}}};
+  llvm::Value *address = generateLValueAddress(update.operand);
+  if (address == nullptr)
+    throw errors::ErrorException{errors::ErrorStatus{
+        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, update.op, update.operand->range}};
+  llvm::Value *previous =
+      builder_->CreateBitCast(builder_->CreateLoad(i64Type_, address), doubleType_);
+  llvm::Value *one = llvm::ConstantFP::get(doubleType_, 1.0);
+  llvm::Value *updated =
+      update.op == "++" ? builder_->CreateFAdd(previous, one) : builder_->CreateFSub(previous, one);
+  builder_->CreateStore(builder_->CreateBitCast(updated, i64Type_), address);
+  if (update.prefix) return EmitValue{updated, true};
+  return EmitValue{previous, true};
+}
+
+llvm::Value *IrGenerator::generateLValueAddress(const reader::ExprPtr &target) {
+  if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&target->node)) {
+    if (Slot *slot = lookupSlot(identifier->name)) return slot->address;
+    const auto global = globals_.find(identifier->name);
+    if (global != globals_.end()) return global->second;
+    return nullptr;
+  }
+  if (const auto *deref = std::get_if<reader::DereferenceExpr>(&target->node))
+    return builder_->CreateIntToPtr(asRaw(generateExpression(deref->operand)), ptrType_);
+  if (const auto *member = std::get_if<reader::MemberExpr>(&target->node))
+    return builder_->CreateIntToPtr(generateMemberAddress(*member, target->range), ptrType_);
+  return nullptr;
 }
 
 IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentExpr &assignment) {
@@ -927,32 +1172,36 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
   TypePtr valueType = typeOf(assignment.right);
   TypePtr targetType = typeOf(assignment.left);
 
-  llvm::Value *address = nullptr;
-  if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&assignment.left->node)) {
-    if (Slot *slot = lookupSlot(identifier->name)) {
-      address = slot->address;
-    } else {
-      const auto global = globals_.find(identifier->name);
-      if (global != globals_.end()) address = global->second;
-    }
-  } else if (const auto *deref = std::get_if<reader::DereferenceExpr>(&assignment.left->node)) {
-    EmitValue ptrValue = generateExpression(deref->operand);
-    address = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
-  } else if (const auto *member = std::get_if<reader::MemberExpr>(&assignment.left->node)) {
-    llvm::Value *memberAddr = generateMemberAddress(*member);
-    address = builder_->CreateIntToPtr(memberAddr, ptrType_);
-  }
-
+  llvm::Value *address = generateLValueAddress(assignment.left);
   if (address == nullptr)
     throw errors::ErrorException{errors::ErrorStatus{
-        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "=", assignment.left->range}};
+        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, assignment.op, assignment.left->range}};
+
+  if (assignment.op != "=") {
+    EmitValue current = loadSlot(address, targetType);
+    if (assignment.op == "+=")
+      value = EmitValue{builder_->CreateFAdd(current.value, value.value), true};
+    else if (assignment.op == "-=")
+      value = EmitValue{builder_->CreateFSub(current.value, value.value), true};
+    else if (assignment.op == "*=")
+      value = EmitValue{builder_->CreateFMul(current.value, value.value), true};
+    else if (assignment.op == "/=")
+      value = EmitValue{builder_->CreateFDiv(current.value, value.value), true};
+    else if (assignment.op == "%=")
+      value = EmitValue{builder_->CreateCall(moduloFunction(), {current.value, value.value}), true};
+    else
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       assignment.op, assignment.left->range}};
+    valueType = types_->number();
+  }
 
   value = coerce(targetType, valueType, value);
   storeSlot(address, value);
   return value;
 }
 
-llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member) {
+llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member,
+                                                const reader::SourceRange &range) {
   EmitValue object = generateExpression(member.object);
   llvm::Value *base = asRaw(object);
   TypePtr objectType = resolve(typeOf(member.object));
@@ -965,6 +1214,10 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
   }
 
   if (member.computedFlag) {
+    if (objectType == nullptr ||
+        (objectType->kind != TypeKind::Array && objectType->kind != TypeKind::Bytes))
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", range}};
     EmitValue indexValue = generateExpression(member.computed);
     llvm::Value *index32 = toInt32(indexValue.value);
     llvm::Value *index = builder_->CreateSExt(index32, i64Type_);
@@ -1003,7 +1256,8 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
     }
   }
 
-  return base;
+  throw errors::ErrorException{errors::ErrorStatus{
+      errors::ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED, member.property, range}};
 }
 
 IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expression,
@@ -1062,6 +1316,8 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
   temps_.clear();
   slotAllocas_.clear();
   loops_.clear();
+  labels_.clear();
+  pendingLoopLabel_.clear();
   slotCount_ = 0;
 
   for (const auto &statement : program.statements) {
@@ -1102,7 +1358,7 @@ void IrGenerator::generateEntry(const reader::Program &program) {
   builder_->SetInsertPoint(entry);
   returnType_ = types_->nullType();
   returnSlot_ = createEntryAlloca();
-  storeSlot(returnSlot_, rawValue(i64(0)));
+  storeSlot(returnSlot_, emitZeroValue(returnType_));
   returnBlock_ = createBlock("return");
   generatingEntry_ = true;
   beginScope();
@@ -1128,12 +1384,17 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   temps_.clear();
   slotAllocas_.clear();
   loops_.clear();
+  labels_.clear();
+  pendingLoopLabel_.clear();
   slotCount_ = 0;
-  const TypePtr functionType = nullptr;
-  returnType_ = types_->nullType();
-  (void)functionType;
+  const auto declaredFunction = annotations_->functionTypes.find(declaration.name);
+  returnType_ = declaredFunction != annotations_->functionTypes.end()
+                    ? resolve(declaredFunction->second->result)
+                    : types_->nullType();
+  if (returnType_ != nullptr && returnType_->kind == TypeKind::Variable)
+    returnType_ = types_->nullType();
   returnSlot_ = createEntryAlloca();
-  storeSlot(returnSlot_, rawValue(i64(0)));
+  storeSlot(returnSlot_, emitZeroValue(returnType_));
   returnBlock_ = createBlock("return");
   beginScope();
   auto argument = function->arg_begin();
@@ -1189,7 +1450,9 @@ void IrGenerator::emitFormatValue(EmitValue value, TypePtr type) {
   case TypeKind::Bytes: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Null: builder_->CreateCall(nullWriter()); break;
   case TypeKind::Array: emitFormatArray(value, type); break;
-  case TypeKind::Pointer: builder_->CreateCall(numberWriter(), {asRaw(value)}); break;
+  case TypeKind::Pointer:
+    builder_->CreateCall(numberWriter(), {builder_->CreateSIToFP(asRaw(value), doubleType_)});
+    break;
   case TypeKind::Union: emitFormatUnion(value, type); break;
   case TypeKind::Struct: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Function: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
@@ -1233,57 +1496,54 @@ void IrGenerator::emitFormatUnion(EmitValue value, TypePtr type) {
   llvm::Value *base = asRaw(value);
   llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
   llvm::Value *payload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));
-  llvm::BasicBlock *endBlock = createBlock("union.end");
+  const TypePtr payloadType = unionPayload(type);
+  const std::string suffix = std::to_string(unionBlockCounter_++);
 
-  // Null
-  {
-    llvm::BasicBlock *nullBlock = createBlock("union.null");
-    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullBlock, endBlock);
-    builder_->SetInsertPoint(nullBlock);
-    builder_->CreateCall(nullWriter());
-    builder_->CreateBr(endBlock);
-    builder_->SetInsertPoint(endBlock);
-  }
+  llvm::BasicBlock *nullBlock = createBlock("union.null" + suffix);
+  llvm::BasicBlock *numberCheck = createBlock("union.check.number" + suffix);
+  llvm::BasicBlock *numberBlock = createBlock("union.number" + suffix);
+  llvm::BasicBlock *stringCheck = createBlock("union.check.string" + suffix);
+  llvm::BasicBlock *stringBlock = createBlock("union.string" + suffix);
+  llvm::BasicBlock *booleanCheck = createBlock("union.check.boolean" + suffix);
+  llvm::BasicBlock *booleanBlock = createBlock("union.boolean" + suffix);
+  llvm::BasicBlock *payloadBlock = createBlock("union.payload" + suffix);
+  llvm::BasicBlock *endBlock = createBlock("union.end" + suffix);
 
-  // Number
-  {
-    llvm::BasicBlock *numBlock = createBlock("union.number");
-    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numBlock, endBlock);
-    builder_->SetInsertPoint(numBlock);
-    builder_->CreateCall(numberWriter(), {payload});
-    builder_->CreateBr(endBlock);
-    builder_->SetInsertPoint(endBlock);
-  }
+  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullBlock, numberCheck);
 
-  // String
-  {
-    llvm::BasicBlock *strBlock = createBlock("union.string");
-    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagString)), strBlock, endBlock);
-    builder_->SetInsertPoint(strBlock);
-    builder_->CreateCall(stringWriter(), {payload});
-    builder_->CreateBr(endBlock);
-    builder_->SetInsertPoint(endBlock);
-  }
+  builder_->SetInsertPoint(nullBlock);
+  builder_->CreateCall(nullWriter());
+  builder_->CreateBr(endBlock);
 
-  // Boolean
-  {
-    llvm::BasicBlock *boolBlock = createBlock("union.boolean");
-    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), boolBlock, endBlock);
-    builder_->SetInsertPoint(boolBlock);
-    builder_->CreateCall(boolWriter(), {payload});
-    builder_->CreateBr(endBlock);
-    builder_->SetInsertPoint(endBlock);
-  }
+  builder_->SetInsertPoint(numberCheck);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numberBlock,
+                         stringCheck);
 
-  // Default payload
-  {
-    llvm::BasicBlock *payloadBlock = createBlock("union.payload");
-    builder_->CreateBr(payloadBlock);
-    builder_->SetInsertPoint(payloadBlock);
-    emitFormatValue(asTyped(payload, unionPayload(type)), unionPayload(type));
-    builder_->CreateBr(endBlock);
-    builder_->SetInsertPoint(endBlock);
-  }
+  builder_->SetInsertPoint(numberBlock);
+  builder_->CreateCall(numberWriter(), {builder_->CreateBitCast(payload, doubleType_)});
+  builder_->CreateBr(endBlock);
+
+  builder_->SetInsertPoint(stringCheck);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagString)), stringBlock,
+                         booleanCheck);
+
+  builder_->SetInsertPoint(stringBlock);
+  builder_->CreateCall(stringWriter(), {payload});
+  builder_->CreateBr(endBlock);
+
+  builder_->SetInsertPoint(booleanCheck);
+  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), booleanBlock,
+                         payloadBlock);
+
+  builder_->SetInsertPoint(booleanBlock);
+  builder_->CreateCall(boolWriter(), {payload});
+  builder_->CreateBr(endBlock);
+
+  builder_->SetInsertPoint(payloadBlock);
+  emitFormatValue(asTyped(payload, payloadType), payloadType);
+  if (!terminated()) builder_->CreateBr(endBlock);
+
+  builder_->SetInsertPoint(endBlock);
 }
 
 } // namespace jsmm::emit

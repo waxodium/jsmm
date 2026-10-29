@@ -200,6 +200,49 @@ jsmm_cat_str:
   ret
 )ASM";
 
+constexpr const char *throwText = R"ASM(.section .text
+.globl jsmm_throw
+jsmm_throw:
+  mov eax, 1
+  mov edi, 2
+  lea rsi, [rip + jsmm_message_throw]
+  mov edx, offset jsmm_message_throw_len
+  syscall
+  mov edi, 1
+  mov eax, 60
+  syscall
+.section .data
+jsmm_message_throw:
+  .ascii "jsmm: uncaught exception\n"
+jsmm_message_throw_end:
+.set jsmm_message_throw_len, jsmm_message_throw_end - jsmm_message_throw
+)ASM";
+
+constexpr const char *stringEqualText = R"ASM(.section .text
+.globl jsmm_str_eq
+jsmm_str_eq:
+  mov rax, QWORD PTR [rdi]
+  cmp rax, QWORD PTR [rsi]
+  jne jsmm_str_eq_false
+  lea rdi, [rdi + 8]
+  lea rsi, [rsi + 8]
+  xor rcx, rcx
+jsmm_str_eq_loop:
+  cmp rcx, rax
+  jae jsmm_str_eq_true
+  mov dl, BYTE PTR [rdi + rcx]
+  cmp dl, BYTE PTR [rsi + rcx]
+  jne jsmm_str_eq_false
+  inc rcx
+  jmp jsmm_str_eq_loop
+jsmm_str_eq_true:
+  mov eax, 1
+  ret
+jsmm_str_eq_false:
+  xor eax, eax
+  ret
+)ASM";
+
 constexpr const char *literalText = R"ASM(.section .rodata
 jsmm_literal_true:
   .quad 4
@@ -542,6 +585,8 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("int32", int32Text);
   registry.declare(std::string(boundsSymbol), boundsText);
   registry.declare("string_writer", stringWriterText);
+  registry.declare("string_equal", stringEqualText);
+  registry.declare("throw", throwText);
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);
   registry.declare("number_writer", numberWriterText);

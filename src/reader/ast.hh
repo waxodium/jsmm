@@ -181,6 +181,7 @@ struct FunctionDeclaration {
   std::string name;
   std::vector<FunctionParameter> parameters;
   std::unique_ptr<BlockStatement> body;
+  std::shared_ptr<TypeExpr> returnAnnotation = nullptr;
   SourceRange range{};
 };
 
