@@ -43,9 +43,10 @@ private:
   Statement parseEmptyStatement();
   Statement parseExpressionStatement();
   Statement parseDeclaration();
-  Statement parseFunctionDeclaration();
+  Statement parseFunctionDeclaration(bool hasFunctionKeyword = false);
   Statement parseReturnStatement();
   Statement parseThrowStatement();
+  Statement parseTypeDeclaration();
   Statement parseBlock();
   StatementList parseBlockBody();
   StatementList parseConsequent();

@@ -11,13 +11,15 @@ enum class TypeKind {
   Number,
   String,
   Boolean,
+  Byte,
+  Bytes,
   Null,
-  Undefined,
   Never,
   Variable,
   Function,
   Struct,
   Array,
+  Pointer,
   Union
 };
 
@@ -32,6 +34,7 @@ struct Type {
   TypePtr result;
   std::vector<std::pair<std::string, TypePtr>> fields;
   TypePtr element;
+  TypePtr pointed;
   std::vector<TypePtr> members;
 };
 
@@ -42,13 +45,15 @@ public:
   TypePtr number() const;
   TypePtr string() const;
   TypePtr boolean() const;
-  TypePtr null() const;
-  TypePtr undefined() const;
+  TypePtr byteType() const;
+  TypePtr bytesType() const;
+  TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();
   TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
   TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
   TypePtr arrayType(TypePtr element);
+  TypePtr pointerType(TypePtr pointed);
   TypePtr unionType(std::vector<TypePtr> members);
 
   TypePtr resolve(TypePtr type) const;
@@ -62,8 +67,9 @@ private:
   TypePtr number_;
   TypePtr string_;
   TypePtr boolean_;
+  TypePtr byte_;
+  TypePtr bytes_;
   TypePtr null_;
-  TypePtr undefined_;
   TypePtr never_;
 };
 

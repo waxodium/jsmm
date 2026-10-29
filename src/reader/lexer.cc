@@ -10,9 +10,11 @@ const std::unordered_set<std::string> keywords = {
     "async",    "await",    "break",      "case",    "catch", "class",    "const",
     "continue", "debugger", "default",    "delete",  "do",    "else",     "enum",
     "export",   "extends",  "false",      "finally", "for",   "function", "if",
-    "import",   "in",       "instanceof", "let",     "new",   "null",     "return",
-    "static",   "super",    "switch",     "this",    "throw", "true",     "try",
-    "typeof",   "var",      "void",       "while",   "with",  "yield",    "undefined"};
+    "import",   "in",       "instanceof", "int",     "let",   "new",      "null",
+    "number",   "return",   "signed",   "static",     "super",   "switch", "this",   "throw",
+    "try",      "typeof",   "true",     "unsigned",   "var",     "void",  "while",    "with",
+    "yield",    "bytes",    "type",    "auto",  "string",   "bool",   "boolean",
+    "byte"};
 
 const std::vector<std::string_view> punctuators = {
     ">>>=", "**=", "===", "!==", ">>>", "==", "!=", "<=", ">=", "++", "--", "<<", ">>", "&&", "||",

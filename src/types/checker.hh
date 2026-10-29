@@ -29,6 +29,7 @@ public:
 private:
   struct Scope {
     std::unordered_map<std::string, TypePtr> bindings;
+    std::unordered_set<std::string> constants;
   };
 
   struct FunctionEntry {
@@ -47,6 +48,8 @@ private:
   TypePtr inferExpression(const reader::ExprPtr &expr);
   TypePtr inferIdentifier(const reader::ExprPtr &expr, const reader::IdentifierExpr &identifier);
   TypePtr inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary);
+  TypePtr inferAddressOf(const reader::ExprPtr &expr, const reader::AddressOfExpr &addrOf);
+  TypePtr inferDereference(const reader::ExprPtr &expr, const reader::DereferenceExpr &deref);
   TypePtr inferBinary(const reader::ExprPtr &expr, const reader::BinaryExpr &binary);
   TypePtr inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update);
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
@@ -62,9 +65,11 @@ private:
   TypePtr numberType() const { return typeContext_.number(); }
   TypePtr stringType() const { return typeContext_.string(); }
   TypePtr booleanType() const { return typeContext_.boolean(); }
-  TypePtr nullType() const { return typeContext_.null(); }
-  TypePtr undefinedType() const { return typeContext_.undefined(); }
+  TypePtr byteType() const { return typeContext_.byteType(); }
+  TypePtr bytesType() const { return typeContext_.bytesType(); }
+  TypePtr nullType() const { return typeContext_.nullType(); }
   TypePtr neverType() const { return typeContext_.never(); }
+  TypePtr pointerType(TypePtr pointed) { return typeContext_.pointerType(std::move(pointed)); }
   TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes) {
     return typeContext_.functionType(std::move(argumentTypes), std::move(returnType));
   }
@@ -75,10 +80,12 @@ private:
   bool isNumber(TypePtr type) const;
   bool unifies(TypePtr left, TypePtr right, std::string_view context) const;
   bool definitelyReturns(const reader::StatementList &statements) const;
+  bool isAddressable(const reader::ExprPtr &expr) const;
 
   TypePtr inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call);
   TypePtr inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object);
   TypePtr inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array);
+  TypePtr resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation);
 
   std::vector<FunctionEntry> functions_;
   std::vector<Scope> scopes_;
@@ -89,6 +96,7 @@ private:
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
   TypeContext typeContext_;
   Annotations annotations_;
+  std::unordered_map<std::string, TypePtr> typeAliases_;
 };
 
 } // namespace jsmm::types

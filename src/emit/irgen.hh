@@ -97,7 +97,6 @@ private:
   llvm::Function *numberWriter();
   llvm::Function *boolWriter();
   llvm::Function *nullWriter();
-  llvm::Function *undefinedWriter();
   llvm::Function *lbracketWriter();
   llvm::Function *separatorWriter();
   llvm::Function *rbracketWriter();

@@ -62,6 +62,14 @@ struct UnaryExpr {
   ExprPtr operand;
 };
 
+struct AddressOfExpr {
+  ExprPtr operand;
+};
+
+struct DereferenceExpr {
+  ExprPtr operand;
+};
+
 struct BinaryExpr {
   std::string op;
   ExprPtr left;
@@ -91,8 +99,15 @@ struct ObjectExpr {
   std::vector<std::pair<std::string, ExprPtr>> properties;
 };
 
+struct DesignatedInitializer {
+  std::size_t index;
+  ExprPtr value;
+};
+
 struct ArrayExpr {
   std::vector<ExprPtr> elements;
+  std::vector<DesignatedInitializer> designated;
+  bool hasDesignated = false;
 };
 
 struct BooleanLiteralExpr {
@@ -105,6 +120,12 @@ struct UndefinedLiteralExpr {};
 
 struct TypeExpr {
   std::vector<std::string> names;
+  bool pointer = false;
+  std::size_t intSize = 0;
+  bool intSigned = false;
+  bool isIntType = false;
+  std::size_t arraySize = 0;
+  bool isArray = false;
   SourceRange range{};
 };
 
@@ -202,6 +223,8 @@ struct Expression {
     IdentifierExpr,
     CallExpr,
     UnaryExpr,
+    AddressOfExpr,
+    DereferenceExpr,
     BinaryExpr,
     UpdateExpr,
     AssignmentExpr,

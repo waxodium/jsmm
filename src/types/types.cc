@@ -18,40 +18,33 @@ TypeContext::TypeContext() : nextId_(0) {
   boolean_ = std::make_shared<Type>();
   boolean_->kind = TypeKind::Boolean;
   boolean_->id = nextId_++;
+  byte_ = std::make_shared<Type>();
+  byte_->kind = TypeKind::Byte;
+  byte_->id = nextId_++;
+  bytes_ = std::make_shared<Type>();
+  bytes_->kind = TypeKind::Bytes;
+  bytes_->id = nextId_++;
   null_ = std::make_shared<Type>();
   null_->kind = TypeKind::Null;
   null_->id = nextId_++;
-  undefined_ = std::make_shared<Type>();
-  undefined_->kind = TypeKind::Undefined;
-  undefined_->id = nextId_++;
   never_ = std::make_shared<Type>();
   never_->kind = TypeKind::Never;
   never_->id = nextId_++;
 }
 
-TypePtr TypeContext::number() const {
-  return number_;
-}
+TypePtr TypeContext::number() const { return number_; }
 
-TypePtr TypeContext::string() const {
-  return string_;
-}
+TypePtr TypeContext::string() const { return string_; }
 
-TypePtr TypeContext::boolean() const {
-  return boolean_;
-}
+TypePtr TypeContext::boolean() const { return boolean_; }
 
-TypePtr TypeContext::null() const {
-  return null_;
-}
+TypePtr TypeContext::byteType() const { return byte_; }
 
-TypePtr TypeContext::undefined() const {
-  return undefined_;
-}
+TypePtr TypeContext::bytesType() const { return bytes_; }
 
-TypePtr TypeContext::never() const {
-  return never_;
-}
+TypePtr TypeContext::nullType() const { return null_; }
+
+TypePtr TypeContext::never() const { return never_; }
 
 TypePtr TypeContext::variable() {
   auto type = std::make_shared<Type>();
@@ -95,6 +88,14 @@ TypePtr TypeContext::unionType(std::vector<TypePtr> members) {
   return type;
 }
 
+TypePtr TypeContext::pointerType(TypePtr pointed) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Pointer;
+  type->id = nextId_++;
+  type->pointed = std::move(pointed);
+  return type;
+}
+
 TypePtr TypeContext::resolve(TypePtr type) const {
   std::set<int> seen;
   while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr) {
@@ -118,8 +119,9 @@ std::string TypeContext::showType(TypePtr type) {
   case TypeKind::Number: return "number";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
+  case TypeKind::Byte: return "byte";
+  case TypeKind::Bytes: return "bytes";
   case TypeKind::Null: return "null";
-  case TypeKind::Undefined: return "undefined";
   case TypeKind::Never: return "never";
   case TypeKind::Variable: return "t" + std::to_string(++showCounter_);
   case TypeKind::Function: {
@@ -144,6 +146,7 @@ std::string TypeContext::showType(TypePtr type) {
     return out;
   }
   case TypeKind::Array: return showType(type->element) + "[]";
+  case TypeKind::Pointer: return showType(type->pointed) + "*";
   case TypeKind::Union: {
     std::string out;
     for (std::size_t i = 0; i < type->members.size(); ++i) {

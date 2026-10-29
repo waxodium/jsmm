@@ -17,7 +17,6 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   case TypeKind::String:
   case TypeKind::Boolean:
   case TypeKind::Null:
-  case TypeKind::Undefined:
   case TypeKind::Variable: return true;
   case TypeKind::Array: return formattable(context, resolved->element);
   case TypeKind::Union: {

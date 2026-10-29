@@ -43,9 +43,11 @@ double parseNumber(const std::string &spelling) {
   return std::strtod(spelling.c_str(), nullptr);
 }
 
-constexpr long long unionTagUndefined = 0;
-constexpr long long unionTagNull = 1;
-constexpr long long unionTagPayload = 2;
+constexpr long long unionTagNull = 0;
+constexpr long long unionTagNumber = 1;
+constexpr long long unionTagString = 2;
+constexpr long long unionTagBoolean = 3;
+constexpr long long unionTagPayload = 4;
 
 } // namespace
 
@@ -59,7 +61,8 @@ types::TypePtr IrGenerator::resolve(types::TypePtr type) const {
 
 bool IrGenerator::isNumber(types::TypePtr type) const {
   const TypePtr resolved = resolve(std::move(type));
-  return resolved != nullptr && resolved->kind == TypeKind::Number;
+  if (resolved == nullptr) return false;
+  return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Byte;
 }
 
 types::TypePtr IrGenerator::unionPayload(types::TypePtr type) const {
@@ -68,7 +71,7 @@ types::TypePtr IrGenerator::unionPayload(types::TypePtr type) const {
   for (const TypePtr &member : type->members) {
     const TypePtr resolved = resolve(member);
     if (resolved == nullptr) continue;
-    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Undefined) continue;
+    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Null) continue;
     return resolved;
   }
   return nullptr;
@@ -76,21 +79,23 @@ types::TypePtr IrGenerator::unionPayload(types::TypePtr type) const {
 
 std::string IrGenerator::typeofName(types::TypePtr type) const {
   type = resolve(type);
-  if (type == nullptr) return "undefined";
+  if (type == nullptr) return "null";
   switch (type->kind) {
   case TypeKind::Number: return "number";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
-  case TypeKind::Null: return "object";
-  case TypeKind::Undefined:
-  case TypeKind::Never: return "undefined";
+  case TypeKind::Byte: return "byte";
+  case TypeKind::Bytes: return "bytes";
+  case TypeKind::Null: return "null";
+  case TypeKind::Never: return "null";
   case TypeKind::Function: return "function";
+  case TypeKind::Pointer: return "pointer";
   case TypeKind::Struct:
   case TypeKind::Array:
   case TypeKind::Union: return "object";
-  case TypeKind::Variable: return "undefined";
+  case TypeKind::Variable: return "null";
   }
-  return "undefined";
+  return "null";
 }
 
 llvm::Constant *IrGenerator::i64(std::uint64_t value) const {
@@ -274,10 +279,6 @@ llvm::Function *IrGenerator::nullWriter() {
   return runtimeFunction("jsmm_write_null", voidType_, {});
 }
 
-llvm::Function *IrGenerator::undefinedWriter() {
-  return runtimeFunction("jsmm_write_undefined", voidType_, {});
-}
-
 llvm::Function *IrGenerator::lbracketWriter() {
   return runtimeFunction("jsmm_write_lbracket", voidType_, {});
 }
@@ -321,19 +322,7 @@ IrGenerator::EmitValue IrGenerator::emitZeroValue(types::TypePtr type) {
     return rawValue(base);
   }
   case TypeKind::Union: {
-    long long tag = unionTagPayload;
-    bool foundNull = false;
-    bool foundUndefined = false;
-    for (const TypePtr &member : resolved->members) {
-      const TypePtr current = resolve(member);
-      if (current == nullptr) continue;
-      if (current->kind == TypeKind::Undefined) foundUndefined = true;
-      if (current->kind == TypeKind::Null) foundNull = true;
-    }
-    if (foundUndefined) tag = unionTagUndefined;
-    else if (foundNull)
-      tag = unionTagNull;
-    return emitNullishCell(tag);
+    return emitNullishCell(unionTagNull);
   }
   default: return rawValue(i64(0));
   }
@@ -347,9 +336,22 @@ IrGenerator::EmitValue IrGenerator::emitNullishCell(long long tag) {
 }
 
 IrGenerator::EmitValue IrGenerator::emitBox(types::TypePtr payloadType, EmitValue value) {
-  (void)payloadType;
   llvm::Value *base = allocate(16);
-  builder_->CreateStore(i64(unionTagPayload), bytePointer(base, 0));
+  long long tag = unionTagPayload;
+  if (payloadType != nullptr) {
+    const TypePtr resolved = resolve(std::move(payloadType));
+    if (resolved != nullptr) {
+      switch (resolved->kind) {
+      case TypeKind::Number:
+      case TypeKind::Byte: tag = unionTagNumber; break;
+      case TypeKind::String: tag = unionTagString; break;
+      case TypeKind::Boolean: tag = unionTagBoolean; break;
+      case TypeKind::Null: tag = unionTagNull; break;
+      default: tag = unionTagPayload; break;
+      }
+    }
+  }
+  builder_->CreateStore(i64(tag), bytePointer(base, 0));
   builder_->CreateStore(asRaw(value), bytePointer(base, 8));
   return rawValue(base);
 }
@@ -407,8 +409,7 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
   if (target->kind == TypeKind::Union) {
     if (origin->kind == TypeKind::Union) return value;
     if (origin->kind == TypeKind::Null) return emitNullishCell(unionTagNull);
-    if (origin->kind == TypeKind::Undefined) return emitNullishCell(unionTagUndefined);
-    return emitBox(unionPayload(target), value);
+    return emitBox(origin, value);
   }
   if (target->kind == TypeKind::Struct && origin->kind == TypeKind::Struct)
     return convertStruct(target, origin, value);
@@ -522,7 +523,7 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
             value = generateExpression(node.argument);
             value = coerce(returnType_, typeOf(node.argument), value);
           } else {
-            value = coerce(returnType_, types_->undefined(), value);
+            value = coerce(returnType_, types_->nullType(), value);
           }
           storeSlot(returnSlot_, value);
           builder_->CreateBr(returnBlock_);
@@ -625,7 +626,8 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::NullLiteralExpr>) {
           return rawValue(i64(0));
         } else if constexpr (std::is_same_v<T, reader::UndefinedLiteralExpr>) {
-          return rawValue(i64(0));
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "undefined", expression->range}};
         } else if constexpr (std::is_same_v<T, reader::IdentifierExpr>) {
           if (Slot *slot = lookupSlot(node.name))
             return loadSlot(slot->address, typeOf(expression));
@@ -638,6 +640,35 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
               errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER, node.name, expression->range}};
         } else if constexpr (std::is_same_v<T, reader::UnaryExpr>) {
           return generateUnary(node);
+        } else if constexpr (std::is_same_v<T, reader::AddressOfExpr>) {
+          // For &member_expr, return the address directly without loading
+          if (const auto *member = std::get_if<reader::MemberExpr>(&node.operand->node)) {
+            llvm::Value *addr = generateMemberAddress(*member);
+            return rawValue(builder_->CreatePtrToInt(addr, i64Type_));
+          }
+          // For &*deref_expr, return the pointer value directly
+          if (const auto *deref = std::get_if<reader::DereferenceExpr>(&node.operand->node)) {
+            EmitValue ptrValue = generateExpression(deref->operand);
+            return rawValue(asRaw(ptrValue));
+          }
+          if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&node.operand->node)) {
+            if (Slot *slot = lookupSlot(identifier->name)) {
+              return rawValue(builder_->CreatePtrToInt(slot->address, i64Type_));
+            }
+            const auto global = globals_.find(identifier->name);
+            if (global != globals_.end())
+              return rawValue(builder_->CreatePtrToInt(global->second, i64Type_));
+          }
+          EmitValue operand = generateExpression(node.operand);
+          return rawValue(asRaw(operand));
+        } else if constexpr (std::is_same_v<T, reader::DereferenceExpr>) {
+          EmitValue ptrValue = generateExpression(node.operand);
+          llvm::Value *pointer = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
+          llvm::Value *loaded = builder_->CreateLoad(i64Type_, pointer);
+          const TypePtr pointedType = resolve(typeOf(expression));
+          if (pointedType != nullptr && isNumber(pointedType))
+            return EmitValue{builder_->CreateBitCast(loaded, doubleType_), true};
+          return rawValue(loaded);
         } else if constexpr (std::is_same_v<T, reader::BinaryExpr>) {
           return generateBinary(node);
         } else if constexpr (std::is_same_v<T, reader::UpdateExpr>) {
@@ -668,17 +699,38 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           }
           return rawValue(base);
         } else if constexpr (std::is_same_v<T, reader::ArrayExpr>) {
-          llvm::Value *base = allocate(8 + 8 * node.elements.size());
-          builder_->CreateStore(i64(node.elements.size()), bytePointer(base, 0));
+          // Determine array size: max of element count and highest designated index + 1
+          std::size_t arraySize = node.elements.size();
+          for (const auto &desig : node.designated)
+            if (desig.index + 1 > arraySize) arraySize = desig.index + 1;
+
+          llvm::Value *base = allocate(8 + 8 * arraySize);
+          builder_->CreateStore(i64(arraySize), bytePointer(base, 0));
           const TypePtr arrayType = resolve(typeOf(expression));
           TypePtr elementType = arrayType != nullptr && arrayType->kind == TypeKind::Array
                                     ? arrayType->element
                                     : nullptr;
+
+          // Zero-initialize all slots
+          for (std::size_t index = 0; index < arraySize; ++index) {
+            EmitValue zero = emitZeroValue(elementType != nullptr ? elementType : types_->nullType());
+          storeSlot(bytePointer(base, 8 + 8 * index), zero);
+          }
+
+          // Store direct elements
           for (std::size_t index = 0; index < node.elements.size(); ++index) {
             EmitValue value = generateExpression(node.elements[index]);
             if (elementType != nullptr)
               value = coerce(elementType, typeOf(node.elements[index]), value);
             storeSlot(bytePointer(base, 8 + 8 * index), value);
+          }
+
+          // Store designated initializers
+          for (const auto &desig : node.designated) {
+            EmitValue value = generateExpression(desig.value);
+            if (elementType != nullptr)
+              value = coerce(elementType, typeOf(desig.value), value);
+            storeSlot(bytePointer(base, 8 + 8 * desig.index), value);
           }
           return rawValue(base);
         } else if constexpr (std::is_same_v<T, reader::CallExpr>) {
@@ -712,14 +764,23 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
     EmitValue operand = generateExpression(unary.operand);
     if (operandType != nullptr && operandType->kind == TypeKind::Union) {
       llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(asRaw(operand), 0));
-      llvm::Value *undefinedText = builder_->CreatePtrToInt(internString("undefined"), i64Type_);
-      llvm::Value *nullText = builder_->CreatePtrToInt(internString("object"), i64Type_);
+      llvm::Value *nullText = builder_->CreatePtrToInt(internString("null"), i64Type_);
+      llvm::Value *numberText = builder_->CreatePtrToInt(internString("number"), i64Type_);
+      llvm::Value *stringText = builder_->CreatePtrToInt(internString("string"), i64Type_);
+      llvm::Value *boolText = builder_->CreatePtrToInt(internString("boolean"), i64Type_);
       llvm::Value *payloadText =
           builder_->CreatePtrToInt(internString(typeofName(unionPayload(operandType))), i64Type_);
-      llvm::Value *nullish = builder_->CreateSelect(
-          builder_->CreateICmpEQ(tag, i64(unionTagUndefined)), undefinedText, nullText);
-      llvm::Value *result = builder_->CreateSelect(
-          builder_->CreateICmpULT(tag, i64(unionTagPayload)), nullish, payloadText);
+
+      // Start with payload as default
+      llvm::Value *result = payloadText;
+      result = builder_->CreateSelect(
+          builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), boolText, result);
+      result = builder_->CreateSelect(
+          builder_->CreateICmpEQ(tag, i64(unionTagString)), stringText, result);
+      result = builder_->CreateSelect(
+          builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numberText, result);
+      result = builder_->CreateSelect(
+          builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullText, result);
       return rawValue(result);
     }
     return rawValue(builder_->CreatePtrToInt(internString(typeofName(operandType)), i64Type_));
@@ -874,6 +935,9 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       const auto global = globals_.find(identifier->name);
       if (global != globals_.end()) address = global->second;
     }
+  } else if (const auto *deref = std::get_if<reader::DereferenceExpr>(&assignment.left->node)) {
+    EmitValue ptrValue = generateExpression(deref->operand);
+    address = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
   } else if (const auto *member = std::get_if<reader::MemberExpr>(&assignment.left->node)) {
     llvm::Value *memberAddr = generateMemberAddress(*member);
     address = builder_->CreateIntToPtr(memberAddr, ptrType_);
@@ -892,6 +956,13 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
   EmitValue object = generateExpression(member.object);
   llvm::Value *base = asRaw(object);
   TypePtr objectType = resolve(typeOf(member.object));
+
+  // Dereference pointer if needed
+  if (objectType != nullptr && objectType->kind == TypeKind::Pointer) {
+    llvm::Value *pointer = builder_->CreateIntToPtr(base, ptrType_);
+    base = builder_->CreateLoad(i64Type_, pointer);
+    objectType = objectType->pointed;
+  }
 
   if (member.computedFlag) {
     EmitValue indexValue = generateExpression(member.computed);
@@ -1029,7 +1100,7 @@ void IrGenerator::generateEntry(const reader::Program &program) {
       llvm::Function::Create(signature, llvm::Function::ExternalLinkage, "jsmm_entry", *module_);
   auto *entry = llvm::BasicBlock::Create(*context_, "entry", currentFunction_);
   builder_->SetInsertPoint(entry);
-  returnType_ = types_->undefined();
+  returnType_ = types_->nullType();
   returnSlot_ = createEntryAlloca();
   storeSlot(returnSlot_, rawValue(i64(0)));
   returnBlock_ = createBlock("return");
@@ -1059,7 +1130,7 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   loops_.clear();
   slotCount_ = 0;
   const TypePtr functionType = nullptr;
-  returnType_ = types_->undefined();
+  returnType_ = types_->nullType();
   (void)functionType;
   returnSlot_ = createEntryAlloca();
   storeSlot(returnSlot_, rawValue(i64(0)));
@@ -1107,21 +1178,23 @@ void IrGenerator::formatNewline() {
 void IrGenerator::emitFormatValue(EmitValue value, TypePtr type) {
   type = resolve(type);
   if (type == nullptr) {
-    builder_->CreateCall(undefinedWriter());
+    builder_->CreateCall(nullWriter());
     return;
   }
   switch (type->kind) {
   case TypeKind::Number: builder_->CreateCall(numberWriter(), {value.value}); break;
   case TypeKind::String: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Boolean: builder_->CreateCall(boolWriter(), {asRaw(value)}); break;
+  case TypeKind::Byte: builder_->CreateCall(numberWriter(), {value.value}); break;
+  case TypeKind::Bytes: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Null: builder_->CreateCall(nullWriter()); break;
-  case TypeKind::Undefined: builder_->CreateCall(undefinedWriter()); break;
   case TypeKind::Array: emitFormatArray(value, type); break;
+  case TypeKind::Pointer: builder_->CreateCall(numberWriter(), {asRaw(value)}); break;
   case TypeKind::Union: emitFormatUnion(value, type); break;
   case TypeKind::Struct: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Function: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
-  case TypeKind::Never: builder_->CreateCall(undefinedWriter()); break;
-  case TypeKind::Variable: builder_->CreateCall(undefinedWriter()); break;
+  case TypeKind::Never: builder_->CreateCall(nullWriter()); break;
+  case TypeKind::Variable: builder_->CreateCall(nullWriter()); break;
   }
 }
 void IrGenerator::emitFormatArray(EmitValue value, TypePtr type) {
@@ -1159,26 +1232,58 @@ void IrGenerator::emitFormatArray(EmitValue value, TypePtr type) {
 void IrGenerator::emitFormatUnion(EmitValue value, TypePtr type) {
   llvm::Value *base = asRaw(value);
   llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
-  llvm::BasicBlock *undefinedBlock = createBlock("union.undefined");
-  llvm::BasicBlock *nullBlock = createBlock("union.null");
-  llvm::BasicBlock *payloadBlock = createBlock("union.payload");
-  llvm::BasicBlock *endBlock = createBlock("union.end");
-  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagUndefined)), undefinedBlock,
-                         createBlock("union.notundefined"));
-  llvm::BasicBlock *notUndefined = builder_->GetInsertBlock()->getTerminator()->getSuccessor(1);
-  builder_->SetInsertPoint(notUndefined);
-  builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullBlock, payloadBlock);
-  builder_->SetInsertPoint(undefinedBlock);
-  builder_->CreateCall(undefinedWriter());
-  builder_->CreateBr(endBlock);
-  builder_->SetInsertPoint(nullBlock);
-  builder_->CreateCall(nullWriter());
-  builder_->CreateBr(endBlock);
-  builder_->SetInsertPoint(payloadBlock);
   llvm::Value *payload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));
-  emitFormatValue(asTyped(payload, unionPayload(type)), unionPayload(type));
-  if (!terminated()) builder_->CreateBr(endBlock);
-  builder_->SetInsertPoint(endBlock);
+  llvm::BasicBlock *endBlock = createBlock("union.end");
+
+  // Null
+  {
+    llvm::BasicBlock *nullBlock = createBlock("union.null");
+    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullBlock, endBlock);
+    builder_->SetInsertPoint(nullBlock);
+    builder_->CreateCall(nullWriter());
+    builder_->CreateBr(endBlock);
+    builder_->SetInsertPoint(endBlock);
+  }
+
+  // Number
+  {
+    llvm::BasicBlock *numBlock = createBlock("union.number");
+    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numBlock, endBlock);
+    builder_->SetInsertPoint(numBlock);
+    builder_->CreateCall(numberWriter(), {payload});
+    builder_->CreateBr(endBlock);
+    builder_->SetInsertPoint(endBlock);
+  }
+
+  // String
+  {
+    llvm::BasicBlock *strBlock = createBlock("union.string");
+    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagString)), strBlock, endBlock);
+    builder_->SetInsertPoint(strBlock);
+    builder_->CreateCall(stringWriter(), {payload});
+    builder_->CreateBr(endBlock);
+    builder_->SetInsertPoint(endBlock);
+  }
+
+  // Boolean
+  {
+    llvm::BasicBlock *boolBlock = createBlock("union.boolean");
+    builder_->CreateCondBr(builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), boolBlock, endBlock);
+    builder_->SetInsertPoint(boolBlock);
+    builder_->CreateCall(boolWriter(), {payload});
+    builder_->CreateBr(endBlock);
+    builder_->SetInsertPoint(endBlock);
+  }
+
+  // Default payload
+  {
+    llvm::BasicBlock *payloadBlock = createBlock("union.payload");
+    builder_->CreateBr(payloadBlock);
+    builder_->SetInsertPoint(payloadBlock);
+    emitFormatValue(asTyped(payload, unionPayload(type)), unionPayload(type));
+    builder_->CreateBr(endBlock);
+    builder_->SetInsertPoint(endBlock);
+  }
 }
 
 } // namespace jsmm::emit
