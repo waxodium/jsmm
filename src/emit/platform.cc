@@ -178,7 +178,7 @@ jsmm_oob:
   syscall
 .section .data
 jsmm_message_bounds:
-  .ascii "jsmm: array index out of bounds\n"
+  .ascii "jsmm: index out of bounds\n"
 jsmm_message_bounds_end:
 .set jsmm_message_bounds_len, jsmm_message_bounds_end - jsmm_message_bounds
 )ASM";
@@ -269,6 +269,25 @@ jsmm_str_cat:
   ret
 )ASM";
 
+constexpr const char *bytesCopyText = R"ASM(.section .text
+.globl jsmm_bytes_copy
+jsmm_bytes_copy:
+  push rbx
+  push r12
+  mov rbx, rdi
+  mov r12, QWORD PTR [rbx]
+  lea rdi, [r12 + 8]
+  call jsmm_alloc
+  mov QWORD PTR [rax], r12
+  lea rdi, [rax + 8]
+  lea rsi, [rbx + 8]
+  mov rcx, r12
+  rep movsb
+  pop r12
+  pop rbx
+  ret
+)ASM";
+
 constexpr const char *stringCompareText = R"ASM(.section .text
 .globl jsmm_str_cmp
 jsmm_str_cmp:
@@ -296,7 +315,7 @@ jsmm_str_cmp_suffix:
   xor eax, eax
   ret
 jsmm_str_cmp_less:
-  mov eax, -1
+  mov rax, -1
   ret
 jsmm_str_cmp_greater:
   mov eax, 1
@@ -648,6 +667,7 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("string_equal", stringEqualText);
   registry.declare("string_concat", stringConcatText);
   registry.declare("string_compare", stringCompareText);
+  registry.declare("bytes_copy", bytesCopyText);
   registry.declare("throw", throwText);
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);

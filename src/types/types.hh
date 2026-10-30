@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,6 +30,7 @@ using TypePtr = std::shared_ptr<Type>;
 struct Type {
   TypeKind kind;
   int id = 0;
+  std::size_t length = 0;
   TypePtr link;
   std::vector<TypePtr> parameters;
   TypePtr result;
@@ -52,7 +54,7 @@ public:
   TypePtr variable();
   TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
   TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
-  TypePtr arrayType(TypePtr element);
+  TypePtr arrayType(TypePtr element, std::size_t length = 0);
   TypePtr pointerType(TypePtr pointed);
   TypePtr unionType(std::vector<TypePtr> members);
 

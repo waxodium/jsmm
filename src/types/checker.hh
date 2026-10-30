@@ -64,9 +64,7 @@ private:
   };
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
-  void hoistVarDeclarations(const reader::StatementList &statements, Scope *scope);
-  void hoistVarDeclarations(const std::unique_ptr<reader::Statement> &stmt, Scope *scope);
-  void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body, Scope *parentScope);
+  void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body);
   void inferStatements(const reader::StatementList &statements);
   void inferDeclaration(const reader::VariableDeclaration &declaration);
   void inferStatement(const reader::Statement &statement);
@@ -85,7 +83,6 @@ private:
   void deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
                    TypePtr objectType, TypePtr result);
   void resolvePendingMembers();
-  void bindUnresolvedTypes(bool excludeMemberResults);
   void recordTopLevelTypes();
   void finalize();
 
@@ -104,12 +101,12 @@ private:
 
   void insertDeclaredType(const reader::VariableDeclarator *declarator, TypePtr type);
   TypePtr resolve(TypePtr type) const { return typeContext_.resolve(type); }
-  TypePtr unionPayload(TypePtr type) const;
   bool isNumber(TypePtr type) const;
   bool isString(TypePtr type) const;
+  bool isBytes(TypePtr type) const;
+  bool isText(TypePtr type) const;
   bool requireNumeric(TypePtr type);
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
-  bool definitelyReturns(const reader::StatementList &statements) const;
   bool isAddressable(const reader::ExprPtr &expr) const;
 
   TypePtr inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call);

@@ -17,6 +17,7 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   case TypeKind::String:
   case TypeKind::Boolean:
   case TypeKind::Byte:
+  case TypeKind::Bytes:
   case TypeKind::Null:
   case TypeKind::Never:
   case TypeKind::Variable: return true;

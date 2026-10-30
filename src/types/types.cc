@@ -72,10 +72,11 @@ TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fie
   return type;
 }
 
-TypePtr TypeContext::arrayType(TypePtr element) {
+TypePtr TypeContext::arrayType(TypePtr element, std::size_t length) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Array;
   type->id = nextId_++;
+  type->length = length;
   type->element = std::move(element);
   return type;
 }

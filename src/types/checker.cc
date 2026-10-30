@@ -11,18 +11,6 @@
 
 namespace jsmm::types {
 
-TypePtr Checker::unionPayload(TypePtr type) const {
-  type = resolve(std::move(type));
-  if (type == nullptr || type->kind != TypeKind::Union) return nullptr;
-  for (const TypePtr &member : type->members) {
-    const TypePtr resolved = resolve(member);
-    if (resolved == nullptr) continue;
-    if (resolved->kind == TypeKind::Null || resolved->kind == TypeKind::Never) continue;
-    return resolved;
-  }
-  return nullptr;
-}
-
 bool Checker::isNumber(TypePtr type) const {
   type = resolve(std::move(type));
   return type != nullptr && (type->kind == TypeKind::Number || type->kind == TypeKind::Byte);
@@ -33,12 +21,18 @@ bool Checker::isString(TypePtr type) const {
   return type != nullptr && type->kind == TypeKind::String;
 }
 
+bool Checker::isBytes(TypePtr type) const {
+  type = resolve(std::move(type));
+  return type != nullptr && type->kind == TypeKind::Bytes;
+}
+
+bool Checker::isText(TypePtr type) const { return isString(type) || isBytes(type); }
+
 Annotations Checker::check(const reader::Program &program) {
   deferredChecks_.clear();
   inferenceVariables_.clear();
   scopes_.push_back(Scope{});
   hoistFunctions(program, functions_);
-  hoistVarDeclarations(program.statements, &scopes_.back());
   inferStatements(program.statements);
   recordTopLevelTypes();
   finalize();
@@ -101,10 +95,7 @@ void Checker::hoistFunctions(const reader::Program &program,
                              std::vector<FunctionEntry> &functions) {
   for (const auto &statement : program.statements) {
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
-      std::vector<reader::FunctionParameter> parameters;
-      parameters.reserve(declaration->parameters.size());
-      for (const auto &p : declaration->parameters) parameters.push_back(p);
-      reader::FunctionDeclaration hoisted{declaration->name, std::move(parameters), nullptr,
+      reader::FunctionDeclaration hoisted{declaration->name, declaration->parameters, nullptr,
                                           declaration->returnAnnotation};
       FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back()};
       entry.parameterTypes.reserve(declaration->parameters.size());
@@ -115,47 +106,17 @@ void Checker::hoistFunctions(const reader::Program &program,
   }
 }
 
-void Checker::hoistVarDeclarations(const reader::StatementList &statements, Scope *scope) {
-  for (const auto &statement : statements) hoistVarDeclarations(statement, scope);
-}
-
-void Checker::hoistVarDeclarations(const std::unique_ptr<reader::Statement> &stmt, Scope *scope) {
-  if (stmt == nullptr) return;
-  std::visit(
-      [&](const auto &node) {
-        using T = std::decay_t<decltype(node)>;
-        if constexpr (std::is_same_v<T, reader::VariableDeclaration>) {
-          for (const auto &declarator : node.declarations)
-            scope->bindings.insert_or_assign(declarator.name, nullptr);
-        } else if constexpr (std::is_same_v<T, reader::BlockStatement>) {
-          scopes_.push_back(Scope{});
-          hoistVarDeclarations(node.statements, &scopes_.back());
-          scopes_.pop_back();
-        } else if constexpr (std::is_same_v<T, reader::IfStatement>) {
-          hoistVarDeclarations(node.consequent, scope);
-          hoistVarDeclarations(node.alternate, scope);
-        } else if constexpr (std::is_same_v<T, reader::WhileStatement>) {
-          hoistVarDeclarations(node.body, scope);
-        } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
-          if (node.init != nullptr && node.init->kind == "var") {
-            for (const auto &declarator : node.init->declarations)
-              scope->bindings.insert_or_assign(declarator.name, nullptr);
-          }
-          hoistVarDeclarations(node.body, scope);
-        } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
-          if (node.body != nullptr) hoistVarDeclarations(node.body, scope);
-        }
-      },
-      stmt->node);
-}
-
-void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body,
-                                Scope *parentScope) {
-  (void)parentScope;
+void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body) {
   Scope scope;
-  for (std::size_t index = 0; index < entry.declaration.parameters.size(); ++index)
-    scope.bindings.insert_or_assign(entry.declaration.parameters[index].name,
-                                    entry.parameterTypes[index]);
+  for (std::size_t index = 0; index < entry.declaration.parameters.size(); ++index) {
+    const reader::FunctionParameter &parameter = entry.declaration.parameters[index];
+    if (parameter.annotation != nullptr) {
+      const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
+      if (annotated != nullptr)
+        (void)unifies(annotated, entry.parameterTypes[index], "parameter");
+    }
+    scope.bindings.insert_or_assign(parameter.name, entry.parameterTypes[index]);
+  }
   scopes_.push_back(std::move(scope));
   currentFunctions_.push_back(&entry);
   returnTypeStack_.emplace_back();
@@ -166,8 +127,19 @@ void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *bo
   const TypePtr declared = entry.declaration.returnAnnotation != nullptr
                                ? resolveTypeAnnotation(entry.declaration.returnAnnotation)
                                : nullptr;
+  const bool returnsVoid = entry.declaration.returnAnnotation != nullptr &&
+                           !entry.declaration.returnAnnotation->names.empty() &&
+                           entry.declaration.returnAnnotation->names[0] == "void";
   TypePtr computed = nullType();
   for (const auto &rt : returnTypeStack_.back()) {
+    if (returnsVoid) {
+      const TypePtr resolved = resolve(rt);
+      if (resolved != nullptr && resolved->kind != TypeKind::Null &&
+          resolved->kind != TypeKind::Never)
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, "return", {}}};
+      continue;
+    }
     if (declared != nullptr) {
       if (!unifies(declared, rt, "return"))
         throw errors::ErrorException{
@@ -227,6 +199,19 @@ void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
           initializerType->element == nullptr)
         throw errors::ErrorException{errors::ErrorStatus{
             errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, "void", declarator.range}};
+
+      if (declaredType != nullptr && declaredType->kind == TypeKind::Array &&
+          std::holds_alternative<reader::ArrayExpr>(declarator.initializer->node)) {
+        const auto &literal = std::get<reader::ArrayExpr>(declarator.initializer->node);
+        std::size_t literalSize = literal.elements.size();
+        for (const auto &designated : literal.designated)
+          if (designated.index + 1 > literalSize) literalSize = designated.index + 1;
+        if (declaredType->length > 0 && literalSize > declaredType->length)
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_CANNOT_UNIFY, declarator.name, declarator.range}};
+        annotations_.expressionTypes.insert_or_assign(declarator.initializer.get(),
+                                                     declaredType);
+      }
 
       // If a type is declared, check compatibility
       if (declaredType != nullptr && initializerType != nullptr) {
@@ -305,7 +290,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
           bool hoisted = false;
           for (auto &function : functions_)
             if (function.declaration.name == node.name) {
-              inferFunctionBody(function, node.body.get(), &scopes_.back());
+              inferFunctionBody(function, node.body.get());
               hoisted = true;
               break;
             }
@@ -330,21 +315,31 @@ void Checker::inferStatement(const reader::Statement &statement) {
           scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::IfStatement>) {
           (void)inferExpression(node.condition);
+          scopes_.push_back(Scope{});
           inferStatements(node.consequent);
+          scopes_.pop_back();
+          scopes_.push_back(Scope{});
           inferStatements(node.alternate);
+          scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::WhileStatement>) {
           (void)inferExpression(node.condition);
+          scopes_.push_back(Scope{});
           ++loopDepth_;
           inferStatements(node.body);
           --loopDepth_;
+          scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
+          scopes_.push_back(Scope{});
           if (node.init != nullptr) inferDeclaration(*node.init);
           if (node.initExpression != nullptr) (void)inferExpression(node.initExpression);
           if (node.condition != nullptr) (void)inferExpression(node.condition);
           if (node.update != nullptr) (void)inferExpression(node.update);
           ++loopDepth_;
+          scopes_.push_back(Scope{});
           inferStatements(node.body);
+          scopes_.pop_back();
           --loopDepth_;
+          scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
           if (node.label != nullptr) {
             bool found = false;
@@ -407,6 +402,8 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
           return numberType();
         } else if constexpr (std::is_same_v<T, reader::StringLiteralExpr>) {
           return stringType();
+        } else if constexpr (std::is_same_v<T, reader::BytesLiteralExpr>) {
+          return bytesType();
         } else if constexpr (std::is_same_v<T, reader::IdentifierExpr>) {
           return inferIdentifier(expr, node);
         } else if constexpr (std::is_same_v<T, reader::CallExpr>) {
@@ -523,21 +520,30 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
   annotations_.argumentTypes.insert_or_assign(expr.get(), left);
 
   if (binary.op == "||" || binary.op == "&&" || binary.op == "??") {
+    if (binary.op == "??") {
+      const TypePtr resolvedLeft = resolve(left);
+      if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Null) return right;
+    }
     if (!unifies(left, right, binary.op))
-      throw errors::ErrorException{errors::ErrorStatus{
-          errors::ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD, binary.op, expr->range}};
-    if (binary.op == "??") { return left; }
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
     return left;
   }
 
   if (binary.op == "==" || binary.op == "!=" || binary.op == "===" || binary.op == "!==") {
     if (!unifies(left, right, binary.op))
-      throw errors::ErrorException{errors::ErrorStatus{
-          errors::ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD, binary.op, expr->range}};
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
     return booleanType();
   }
 
-  if (binary.op == "+" && isString(left) && isString(right)) return stringType();
+  if (binary.op == "+" && (isText(left) || isText(right))) {
+    if (!isText(left) || !isText(right))
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op, expr->range}};
+    if (isString(left) && isString(right)) return stringType();
+    return bytesType();
+  }
 
   if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
       binary.op == "%" || binary.op == "**") {
@@ -555,7 +561,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
   }
 
   if (binary.op == "<" || binary.op == ">" || binary.op == "<=" || binary.op == ">=") {
-    if (isString(left) && isString(right)) return booleanType();
+    if (isText(left) && isText(right)) return booleanType();
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
@@ -609,10 +615,13 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
   }
 
   if (assignment.op != "=") {
-    if (assignment.op == "+=" && isString(target) && isString(right)) {
+    if (assignment.op == "+=" && isText(target) && isText(right)) {
       annotations_.argumentTypes.insert_or_assign(expr.get(), right);
-      return stringType();
+      return target;
     }
+    if (isText(target) || isText(right))
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       assignment.op, expr->range}};
     if (!requireNumeric(target) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, expr->range}};
@@ -651,6 +660,10 @@ TypePtr Checker::memberResultType(const reader::MemberExpr &member,
     if (objectType != nullptr && objectType->kind == TypeKind::Bytes) return byteType();
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", expression.range}};
+  }
+  if ((objectType != nullptr && objectType->kind == TypeKind::String) ||
+      (objectType != nullptr && objectType->kind == TypeKind::Bytes)) {
+    if (member.property == "length") return numberType();
   }
   if (objectType != nullptr && objectType->kind == TypeKind::Struct) {
     for (const auto &[fieldName, fieldType] : objectType->fields) {
@@ -718,8 +731,6 @@ void Checker::resolvePendingMembers() {
   pendingTypeResolutions_.clear();
 }
 
-void Checker::bindUnresolvedTypes(bool excludeMemberResults) { (void)excludeMemberResults; }
-
 void Checker::recordTopLevelTypes() {
   for (auto &function : functions_) {
     if (function.returnType == nullptr) function.returnType = nullType();
@@ -730,7 +741,6 @@ void Checker::recordTopLevelTypes() {
 
 void Checker::finalize() {
   resolvePendingMembers();
-  bindUnresolvedTypes(false);
   for (const auto &variable : inferenceVariables_) {
     if (variable != nullptr && variable->kind == TypeKind::Variable && variable->link == nullptr)
       variable->link = numberType();
@@ -797,13 +807,15 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
   if ((left->kind == TypeKind::Byte && right->kind == TypeKind::Number) ||
       (left->kind == TypeKind::Number && right->kind == TypeKind::Byte))
     return true;
+  if ((left->kind == TypeKind::String && right->kind == TypeKind::Bytes) ||
+      (left->kind == TypeKind::Bytes && right->kind == TypeKind::String))
+    return true;
   // bytes is compatible with arrays of number/byte, and bytes elements with number
   if ((left->kind == TypeKind::Bytes && right->kind == TypeKind::Array) ||
-      (left->kind == TypeKind::Array && right->kind == TypeKind::Bytes))
-    return true;
-  if ((left->kind == TypeKind::Bytes && right->kind == TypeKind::Number) ||
-      (left->kind == TypeKind::Number && right->kind == TypeKind::Bytes))
-    return true;
+      (left->kind == TypeKind::Array && right->kind == TypeKind::Bytes)) {
+    const TypePtr element = left->kind == TypeKind::Array ? left->element : right->element;
+    return isNumber(element);
+  }
   if (left->kind != right->kind) return false;
   if (left->kind == TypeKind::Pointer) {
     return unifies(left->pointed, right->pointed, context);
@@ -818,29 +830,6 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
     return true;
   }
   return true;
-}
-
-bool Checker::definitelyReturns(const reader::StatementList &statements) const {
-  for (const auto &statement : statements) {
-    if (std::get_if<reader::BlockStatement>(&statement->node)) {
-      if (definitelyReturns(std::get<reader::BlockStatement>(statement->node).statements))
-        return true;
-    } else if (std::get_if<reader::IfStatement>(&statement->node)) {
-      auto &ifStmt = std::get<reader::IfStatement>(statement->node);
-      if (definitelyReturns(ifStmt.consequent) && definitelyReturns(ifStmt.alternate)) return true;
-    } else if (std::get_if<reader::LabeledStatement>(&statement->node)) {
-      auto &labeled = std::get<reader::LabeledStatement>(statement->node);
-      if (labeled.body != nullptr) {
-        std::vector<std::unique_ptr<reader::Statement>> bodyList;
-        bodyList.push_back(
-            std::move(const_cast<std::unique_ptr<reader::Statement> &>(labeled.body)));
-        if (definitelyReturns(bodyList)) return true;
-      }
-    } else if (std::get_if<reader::ReturnStatement>(&statement->node)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call) {
@@ -947,8 +936,8 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "auto") type = nullptr; // auto is handled by inference
     else if (name == "null") type = nullType();
 
-    // Check type aliases (skip for auto, which is intentionally null)
-    if (type == nullptr && name != "auto") {
+    // Check type aliases (skip for auto and void, which are intentionally null)
+    if (type == nullptr && name != "auto" && name != "void") {
       const auto found = typeAliases_.find(name);
       if (found != typeAliases_.end()) {
         type = found->second;
@@ -965,7 +954,7 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
 
     // Apply array size modifier to the final member of a union annotation
     if (annotation->isArray && type != nullptr && index + 1 == annotation->names.size()) {
-      type = typeContext_.arrayType(type);
+      type = typeContext_.arrayType(type, annotation->arraySize);
     }
 
     resolved.push_back(type);

@@ -44,7 +44,6 @@ private:
 
   struct Slot {
     llvm::Value *address = nullptr;
-    bool isConst = false;
   };
 
   struct Scope {
@@ -66,6 +65,8 @@ private:
   types::TypePtr resolve(types::TypePtr type) const;
   bool isNumber(types::TypePtr type) const;
   bool isString(types::TypePtr type) const;
+  bool isBytes(types::TypePtr type) const;
+  bool isText(types::TypePtr type) const;
   types::TypePtr unionPayload(types::TypePtr type) const;
 
   llvm::Constant *i64(std::uint64_t value) const;
@@ -88,9 +89,6 @@ private:
   void endScope();
   Slot *lookupSlot(const std::string &name);
   long long allocateSlot();
-  void releaseSlot(long long index);
-  long long pushTemp();
-  void popTemp();
   llvm::AllocaInst *slotAlloca(long long index);
   llvm::AllocaInst *createEntryAlloca();
 
@@ -113,6 +111,7 @@ private:
   llvm::Function *stringEqualFunction();
   llvm::Function *stringConcatFunction();
   llvm::Function *stringCompareFunction();
+  llvm::Function *bytesCopyFunction();
   llvm::Function *throwFunction();
 
   llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);
@@ -127,13 +126,10 @@ private:
   EmitValue emitBox(types::TypePtr payloadType, EmitValue value);
   EmitValue coerce(types::TypePtr destination, types::TypePtr source, EmitValue value);
   EmitValue convertStruct(types::TypePtr destination, types::TypePtr source, EmitValue value);
+  EmitValue convertArrayToBytes(EmitValue value);
+  EmitValue copyText(EmitValue value);
   bool sameLayout(types::TypePtr left, types::TypePtr right) const;
 
-  void collectVarDeclarations(const reader::StatementList &statements,
-                              std::vector<const reader::VariableDeclarator *> &out) const;
-  void collectVarDeclarations(const std::unique_ptr<reader::Statement> &stmt,
-                              std::vector<const reader::VariableDeclarator *> &out) const;
-  void hoistVarSlots(const reader::StatementList &statements);
   void generateDeclaration(const reader::VariableDeclaration &declaration);
   void generateStatements(const reader::StatementList &statements);
   void generateStatement(const reader::Statement &statement);
@@ -142,6 +138,10 @@ private:
   EmitValue generateBinary(const reader::BinaryExpr &binary);
   EmitValue generateArithmetic(const reader::BinaryExpr &binary);
   EmitValue generateBitwise(const reader::BinaryExpr &binary);
+  EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right);
+  EmitValue loadByteElement(llvm::Value *address) const;
+  void storeByteElement(llvm::Value *address, EmitValue value) const;
+  bool byteElement(const reader::ExprPtr &expression) const;
   EmitValue generateRelational(const reader::BinaryExpr &binary);
   EmitValue generateEquality(const reader::BinaryExpr &binary);
   EmitValue generateLogical(const reader::BinaryExpr &binary);
@@ -179,10 +179,7 @@ private:
   llvm::GlobalVariable *emptyString_ = nullptr;
 
   std::vector<Scope> scopes_;
-  int varTargetScopeIndex_ = -1;
   long long slotCount_ = 0;
-  std::vector<long long> freeSlots_;
-  std::vector<long long> temps_;
   std::vector<llvm::AllocaInst *> slotAllocas_;
 
   llvm::Function *currentFunction_ = nullptr;

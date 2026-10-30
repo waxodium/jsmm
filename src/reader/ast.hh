@@ -48,6 +48,10 @@ struct StringLiteralExpr {
   std::string value;
 };
 
+struct BytesLiteralExpr {
+  std::string value;
+};
+
 struct IdentifierExpr {
   std::string name;
 };
@@ -175,6 +179,7 @@ struct ForStatement {
 struct FunctionParameter {
   std::string name;
   SourceRange range{};
+  std::shared_ptr<TypeExpr> annotation = nullptr;
 };
 
 struct FunctionDeclaration {
@@ -221,6 +226,7 @@ struct Expression {
   std::variant<
     NumberLiteralExpr,
     StringLiteralExpr,
+    BytesLiteralExpr,
     IdentifierExpr,
     CallExpr,
     UnaryExpr,

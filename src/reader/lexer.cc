@@ -7,19 +7,17 @@ namespace jsmm::reader {
 namespace {
 
 const std::unordered_set<std::string> keywords = {
-    "async",    "await",    "break",      "case",    "catch", "class",    "const",
-    "continue", "debugger", "default",    "delete",  "do",    "else",     "enum",
-    "export",   "extends",  "false",      "finally", "for",   "if",
-    "import",   "in",       "instanceof", "int",     "new",   "null",
-    "number",   "return",   "signed",   "static",     "super",   "switch", "this",   "throw",
-    "try",      "typeof",   "true",     "unsigned",  "void",  "while",    "with",
-    "yield",    "bytes",    "type",    "auto",  "string",   "bool",   "boolean",
-    "byte"};
+    "break",  "case",  "catch",  "class",   "const",  "continue", "default",  "do",
+    "else",   "enum",  "export", "extends", "false",  "finally",  "for",      "if",
+    "import", "int",   "new",    "null",    "number", "return",   "signed",   "static",
+    "switch", "this",  "throw",  "try",     "typeof", "true",     "unsigned", "void",
+    "while",  "bytes", "type",   "auto",    "string", "bool",     "boolean"};
 
 const std::vector<std::string_view> punctuators = {
-    ">>>=", "**=", "===", "!==", ">>>", "==", "!=", "<=", ">=", "++", "--", "<<", ">>", "&&", "||",
-    "??",   "+=",  "-=",  "*=",  "/=",  "%=", "**", "{",  "}",  "(",  ")",  "[",  "]",  ".",  ";",
-    ",",    "<",   ">",   "+",   "-",   "*",  "/",  "%",  "=",  "!",  "~",  "^",  "&",  "|",  ":"};
+    ">>>=", "**=", "===", "!==", ">>>", "<<=", ">>=", "==", "!=", "<=", ">=", "++", "--",
+    "<<",   ">>",  "&&",  "||",  "??",  "+=",  "-=",  "*=", "/=", "%=", "&=", "|=", "^=",
+    "**",   "{",   "}",   "(",   ")",   "[",   "]",   ".",  ";",  ",",  "<",  ">",  "+",
+    "-",    "*",   "/",   "%",   "=",   "!",   "~",   "^",  "&",  "|",  ":"};
 
 bool isWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\v' || c == '\f' || c == '\r' || c == '\n';
