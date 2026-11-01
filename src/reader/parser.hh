@@ -52,6 +52,7 @@ private:
   StatementList parseConsequent();
   Statement parseIfStatement();
   Statement parseWhileStatement();
+  Statement parseSwitchStatement();
   Statement parseForStatement();
   Statement parseBreakStatement();
   Statement parseContinueStatement();
@@ -74,6 +75,7 @@ private:
   ExprPtr parseObjectLiteral();
   ExprPtr parseArrayLiteral();
   std::shared_ptr<TypeExpr> parseTypeAnnotation();
+  int parsePointerStars();
 
   static const std::unordered_map<std::string, InfixParselet> &infixParselets();
   static const std::unordered_map<std::string, PrefixParser> &prefixParselets();

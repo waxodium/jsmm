@@ -75,6 +75,7 @@ private:
   EmitValue rawValue(llvm::Value *value) const;
   llvm::Value *asRaw(EmitValue value) const;
   llvm::Value *toInt32(llvm::Value *value) const;
+  llvm::Value *toInt64(EmitValue value) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;

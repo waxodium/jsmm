@@ -131,6 +131,12 @@ llvm::Value *IrGenerator::asRaw(EmitValue value) const {
   return builder_->CreateBitCast(value.value, i64Type_);
 }
 
+llvm::Value *IrGenerator::toInt64(EmitValue value) const {
+  if (!value.number) return asRaw(value);
+  return builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_},
+                                   {value.value});
+}
+
 llvm::Value *IrGenerator::toInt32(llvm::Value *value) const {
   llvm::Value *wide =
       builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {value});
@@ -694,6 +700,59 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           if (labelled) labels_.pop_back();
           if (!terminated()) builder_->CreateBr(conditionBlock);
           builder_->SetInsertPoint(endBlock);
+        } else if constexpr (std::is_same_v<T, reader::SwitchStatement>) {
+          EmitValue discriminant = generateExpression(node.discriminant);
+          const types::TypePtr discriminantType = typeOf(node.discriminant);
+          const bool textDiscriminant = isText(discriminantType);
+          llvm::BasicBlock *endBlock = createBlock("switch.end");
+          std::vector<llvm::BasicBlock *> clauseBlocks;
+          clauseBlocks.reserve(node.cases.size());
+          for (std::size_t clause = 0; clause < node.cases.size(); ++clause)
+            clauseBlocks.push_back(createBlock("switch.case"));
+          llvm::BasicBlock *defaultBlock = endBlock;
+          for (std::size_t clause = 0; clause < node.cases.size(); ++clause)
+            if (node.cases[clause].value == nullptr) defaultBlock = clauseBlocks[clause];
+          llvm::BasicBlock *testBlock = builder_->GetInsertBlock();
+          for (std::size_t clause = 0; clause < node.cases.size(); ++clause) {
+            if (node.cases[clause].value == nullptr) continue;
+            builder_->SetInsertPoint(testBlock);
+            const types::TypePtr caseType = typeOf(node.cases[clause].value);
+            const bool caseText = isText(caseType);
+            if (caseText != textDiscriminant)
+              throw errors::ErrorException{
+                  errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "case",
+                                      node.cases[clause].range}};
+            llvm::Value *match = nullptr;
+            if (caseText) {
+              match = stringEquals(asRaw(discriminant),
+                                   asRaw(generateExpression(node.cases[clause].value)));
+            } else {
+              const auto asDouble = [&](EmitValue value) -> llvm::Value * {
+                if (value.number) return value.value;
+                return builder_->CreateSIToFP(asRaw(value), doubleType_);
+              };
+              EmitValue caseValue = generateExpression(node.cases[clause].value);
+              match = builder_->CreateFCmpOEQ(asDouble(discriminant), asDouble(caseValue));
+            }
+            llvm::BasicBlock *nextTest = createBlock("switch.test");
+            builder_->CreateCondBr(match, clauseBlocks[clause], nextTest);
+            testBlock = nextTest;
+          }
+          builder_->SetInsertPoint(testBlock);
+          builder_->CreateBr(defaultBlock);
+          loops_.push_back(
+              Loop{endBlock, loops_.empty() ? nullptr : loops_.back().continueBlock});
+          beginScope();
+          for (std::size_t clause = 0; clause < node.cases.size(); ++clause) {
+            builder_->SetInsertPoint(clauseBlocks[clause]);
+            generateStatements(node.cases[clause].statements);
+            if (!terminated())
+              builder_->CreateBr(clause + 1 < node.cases.size() ? clauseBlocks[clause + 1]
+                                                               : endBlock);
+          }
+          endScope();
+          loops_.pop_back();
+          builder_->SetInsertPoint(endBlock);
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
           llvm::BasicBlock *conditionBlock = createBlock("for.cond");
           llvm::BasicBlock *bodyBlock = createBlock("for.body");
@@ -1011,6 +1070,19 @@ IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &bin
 IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
   EmitValue right = generateExpression(binary.right);
+  const TypePtr leftType = resolve(typeOf(binary.left));
+  if (leftType != nullptr && leftType->kind == TypeKind::Pointer) {
+    const TypePtr rightType = resolve(typeOf(binary.right));
+    if (rightType != nullptr && rightType->kind == TypeKind::Pointer) {
+      llvm::Value *difference = builder_->CreateSub(asRaw(left), asRaw(right));
+      return EmitValue{builder_->CreateSIToFP(builder_->CreateSDiv(difference, i64(8)),
+                                             doubleType_),
+                       true};
+    }
+    llvm::Value *offset = builder_->CreateMul(toInt64(right), i64(8));
+    if (binary.op == "+") return rawValue(builder_->CreateAdd(asRaw(left), offset));
+    if (binary.op == "-") return rawValue(builder_->CreateSub(asRaw(left), offset));
+  }
   if (binary.op == "+") {
     if (isText(typeOf(binary.left)) && isText(typeOf(binary.right)))
       return EmitValue{builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)}),
@@ -1222,6 +1294,22 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, assignment.op, assignment.left->range}};
 
+  const TypePtr resolvedTarget = resolve(targetType);
+  if (assignment.op != "=" && resolvedTarget != nullptr &&
+      resolvedTarget->kind == TypeKind::Pointer) {
+    const std::string pointerOp = assignment.op.substr(0, assignment.op.size() - 1);
+    if (pointerOp != "+" && pointerOp != "-")
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, assignment.op, assignment.left->range}};
+    EmitValue current = loadSlot(address, targetType);
+    llvm::Value *offset = builder_->CreateMul(toInt64(value), i64(8));
+    EmitValue result = rawValue(pointerOp == "+"
+                                    ? builder_->CreateAdd(asRaw(current), offset)
+                                    : builder_->CreateSub(asRaw(current), offset));
+    storeSlot(address, result);
+    return result;
+  }
+
   const bool byteTarget = byteElement(assignment.left);
   if (assignment.op != "=") {
     EmitValue current = byteTarget ? loadByteElement(address) : loadSlot(address, targetType);
@@ -1267,6 +1355,16 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
   EmitValue object = generateExpression(member.object);
   llvm::Value *base = asRaw(object);
   TypePtr objectType = resolve(typeOf(member.object));
+
+  if (member.computedFlag && objectType != nullptr && objectType->kind == TypeKind::Pointer) {
+    const TypePtr pointed = resolve(objectType->pointed);
+    if (pointed != nullptr && pointed->kind != TypeKind::Array &&
+        pointed->kind != TypeKind::Bytes) {
+      EmitValue indexValue = generateExpression(member.computed);
+      llvm::Value *offset = builder_->CreateMul(toInt64(indexValue), i64(8));
+      return builder_->CreateAdd(base, offset);
+    }
+  }
 
   // Dereference pointer if needed
   if (objectType != nullptr && objectType->kind == TypeKind::Pointer) {

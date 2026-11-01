@@ -79,6 +79,7 @@ const std::unordered_map<std::string, Parser::PrefixParser> &Parser::prefixParse
       {"--", &P::parseUpdatePrefix},
       {"&", &P::parseUnaryPrefix},
       {"*", &P::parseUnaryPrefix},
+      {"**", &P::parseUnaryPrefix},
       {"typeof", &P::parseUnaryPrefix},
       {"void", &P::parseUnaryPrefix}};
   return table;
@@ -157,6 +158,7 @@ Statement Parser::parseStatement() {
       if (keyword == "if") return parseIfStatement();
       if (keyword == "while") return parseWhileStatement();
       if (keyword == "for") return parseForStatement();
+      if (keyword == "switch") return parseSwitchStatement();
       if (keyword == "break") return parseBreakStatement();
       if (keyword == "continue") return parseContinueStatement();
     }
@@ -204,12 +206,12 @@ Statement Parser::parseDeclaration() {
   if (!isQualifier) {
     // Direct type declaration: number x = 42;
     annotation->names.push_back(kind);
-    if (eat("*")) annotation->pointer = true;
+    annotation->pointerDepth.push_back(parsePointerStars());
     while (eat("|") || eat(",")) {
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
         fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
       annotation->names.push_back(consume().lexeme);
-      if (eat("*")) annotation->pointer = true;
+      annotation->pointerDepth.push_back(parsePointerStars());
     }
   }
 
@@ -230,13 +232,13 @@ Statement Parser::parseDeclaration() {
         const bool builtin = isBuiltinType(current().lexeme);
         auto prefix = std::make_shared<TypeExpr>();
         prefix->names.push_back(consume().lexeme);
-        if (eat("*")) prefix->pointer = true;
+        prefix->pointerDepth.push_back(parsePointerStars());
         for (;;) {
           if (eat("|")) {
             if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
               fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
             prefix->names.push_back(consume().lexeme);
-            if (eat("*")) prefix->pointer = true;
+            prefix->pointerDepth.push_back(parsePointerStars());
             continue;
           }
           if (builtin && current().lexeme == "," && index_ + 2 < tokens_.size() &&
@@ -245,7 +247,7 @@ Statement Parser::parseDeclaration() {
                tokens_[index_ + 2].kind == TokenKind::Keyword)) {
             consume();
             prefix->names.push_back(consume().lexeme);
-            if (eat("*")) prefix->pointer = true;
+            prefix->pointerDepth.push_back(parsePointerStars());
             continue;
           }
           break;
@@ -296,6 +298,19 @@ Statement Parser::parseTypeDeclaration() {
   return Statement(VariableDeclaration{"type", {{name, nullptr, annotation}}, {}});
 }
 
+int Parser::parsePointerStars() {
+  int depth = 0;
+  for (;;) {
+    if (eat("*")) {
+      ++depth;
+    } else if (eat("**")) {
+      depth += 2;
+    } else {
+      return depth;
+    }
+  }
+}
+
 std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   auto annotation = std::make_shared<TypeExpr>();
   const SourcePosition start = current().start;
@@ -304,7 +319,7 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
     if (kind != TokenKind::Identifier && kind != TokenKind::Keyword)
       fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
     annotation->names.push_back(consume().lexeme);
-    if (eat("*")) annotation->pointer = true;
+    annotation->pointerDepth.push_back(parsePointerStars());
   } while (eat("|") || eat(","));
 
   if (eat("[")) {
@@ -318,7 +333,7 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   }
 
   if (!annotation->names.empty() && annotation->names[0] == "int" && annotation->names.size() == 1 &&
-      !annotation->pointer) {
+      annotation->pointerDepth[0] == 0) {
     if (eat("(")) {
       annotation->isIntType = true;
       if (current().kind != TokenKind::NumberLiteral)
@@ -365,7 +380,8 @@ Statement Parser::parseFunctionDeclaration() {
                                    current().kind == TokenKind::Keyword;
       if (firstIsTypeName && index_ + 1 < tokens_.size() &&
           (tokens_[index_ + 1].kind == TokenKind::Identifier ||
-           tokens_[index_ + 1].kind == TokenKind::Keyword)) {
+           tokens_[index_ + 1].kind == TokenKind::Keyword ||
+           tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**")) {
         parameterAnnotation = parseTypeAnnotation();
       }
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
@@ -485,6 +501,44 @@ Statement Parser::parseForStatement() {
                                 std::move(update), std::move(body)});
 }
 
+Statement Parser::parseSwitchStatement() {
+  const SourcePosition start = consume().start;
+  if (!eat("("))
+    fail("expected '(' after 'switch'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_IF);
+  auto discriminant = parseExpression();
+  if (!eat(")"))
+    fail("expected ')' after switch expression",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION);
+  if (!eat("{"))
+    fail("expected '{' before switch body",
+         errors::ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY);
+  SwitchStatement statement{std::move(discriminant), {}, {}};
+  while (current().kind != TokenKind::End && current().lexeme != "}") {
+    const SourcePosition caseStart = current().start;
+    ExprPtr value;
+    if (eat("case")) {
+      value = parseExpression();
+    } else if (!eat("default")) {
+      fail("expected 'case' or 'default' in switch body");
+    }
+    if (!eat(":"))
+      fail("expected ':' after switch case label",
+           errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
+    SwitchCase clause{std::move(value), {}, {}};
+    while (current().kind != TokenKind::End && current().lexeme != "case" &&
+           current().lexeme != "default" && current().lexeme != "}")
+      clause.statements.push_back(std::make_unique<Statement>(parseStatement()));
+    clause.range = SourceRange{caseStart, tokens_.at(index_ == 0 ? 0 : index_ - 1).end};
+    statement.cases.push_back(std::move(clause));
+  }
+  if (!eat("}"))
+    fail("expected '}' after switch body",
+         errors::ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL);
+  const SourceRange range{start, tokens_.at(index_ - 1).end};
+  statement.range = range;
+  return Statement(std::move(statement), range);
+}
+
 Statement Parser::parseBreakStatement() {
   const SourcePosition start = current().start;
   const Token &keyword = consume();
@@ -571,9 +625,12 @@ ExprPtr Parser::parseUnaryPrefix() {
     return std::make_shared<Expression>(AddressOfExpr{std::move(operand)},
                                     SourceRange{start, tokens_.at(index_ - 1).end});
   }
-  if (op == "*") {
-    return std::make_shared<Expression>(DereferenceExpr{std::move(operand)},
-                                    SourceRange{start, tokens_.at(index_ - 1).end});
+  if (op == "*" || op == "**") {
+    const SourceRange range{start, tokens_.at(index_ - 1).end};
+    auto dereference = std::make_shared<Expression>(DereferenceExpr{std::move(operand)}, range);
+    if (op == "*")
+      return dereference;
+    return std::make_shared<Expression>(DereferenceExpr{std::move(dereference)}, range);
   }
   return std::make_shared<Expression>(UnaryExpr{op, std::move(operand)},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
@@ -634,10 +691,11 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
 ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
   (void)consume();
   const SourcePosition start = expression->range.start;
-  const Token property = consume();
-  if (property.kind != TokenKind::Identifier && property.kind != TokenKind::Keyword)
+  if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword &&
+      current().kind != TokenKind::NumberLiteral)
     fail("expected property name after '.'",
-         errors::ErrorCode::PARSE_EXPECTED_PROPERTY_NAME_AFTER_DOT);
+         errors::ErrorCode::PARSE_EXPECTED_OBJECT_PROPERTY_NAME);
+  const Token property = consume();
   return std::make_shared<Expression>(MemberExpr{std::move(expression), property.lexeme, nullptr, false},
                                 SourceRange{start, property.end});
 }
@@ -789,7 +847,9 @@ bool Parser::startsFunctionDeclaration() const {
     if (depth != 0) return false;
   }
 
-  while (cursor < tokens_.size() && tokens_[cursor].lexeme == "*") ++cursor;
+  while (cursor < tokens_.size() &&
+         (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
+    ++cursor;
 
   if (cursor < tokens_.size() && tokens_[cursor].lexeme == "[") {
     ++cursor;
@@ -806,7 +866,9 @@ bool Parser::startsFunctionDeclaration() const {
         tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
-    while (cursor < tokens_.size() && tokens_[cursor].lexeme == "*") ++cursor;
+    while (cursor < tokens_.size() &&
+         (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
+    ++cursor;
   }
 
   if (cursor + 1 >= tokens_.size()) return false;

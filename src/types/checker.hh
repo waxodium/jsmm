@@ -119,6 +119,7 @@ private:
   std::vector<FunctionEntry *> currentFunctions_;
   std::vector<std::pair<std::string, bool>> labels_;
   int loopDepth_ = 0;
+  int breakableDepth_ = 0;
   std::vector<std::vector<TypePtr>> returnTypeStack_;
   std::vector<std::pair<const reader::Expression *, reader::MemberExpr>> pendingMembers_;
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;

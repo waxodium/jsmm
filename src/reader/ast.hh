@@ -39,7 +39,6 @@ struct Expression;
 
 using ExprPtr = std::shared_ptr<Expression>;
 
-// Expression node kinds.
 struct NumberLiteralExpr {
   std::string spelling;
 };
@@ -124,7 +123,7 @@ struct UndefinedLiteralExpr {};
 
 struct TypeExpr {
   std::vector<std::string> names;
-  bool pointer = false;
+  std::vector<int> pointerDepth;  // 1} for T*, {2} for T**, ...
   std::size_t intSize = 0;
   bool intSigned = false;
   bool isIntType = false;
@@ -133,7 +132,6 @@ struct TypeExpr {
   SourceRange range{};
 };
 
-// Statements.
 struct Statement;
 
 struct BlockStatement {
@@ -151,6 +149,18 @@ struct IfStatement {
 struct WhileStatement {
   ExprPtr condition;
   std::vector<std::unique_ptr<Statement>> body;
+  SourceRange range{};
+};
+
+struct SwitchCase {
+  ExprPtr value = nullptr;
+  std::vector<std::unique_ptr<Statement>> statements;
+  SourceRange range{};
+};
+
+struct SwitchStatement {
+  ExprPtr discriminant;
+  std::vector<SwitchCase> cases;
   SourceRange range{};
 };
 
@@ -245,7 +255,6 @@ struct Expression {
   SourceRange range{};
 };
 
-// Statement is the wrapper carrying source range.
 struct Statement {
   std::variant<
     BlockStatement,
@@ -254,6 +263,7 @@ struct Statement {
     ExpressionStatement,
     IfStatement,
     WhileStatement,
+    SwitchStatement,
     ForStatement,
     BreakStatement,
     ContinueStatement,

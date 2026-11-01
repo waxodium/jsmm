@@ -325,8 +325,20 @@ void Checker::inferStatement(const reader::Statement &statement) {
           (void)inferExpression(node.condition);
           scopes_.push_back(Scope{});
           ++loopDepth_;
+          ++breakableDepth_;
           inferStatements(node.body);
+          --breakableDepth_;
           --loopDepth_;
+          scopes_.pop_back();
+        } else if constexpr (std::is_same_v<T, reader::SwitchStatement>) {
+          (void)inferExpression(node.discriminant);
+          scopes_.push_back(Scope{});
+          ++breakableDepth_;
+          for (const auto &clause : node.cases) {
+            if (clause.value != nullptr) (void)inferExpression(clause.value);
+            inferStatements(clause.statements);
+          }
+          --breakableDepth_;
           scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
           scopes_.push_back(Scope{});
@@ -334,11 +346,13 @@ void Checker::inferStatement(const reader::Statement &statement) {
           if (node.initExpression != nullptr) (void)inferExpression(node.initExpression);
           if (node.condition != nullptr) (void)inferExpression(node.condition);
           if (node.update != nullptr) (void)inferExpression(node.update);
+          ++breakableDepth_;
           ++loopDepth_;
           scopes_.push_back(Scope{});
           inferStatements(node.body);
           scopes_.pop_back();
           --loopDepth_;
+          --breakableDepth_;
           scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
           if (node.label != nullptr) {
@@ -352,7 +366,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
               throw errors::ErrorException{errors::ErrorStatus{
                   errors::ErrorCode::TYPE_UNDEFINED_IDENTIFIER, node.label->text,
                   statement.range}};
-          } else if (loopDepth_ == 0) {
+          } else if (breakableDepth_ == 0) {
             throw errors::ErrorException{errors::ErrorStatus{
                 errors::ErrorCode::TYPE_BREAK_OUTSIDE_LOOP, "break", statement.range}};
           }
@@ -549,6 +563,12 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
       binary.op == "%" || binary.op == "**") {
     const TypePtr resolvedLeft = resolve(left);
     const TypePtr resolvedRight = resolve(right);
+    const bool pointerOperands =
+        (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer) ||
+        (resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer);
+    if (pointerOperands && binary.op != "+" && binary.op != "-")
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       binary.op, expr->range}};
     if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
         resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer)
       return numberType();
@@ -561,6 +581,11 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
   }
 
   if (binary.op == "<" || binary.op == ">" || binary.op == "<=" || binary.op == ">=") {
+    const TypePtr orderLeft = resolve(left);
+    const TypePtr orderRight = resolve(right);
+    if (orderLeft != nullptr && orderLeft->kind == TypeKind::Pointer && orderRight != nullptr &&
+        orderRight->kind == TypeKind::Pointer)
+      return booleanType();
     if (isText(left) && isText(right)) return booleanType();
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
@@ -615,6 +640,15 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
   }
 
   if (assignment.op != "=") {
+    const TypePtr resolvedTarget = resolve(target);
+    if ((assignment.op == "+=" || assignment.op == "-=") && resolvedTarget != nullptr &&
+        resolvedTarget->kind == TypeKind::Pointer) {
+      if (!requireNumeric(right))
+        throw errors::ErrorException{errors::ErrorStatus{
+            errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, assignment.op, expr->range}};
+      annotations_.argumentTypes.insert_or_assign(expr.get(), right);
+      return target;
+    }
     if (assignment.op == "+=" && isText(target) && isText(right)) {
       annotations_.argumentTypes.insert_or_assign(expr.get(), right);
       return target;
@@ -653,9 +687,13 @@ bool Checker::isAddressable(const reader::ExprPtr &expr) const {
 
 TypePtr Checker::memberResultType(const reader::MemberExpr &member,
                                   const reader::Expression &expression, TypePtr objectType) {
-  if (objectType != nullptr && objectType->kind == TypeKind::Pointer)
-    objectType = resolve(objectType->pointed);
+  const bool pointerObject = objectType != nullptr && objectType->kind == TypeKind::Pointer;
+  const TypePtr pointed = pointerObject ? resolve(objectType->pointed) : nullptr;
+  if (pointerObject) objectType = pointed;
   if (member.computedFlag) {
+    if (pointerObject && pointed != nullptr && pointed->kind != TypeKind::Array &&
+        pointed->kind != TypeKind::Bytes)
+      return pointed;
     if (objectType != nullptr && objectType->kind == TypeKind::Array) return objectType->element;
     if (objectType != nullptr && objectType->kind == TypeKind::Bytes) return byteType();
     throw errors::ErrorException{errors::ErrorStatus{
@@ -947,9 +985,11 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
       }
     }
 
-    // Apply pointer modifier
-    if (annotation->pointer) {
-      type = pointerType(type);
+    // Apply pointer modifier(s) for each level of pointer depth
+    for (int depth : annotation->pointerDepth) {
+      for (int i = 0; i < depth; ++i) {
+        type = pointerType(type);
+      }
     }
 
     // Apply array size modifier to the final member of a union annotation
