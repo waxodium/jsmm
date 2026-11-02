@@ -43,6 +43,7 @@ public:
   virtual void declareHelper(std::string symbol, std::string text) = 0;
   virtual void useHelper(const std::string &symbol) = 0;
   virtual void callHelper(const std::string &symbol) = 0;
+  virtual void emitSyscall(const CallExpr &call) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
@@ -70,5 +71,6 @@ private:
 };
 
 void declareCat(BuiltinRegistry &registry);
+void declareSyscall(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

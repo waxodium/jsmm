@@ -42,6 +42,15 @@ TypePtr TypeContext::byteType() const { return byte_; }
 
 TypePtr TypeContext::bytesType() const { return bytes_; }
 
+TypePtr TypeContext::integerType(std::size_t bits, bool isSigned) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Integer;
+  type->id = nextId_++;
+  type->length = bits;
+  type->isSigned = isSigned;
+  return type;
+}
+
 TypePtr TypeContext::nullType() const { return null_; }
 
 TypePtr TypeContext::never() const { return never_; }
@@ -122,6 +131,9 @@ std::string TypeContext::showType(TypePtr type) {
   case TypeKind::Boolean: return "boolean";
   case TypeKind::Byte: return "byte";
   case TypeKind::Bytes: return "bytes";
+  case TypeKind::Integer:
+    return "int(" + std::to_string(type->length) + ", " +
+           (type->isSigned ? "signed" : "unsigned") + ")";
   case TypeKind::Null: return "null";
   case TypeKind::Never: return "never";
   case TypeKind::Variable: return "t" + std::to_string(++showCounter_);

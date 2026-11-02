@@ -32,6 +32,7 @@ public:
   void declareHelper(std::string, std::string) override;
   void useHelper(const std::string &) override;
   void callHelper(const std::string &) override;
+  void emitSyscall(const reader::CallExpr &call) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
   void formatNewline() override;
@@ -114,6 +115,7 @@ private:
   llvm::Function *stringCompareFunction();
   llvm::Function *bytesCopyFunction();
   llvm::Function *throwFunction();
+  llvm::Function *syscallFunction();
 
   llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);
   llvm::Value *emitTruthy(EmitValue value, types::TypePtr type);

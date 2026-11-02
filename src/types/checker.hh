@@ -108,6 +108,7 @@ private:
   bool requireNumeric(TypePtr type);
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
   bool isAddressable(const reader::ExprPtr &expr) const;
+  bool isReadOnlyLength(const reader::ExprPtr &target) const;
 
   TypePtr inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call);
   TypePtr inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object);

@@ -14,6 +14,7 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   if (resolved == nullptr) return true;
   switch (resolved->kind) {
   case TypeKind::Number:
+  case TypeKind::Integer:
   case TypeKind::String:
   case TypeKind::Boolean:
   case TypeKind::Byte:
@@ -28,6 +29,7 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
       if (inner == nullptr) continue;
       switch (inner->kind) {
       case TypeKind::Number:
+      case TypeKind::Integer:
       case TypeKind::String:
       case TypeKind::Boolean:
       case TypeKind::Byte:

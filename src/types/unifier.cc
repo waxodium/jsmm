@@ -184,6 +184,7 @@ bool Unifier::unify(TypePtr left, TypePtr right) {
     return unifyUnion(left, right);
   if (left->kind != right->kind) return false;
   switch (left->kind) {
+  case TypeKind::Integer: return true;
   case TypeKind::Function: {
     if (left->parameters.size() != right->parameters.size()) return false;
     for (std::size_t i = 0; i < left->parameters.size(); ++i)

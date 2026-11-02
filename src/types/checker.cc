@@ -13,7 +13,9 @@ namespace jsmm::types {
 
 bool Checker::isNumber(TypePtr type) const {
   type = resolve(std::move(type));
-  return type != nullptr && (type->kind == TypeKind::Number || type->kind == TypeKind::Byte);
+  return type != nullptr &&
+         (type->kind == TypeKind::Number || type->kind == TypeKind::Byte ||
+          type->kind == TypeKind::Integer);
 }
 
 bool Checker::isString(TypePtr type) const {
@@ -616,6 +618,9 @@ TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateEx
             errors::ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST, identifier->name, expr->range}};
   }
   TypePtr target = targetType(update.operand);
+  if (isReadOnlyLength(update.operand))
+    throw errors::ErrorException{errors::ErrorStatus{
+        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "length", expr->range}};
   if (!requireNumeric(target))
     throw errors::ErrorException{
         errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, update.op, expr->range}};
@@ -627,6 +632,9 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
                                  const reader::AssignmentExpr &assignment) {
   TypePtr right = inferExpression(assignment.right);
   TypePtr target = targetType(assignment.left);
+  if (isReadOnlyLength(assignment.left))
+    throw errors::ErrorException{errors::ErrorStatus{
+        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "length", expr->range}};
 
   // Check if assigning to a const variable
   if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&assignment.left->node)) {
@@ -685,6 +693,19 @@ bool Checker::isAddressable(const reader::ExprPtr &expr) const {
   return false;
 }
 
+bool Checker::isReadOnlyLength(const reader::ExprPtr &target) const {
+  const auto *member = std::get_if<reader::MemberExpr>(&target->node);
+  if (member == nullptr || member->computedFlag || member->property != "length") return false;
+  const auto object = annotations_.expressionTypes.find(member->object.get());
+  if (object == annotations_.expressionTypes.end()) return false;
+  TypePtr objectType = resolve(object->second);
+  if (objectType != nullptr && objectType->kind == TypeKind::Pointer)
+    objectType = resolve(objectType->pointed);
+  if (objectType == nullptr) return false;
+  return objectType->kind == TypeKind::String || objectType->kind == TypeKind::Bytes ||
+         objectType->kind == TypeKind::Array;
+}
+
 TypePtr Checker::memberResultType(const reader::MemberExpr &member,
                                   const reader::Expression &expression, TypePtr objectType) {
   const bool pointerObject = objectType != nullptr && objectType->kind == TypeKind::Pointer;
@@ -699,8 +720,9 @@ TypePtr Checker::memberResultType(const reader::MemberExpr &member,
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", expression.range}};
   }
-  if ((objectType != nullptr && objectType->kind == TypeKind::String) ||
-      (objectType != nullptr && objectType->kind == TypeKind::Bytes)) {
+  if (objectType != nullptr &&
+      (objectType->kind == TypeKind::String || objectType->kind == TypeKind::Bytes ||
+       objectType->kind == TypeKind::Array)) {
     if (member.property == "length") return numberType();
   }
   if (objectType != nullptr && objectType->kind == TypeKind::Struct) {
@@ -824,6 +846,10 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
     Unifier unifier(typeContext_);
     return unifier.unify(left, right);
   }
+  const auto numericKind = [](TypeKind kind) {
+    return kind == TypeKind::Number || kind == TypeKind::Byte || kind == TypeKind::Integer;
+  };
+  if (numericKind(left->kind) && numericKind(right->kind)) return true;
   if (left->kind == TypeKind::Union && right->kind == TypeKind::Union) {
     for (const auto &member : right->members)
       if (!unifies(left, member, context)) return false;
@@ -950,12 +976,6 @@ TypePtr Checker::inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr
 TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation) {
   if (annotation == nullptr || annotation->names.empty()) return nullptr;
 
-  // Handle int(size, signed/unsigned) type expressions
-  if (annotation->isIntType) {
-    // For now, int types map to number (the unified numeric type)
-    return numberType();
-  }
-
   // Resolve each name in the annotation
   std::vector<TypePtr> resolved;
   resolved.reserve(annotation->names.size());
@@ -970,6 +990,11 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();
     else if (name == "bytes") type = bytesType();
+    else if (name == "int") {
+      const std::size_t bits = annotation->isIntType ? annotation->intSize : 64;
+      const bool isSigned = annotation->isIntType ? annotation->intSigned : true;
+      type = typeContext_.integerType(bits, isSigned);
+    }
     else if (name == "void") type = nullptr; // void is not a valid variable type
     else if (name == "auto") type = nullptr; // auto is handled by inference
     else if (name == "null") type = nullType();

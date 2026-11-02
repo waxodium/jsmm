@@ -75,6 +75,7 @@ private:
   ExprPtr parseObjectLiteral();
   ExprPtr parseArrayLiteral();
   std::shared_ptr<TypeExpr> parseTypeAnnotation();
+  void parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
   int parsePointerStars();
 
   static const std::unordered_map<std::string, InfixParselet> &infixParselets();

@@ -7,7 +7,10 @@ BuiltinRegistry &BuiltinRegistry::instance() {
   return registry;
 }
 
-void BuiltinRegistry::registerAll() { declareCat(instance()); }
+void BuiltinRegistry::registerAll() {
+  declareCat(instance());
+  declareSyscall(instance());
+}
 
 void BuiltinRegistry::declare(BuiltinSpec spec) { builtins_.push_back(std::move(spec)); }
 

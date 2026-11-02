@@ -150,7 +150,7 @@ Statement Parser::parseStatement() {
       const std::string &keyword = current().lexeme;
       if (keyword == "const" || keyword == "number" || keyword == "string" ||
           keyword == "bool" || keyword == "boolean" || keyword == "bytes" ||
-          keyword == "auto" || keyword == "void")
+          keyword == "auto" || keyword == "void" || keyword == "int")
         return parseDeclaration();
       if (keyword == "type") return parseTypeDeclaration();
       if (keyword == "return") return parseReturnStatement();
@@ -198,7 +198,7 @@ Statement Parser::parseDeclaration() {
   const auto isBuiltinType = [](const std::string &text) {
     return text == "number" || text == "string" || text == "bool" || text == "boolean" ||
            text == "byte" || text == "bytes" || text == "auto" || text == "void" ||
-           text == "null";
+           text == "null" || text == "int";
   };
 
   std::shared_ptr<TypeExpr> annotation = std::make_shared<TypeExpr>();
@@ -207,6 +207,8 @@ Statement Parser::parseDeclaration() {
     // Direct type declaration: number x = 42;
     annotation->names.push_back(kind);
     annotation->pointerDepth.push_back(parsePointerStars());
+    parseIntTypeArguments(annotation);
+    annotation->pointerDepth.back() += parsePointerStars();
     while (eat("|") || eat(",")) {
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
         fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
@@ -233,6 +235,8 @@ Statement Parser::parseDeclaration() {
         auto prefix = std::make_shared<TypeExpr>();
         prefix->names.push_back(consume().lexeme);
         prefix->pointerDepth.push_back(parsePointerStars());
+        parseIntTypeArguments(prefix);
+        prefix->pointerDepth.back() += parsePointerStars();
         for (;;) {
           if (eat("|")) {
             if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
@@ -322,6 +326,9 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
     annotation->pointerDepth.push_back(parsePointerStars());
   } while (eat("|") || eat(","));
 
+  parseIntTypeArguments(annotation);
+  annotation->pointerDepth.back() += parsePointerStars();
+
   if (eat("[")) {
     if (current().kind != TokenKind::NumberLiteral)
       fail("expected array size", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
@@ -332,32 +339,34 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
            errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
   }
 
-  if (!annotation->names.empty() && annotation->names[0] == "int" && annotation->names.size() == 1 &&
-      annotation->pointerDepth[0] == 0) {
-    if (eat("(")) {
-      annotation->isIntType = true;
-      if (current().kind != TokenKind::NumberLiteral)
-        fail("expected integer size in int() type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
-      annotation->intSize = std::stoull(consume().lexeme);
-      if (!eat(","))
-        fail("expected ',' in int() type", errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
-      const std::string signedness = consume().lexeme;
-      if (signedness == "signed") {
-        annotation->intSigned = true;
-      } else if (signedness == "unsigned") {
-        annotation->intSigned = false;
-      } else {
-        fail("expected 'signed' or 'unsigned' in int() type",
-             errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
-      }
-      if (!eat(")"))
-        fail("expected ')' after int() type arguments",
-             errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
-    }
-  }
-
   annotation->range = SourceRange{start, tokens_.at(index_ - 1).end};
   return annotation;
+}
+
+void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
+  if (annotation->names.size() != 1 || annotation->names[0] != "int" ||
+      annotation->pointerDepth[0] != 0)
+    return;
+  if (!eat("(")) return;
+  annotation->isIntType = true;
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected integer size in int() type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->intSize = std::stoull(consume().lexeme);
+  if (!eat(","))
+    fail("expected ',' in int() type",
+         errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
+  const std::string signedness = consume().lexeme;
+  if (signedness == "signed") {
+    annotation->intSigned = true;
+  } else if (signedness == "unsigned") {
+    annotation->intSigned = false;
+  } else {
+    fail("expected 'signed' or 'unsigned' in int() type",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  }
+  if (!eat(")"))
+    fail("expected ')' after int() type arguments",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
 }
 
 Statement Parser::parseFunctionDeclaration() {
@@ -381,7 +390,8 @@ Statement Parser::parseFunctionDeclaration() {
       if (firstIsTypeName && index_ + 1 < tokens_.size() &&
           (tokens_[index_ + 1].kind == TokenKind::Identifier ||
            tokens_[index_ + 1].kind == TokenKind::Keyword ||
-           tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**")) {
+           tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**" ||
+           tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[")) {
         parameterAnnotation = parseTypeAnnotation();
       }
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)

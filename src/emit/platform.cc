@@ -200,6 +200,20 @@ jsmm_cat_str:
   ret
 )ASM";
 
+constexpr const char *syscallText = R"ASM(.section .text
+.globl jsmm_syscall
+jsmm_syscall:
+  mov rax, rdi
+  mov rdi, rsi
+  mov rsi, rdx
+  mov rdx, rcx
+  mov r10, r8
+  mov r8, r9
+  mov r9, QWORD PTR [rsp + 8]
+  syscall
+  ret
+)ASM";
+
 constexpr const char *throwText = R"ASM(.section .text
 .globl jsmm_throw
 jsmm_throw:
@@ -668,6 +682,7 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("string_concat", stringConcatText);
   registry.declare("string_compare", stringCompareText);
   registry.declare("bytes_copy", bytesCopyText);
+  registry.declare("syscall", syscallText);
   registry.declare("throw", throwText);
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);

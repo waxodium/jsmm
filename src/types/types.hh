@@ -14,6 +14,7 @@ enum class TypeKind {
   Boolean,
   Byte,
   Bytes,
+  Integer,
   Null,
   Never,
   Variable,
@@ -31,6 +32,7 @@ struct Type {
   TypeKind kind;
   int id = 0;
   std::size_t length = 0;
+  bool isSigned = true;
   TypePtr link;
   std::vector<TypePtr> parameters;
   TypePtr result;
@@ -49,6 +51,7 @@ public:
   TypePtr boolean() const;
   TypePtr byteType() const;
   TypePtr bytesType() const;
+  TypePtr integerType(std::size_t bits, bool isSigned);
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();

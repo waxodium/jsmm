@@ -62,7 +62,8 @@ types::TypePtr IrGenerator::resolve(types::TypePtr type) const {
 bool IrGenerator::isNumber(types::TypePtr type) const {
   const TypePtr resolved = resolve(std::move(type));
   if (resolved == nullptr) return false;
-  return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Byte;
+  return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Byte ||
+         resolved->kind == TypeKind::Integer;
 }
 
 bool IrGenerator::isString(types::TypePtr type) const {
@@ -93,7 +94,8 @@ std::string IrGenerator::typeofName(types::TypePtr type) const {
   type = resolve(type);
   if (type == nullptr) return "null";
   switch (type->kind) {
-  case TypeKind::Number: return "number";
+  case TypeKind::Number:
+  case TypeKind::Integer: return "number";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
   case TypeKind::Byte: return "byte";
@@ -319,6 +321,25 @@ llvm::Function *IrGenerator::throwFunction() {
   return runtimeFunction("jsmm_throw", voidType_, {});
 }
 
+llvm::Function *IrGenerator::syscallFunction() {
+  return runtimeFunction("jsmm_syscall", i64Type_,
+                         {i64Type_, i64Type_, i64Type_, i64Type_, i64Type_, i64Type_, i64Type_});
+}
+
+void IrGenerator::emitSyscall(const reader::CallExpr &call) {
+  std::vector<llvm::Value *> values;
+  values.reserve(7);
+  for (const auto &argument : call.arguments) {
+    const EmitValue value = generateExpression(argument);
+    values.push_back(value.number ? toInt64(value) : asRaw(value));
+  }
+  while (values.size() < 7) values.push_back(i64(0));
+  llvm::Value *result =
+      builder_->CreateCall(syscallFunction(), {values[0], values[1], values[2], values[3],
+                                               values[4], values[5], values[6]});
+  lastValue_ = EmitValue{builder_->CreateSIToFP(result, doubleType_), true};
+}
+
 llvm::Value *IrGenerator::stringEquals(llvm::Value *left, llvm::Value *right) {
   llvm::Value *result = builder_->CreateCall(stringEqualFunction(), {left, right});
   return builder_->CreateICmpNE(result, i64(0));
@@ -330,7 +351,8 @@ long long IrGenerator::unionTagFor(types::TypePtr type) const {
   switch (resolved->kind) {
   case TypeKind::Null: return unionTagNull;
   case TypeKind::Number:
-  case TypeKind::Byte: return unionTagNumber;
+  case TypeKind::Byte:
+  case TypeKind::Integer: return unionTagNumber;
   case TypeKind::String: return unionTagString;
   case TypeKind::Boolean: return unionTagBoolean;
   default: return unionTagPayload;
@@ -345,7 +367,8 @@ llvm::Value *IrGenerator::emitTruthy(EmitValue value, types::TypePtr type) {
   case TypeKind::Null:
   case TypeKind::Never: return llvm::ConstantInt::getFalse(*context_);
   case TypeKind::Number:
-  case TypeKind::Byte: return builder_->CreateFCmpONE(value.value, zeroFloat);
+  case TypeKind::Byte:
+  case TypeKind::Integer: return builder_->CreateFCmpONE(value.value, zeroFloat);
   case TypeKind::String: {
     llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(asRaw(value), 0));
     return builder_->CreateICmpNE(length, i64(0));
@@ -465,7 +488,8 @@ IrGenerator::EmitValue IrGenerator::emitZeroValue(types::TypePtr type) {
   if (resolved == nullptr) return rawValue(i64(0));
   switch (resolved->kind) {
   case TypeKind::Number:
-  case TypeKind::Byte: return numberValue(0.0);
+  case TypeKind::Byte:
+  case TypeKind::Integer: return numberValue(0.0);
   case TypeKind::String:
   case TypeKind::Bytes: return rawValue(builder_->CreatePtrToInt(emptyString_, i64Type_));
   case TypeKind::Array: {
@@ -560,6 +584,28 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
     return emitBox(origin, value);
   }
   if (origin->kind == TypeKind::Null) return emitZeroValue(target);
+  if (target->kind == TypeKind::Integer) {
+    if (target->length == 0 || target->length > 64) {
+      llvm::Value *truncated =
+          builder_->CreateIntrinsic(llvm::Intrinsic::trunc, {doubleType_}, {value.value});
+      return EmitValue{truncated, true};
+    }
+    llvm::Value *bits =
+        target->isSigned
+            ? builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat,
+                                        {i64Type_, doubleType_}, {value.value})
+            : builder_->CreateIntrinsic(llvm::Intrinsic::fptoui_sat,
+                                        {i64Type_, doubleType_}, {value.value});
+    if (target->length < 64) {
+      llvm::Type *narrow = builder_->getIntNTy(static_cast<unsigned>(target->length));
+      bits = builder_->CreateTrunc(bits, narrow);
+      bits = target->isSigned ? builder_->CreateSExt(bits, i64Type_)
+                              : builder_->CreateZExt(bits, i64Type_);
+    }
+    return EmitValue{target->isSigned ? builder_->CreateSIToFP(bits, doubleType_)
+                                      : builder_->CreateUIToFP(bits, doubleType_),
+                      true};
+  }
   if (target->kind == TypeKind::Struct && origin->kind == TypeKind::Struct)
     return convertStruct(target, origin, value);
   if (target->kind == TypeKind::Bytes && origin->kind == TypeKind::String) {
@@ -920,10 +966,11 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
               objectType != nullptr && objectType->kind == TypeKind::Pointer
                   ? resolve(objectType->pointed)
                   : objectType;
-          const bool textObject =
+          const bool lengthObject =
               targetType != nullptr &&
-              (targetType->kind == TypeKind::String || targetType->kind == TypeKind::Bytes);
-          if (!node.computedFlag && node.property == "length" && textObject) {
+              (targetType->kind == TypeKind::String || targetType->kind == TypeKind::Bytes ||
+               targetType->kind == TypeKind::Array);
+          if (!node.computedFlag && node.property == "length" && lengthObject) {
             llvm::Value *base = asRaw(generateExpression(node.object));
             if (objectType != nullptr && objectType->kind == TypeKind::Pointer)
               base = builder_->CreateLoad(i64Type_, builder_->CreateIntToPtr(base, ptrType_));
@@ -1591,7 +1638,8 @@ void IrGenerator::emitFormatValue(EmitValue value, TypePtr type) {
     return;
   }
   switch (type->kind) {
-  case TypeKind::Number: builder_->CreateCall(numberWriter(), {value.value}); break;
+  case TypeKind::Number:
+  case TypeKind::Integer: builder_->CreateCall(numberWriter(), {value.value}); break;
   case TypeKind::String: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Boolean: builder_->CreateCall(boolWriter(), {asRaw(value)}); break;
   case TypeKind::Byte: builder_->CreateCall(numberWriter(), {value.value}); break;
