@@ -59,6 +59,7 @@ private:
   Statement parseLabeledStatement();
   bool peekNextIsColon() const;
   bool startsFunctionDeclaration() const;
+  bool restParameterFollows() const;
 
   ExprPtr parseExpression(int minimumBindingPower = 1);
   ExprPtr parsePrefix();

@@ -39,6 +39,8 @@ private:
     TypePtr returnType;
     std::vector<TypePtr> parameterTypes;
     Scope *parentScope = nullptr;
+    bool isVariadic = false;
+    TypePtr variadicElement;
   };
 
   class BuiltinInference final : public builtins::InferContext {
@@ -94,8 +96,10 @@ private:
   TypePtr nullType() const { return typeContext_.nullType(); }
   TypePtr neverType() const { return typeContext_.never(); }
   TypePtr pointerType(TypePtr pointed) { return typeContext_.pointerType(std::move(pointed)); }
-  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes) {
-    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType));
+  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes,
+                           bool isVariadic = false, TypePtr variadicElement = nullptr) {
+    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType), isVariadic,
+                                     std::move(variadicElement));
   }
   TypePtr freshVariable();
 
@@ -107,10 +111,16 @@ private:
   bool isText(TypePtr type) const;
   bool requireNumeric(TypePtr type);
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
+  bool sameFunctionSignature(TypePtr left, TypePtr right);
+  bool holdsFunctionValue(TypePtr type);
   bool isAddressable(const reader::ExprPtr &expr) const;
   bool isReadOnlyLength(const reader::ExprPtr &target) const;
 
   TypePtr inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call);
+  void checkCallArguments(
+      const TypePtr &function,
+      const std::vector<std::pair<TypePtr, reader::SourceRange>> &arguments,
+      const reader::SourceRange &range);
   TypePtr inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object);
   TypePtr inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array);
   TypePtr resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation);

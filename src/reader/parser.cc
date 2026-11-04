@@ -391,15 +391,39 @@ Statement Parser::parseFunctionDeclaration() {
           (tokens_[index_ + 1].kind == TokenKind::Identifier ||
            tokens_[index_ + 1].kind == TokenKind::Keyword ||
            tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**" ||
-           tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[")) {
+           tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[" ||
+           tokens_[index_ + 1].lexeme == "...")) {
         parameterAnnotation = parseTypeAnnotation();
       }
-      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
+      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword
+        && current().kind != TokenKind::Punctuator)
         fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
+      if (current().lexeme == "...") {
+        const Token marker = consume();
+        std::string name = "...";
+        SourceRange range{marker.start, marker.end};
+        if (current().kind == TokenKind::Identifier || current().kind == TokenKind::Keyword) {
+          if (parameterAnnotation == nullptr)
+            fail("expected a type name for the rest parameter",
+                 errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+          const Token rest = consume();
+          name = rest.lexeme;
+          range = SourceRange{marker.start, rest.end};
+        }
+        function.parameters.push_back({name, range, std::move(parameterAnnotation), true});
+        if (eat(",")) {
+          if (restParameterFollows())
+            fail("a function may declare only one rest parameter",
+                 errors::ErrorCode::PARSE_DUPLICATE_REST_PARAMETER);
+          fail("rest parameter must be the last parameter",
+               errors::ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST);
+        }
+        break;
+      }
       const Token parameter = consume();
       function.parameters.push_back(
           {parameter.lexeme, SourceRange{parameter.start, parameter.end},
-           std::move(parameterAnnotation)});
+           std::move(parameterAnnotation), false});
     } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after parameters",
@@ -413,6 +437,22 @@ Statement Parser::parseFunctionDeclaration() {
   function.body = std::move(body);
   ensureSemicolonOrASI();
   return Statement(std::move(function));
+}
+
+bool Parser::restParameterFollows() const {
+  int depth = 0;
+  for (std::size_t scan = index_; scan < tokens_.size(); ++scan) {
+    const std::string &lexeme = tokens_[scan].lexeme;
+    if (lexeme == "(") {
+      ++depth;
+    } else if (lexeme == ")") {
+      if (depth == 0) return false;
+      --depth;
+    } else if (lexeme == "..." && depth == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 Statement Parser::parseReturnStatement() {

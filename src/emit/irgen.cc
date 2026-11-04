@@ -164,6 +164,14 @@ llvm::Value *IrGenerator::allocate(std::uint64_t bytes) {
   return builder_->CreateCall(allocFunction(), {i64(bytes)});
 }
 
+llvm::Value *IrGenerator::buildRestArray(const std::vector<llvm::Value *> &elements) {
+  llvm::Value *base = allocate(8 + 8 * elements.size());
+  builder_->CreateStore(i64(elements.size()), bytePointer(base, 0));
+  for (std::size_t index = 0; index < elements.size(); ++index)
+    builder_->CreateStore(elements[index], bytePointer(base, 8 + 8 * index));
+  return base;
+}
+
 IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePtr type) const {
   llvm::Value *bits = builder_->CreateLoad(i64Type_, address);
   if (isNumber(type)) return EmitValue{builder_->CreateBitCast(bits, doubleType_), true};
@@ -1486,13 +1494,21 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   llvm::Value *functionPointer =
       builder_->CreateIntToPtr(asRaw(callee), llvm::PointerType::getUnqual(*context_));
   std::vector<llvm::Value *> arguments;
+  std::vector<llvm::Value *> restElements;
+  const std::size_t fixedParameters = target->parameters.size();
   for (std::size_t index = 0; index < call.arguments.size(); ++index) {
     EmitValue argument = generateExpression(call.arguments[index]);
     TypePtr argumentType = typeOf(call.arguments[index]);
-    if (index < target->parameters.size())
+    if (index < fixedParameters) {
       argument = coerce(target->parameters[index], argumentType, argument);
-    arguments.push_back(asRaw(argument));
+      arguments.push_back(asRaw(argument));
+    } else {
+      if (target->variadicElement != nullptr)
+        argument = coerce(target->variadicElement, argumentType, argument);
+      restElements.push_back(asRaw(argument));
+    }
   }
+  if (target->isVariadic) arguments.push_back(buildRestArray(restElements));
   llvm::FunctionType *functionType = llvm::FunctionType::get(
       i64Type_, std::vector<llvm::Type *>(arguments.size(), i64Type_), false);
   return asTyped(builder_->CreateCall(functionType, functionPointer, arguments), target->result);
@@ -1533,6 +1549,7 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
       llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, false);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
                                                         declaration->name, *module_);
+      function->setDSOLocal(true);
       functions_[declaration->name] = function;
     }
   }
@@ -1595,6 +1612,10 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   beginScope();
   auto argument = function->arg_begin();
   for (const auto &parameter : declaration.parameters) {
+    if (parameter.isVariadic && parameter.name == "...") {
+      ++argument;
+      continue;
+    }
     llvm::Value *address = slotAlloca(allocateSlot());
     scopes_.back().slots.emplace(parameter.name, Slot{address});
     builder_->CreateStore(&*argument, address);

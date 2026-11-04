@@ -190,6 +190,7 @@ struct FunctionParameter {
   std::string name;
   SourceRange range{};
   std::shared_ptr<TypeExpr> annotation = nullptr;
+  bool isVariadic = false;
 };
 
 struct FunctionDeclaration {

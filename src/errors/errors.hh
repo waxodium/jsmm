@@ -27,6 +27,8 @@ enum class ErrorCode : std::uint16_t {
   PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME,
   PARSE_EXPECTED_PARAMETER_NAME,
   PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS,
+  PARSE_REST_PARAMETER_MUST_BE_LAST,
+  PARSE_DUPLICATE_REST_PARAMETER,
   PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY,
   PARSE_EXPECTED_LPAREN_AFTER_IF,
   PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION,
@@ -66,6 +68,7 @@ enum class ErrorCode : std::uint16_t {
   TYPE_DELETE_NOT_SUPPORTED,
   TYPE_UNSUPPORTED_OPERATOR,
   TYPE_CANNOT_UNIFY,
+  TYPE_ARRAY_FUNCTION_SIGNATURE_MISMATCH,
   TYPE_EXPECTED_KIND,
   TYPE_CANNOT_ASSIGN_TO_CONST,
   TYPE_DUPLICATE_BINDING,
@@ -140,6 +143,10 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "expected parameter name";
     case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS:
       return "expected ')' after parameters";
+    case ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST:
+      return "rest parameter must be the last parameter";
+    case ErrorCode::PARSE_DUPLICATE_REST_PARAMETER:
+      return "a function may declare only one rest parameter";
     case ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY:
       return "expected '{' before function body";
     case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_IF:
@@ -217,6 +224,8 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "unsupported operator";
     case ErrorCode::TYPE_CANNOT_UNIFY:
       return "cannot unify";
+    case ErrorCode::TYPE_ARRAY_FUNCTION_SIGNATURE_MISMATCH:
+      return "array elements must have the same function signature";
     case ErrorCode::TYPE_EXPECTED_KIND:
       return "expected type";
     case ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST:
