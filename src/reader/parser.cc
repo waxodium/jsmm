@@ -806,8 +806,14 @@ ExprPtr Parser::parsePrimary() {
   if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
   if (token.lexeme == "undefined")
     return std::make_shared<Expression>(UndefinedLiteralExpr{}, sourceRange);
-  if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword)
+  if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword) {
+    // Reserved keywords that are not supported in expression position produce a clear error
+    if (token.kind == TokenKind::Keyword) {
+      fail("keyword '" + token.lexeme + "' is not supported in expression position",
+           errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+    }
     return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
+  }
   fail("expected expression", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
 }
 
