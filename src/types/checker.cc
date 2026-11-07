@@ -1074,17 +1074,20 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     TypePtr type = nullptr;
 
     // Check built-in types
-    if (name == "number") type = numberType();
-    else if (name == "string") type = stringType();
+    if (name == "string") type = stringType();
     else if (name == "bool") type = booleanType();
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();
     else if (name == "bytes") type = bytesType();
-    else if (name == "int") {
-      const std::size_t bits = annotation->isIntType ? annotation->intSize : 64;
+    else if (name == "i32") {
+      const std::size_t bits = annotation->isIntType ? annotation->intSize : 32;
       const bool isSigned = annotation->isIntType ? annotation->intSigned : true;
       type = typeContext_.integerType(bits, isSigned);
     }
+    else if (name == "f64") {
+      type = numberType(); // f64 resolves to number kind for arithmetic
+    }
+    else if (name == "va_list") type = numberType(); // va_list is treated as number-sized
     else if (name == "void") type = nullptr; // void is not a valid variable type
     else if (name == "auto") type = nullptr; // auto is handled by inference
     else if (name == "null") type = nullType();

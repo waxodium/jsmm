@@ -1,4 +1,5 @@
 # Agentic Engineering and Automated Tools
+
 This document outlines the rules, requirements, 
 and guidelines for agents and automated tooling within the JS-- (JSMM) JavaScript Engine source code and project.
 
@@ -8,6 +9,7 @@ For new contributors using agentic engineering,
 agents must be granted **READ-ONLY** permissions for this project and its source code.
 
 ## Prohibited Contributions
+
 - **No usage of Git commands**: Agentic interaction with the JS-- project **must never** involve Git. 
 It is strictly prohibited for agents to execute any Git commands to manage the repository, even with human review. 
 Git changes and decisions must be handled by humans, 
@@ -25,4 +27,3 @@ But is not restricted to Artificial Intelligence usage for grammar fixes and rev
 this work ever.
 
 ---
-

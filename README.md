@@ -46,9 +46,7 @@ make
 ## Sample
 ```js
 function a(b) {
-    for(let i = 1; i<=10; i++) {
-        cat(i, ".", b)
-    }
+  for (let i = 1; i <= 10; i++) { cat(i, ".", b) }
 }
 
 a("Hello, World");
