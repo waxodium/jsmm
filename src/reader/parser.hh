@@ -58,6 +58,7 @@ private:
   Statement parseContinueStatement();
   Statement parseLabeledStatement();
   bool peekNextIsColon() const;
+  bool startsVariableDeclaration() const;
   bool startsFunctionDeclaration() const;
   bool restParameterFollows() const;
 
@@ -76,7 +77,9 @@ private:
   ExprPtr parseObjectLiteral();
   ExprPtr parseArrayLiteral();
   std::shared_ptr<TypeExpr> parseTypeAnnotation();
+  std::shared_ptr<TypeExpr> parseTypeOperandAnnotation();
   void parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
+  void parseArraySize(const std::shared_ptr<TypeExpr> &annotation);
   int parsePointerStars();
 
   static const std::unordered_map<std::string, InfixParselet> &infixParselets();

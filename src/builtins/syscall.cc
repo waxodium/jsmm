@@ -1,5 +1,6 @@
 #include "builtins/builtin.hh"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -35,12 +36,55 @@ TypePtr inferSyscall(InferContext &context, const std::vector<types::TypePtr> &a
   return context.numberType();
 }
 
-void emitSyscall(EmitContext &context, const CallExpr &call) { context.emitSyscall(call); }
+TypePtr inferLayout(InferContext &context, const std::vector<types::TypePtr> &arguments,
+                    const SourceRange &range, const std::string &name) {
+  if (arguments.size() != 1)
+    context.report(range, name + "() requires exactly 1 argument");
+  const types::TypeLayout layout = types::layoutOf(context.resolveType(arguments[0]));
+  if (!layout.defined)
+    context.report(range, name + "() is not defined for `" + context.showType(arguments[0]) + "'");
+  return context.usizeType();
+}
+
+TypePtr inferSizeof(InferContext &context, const std::vector<types::TypePtr> &arguments,
+                    const SourceRange &range) {
+  return inferLayout(context, arguments, range, "sizeof");
+}
+
+TypePtr inferAlignof(InferContext &context, const std::vector<types::TypePtr> &arguments,
+                     const SourceRange &range) {
+  return inferLayout(context, arguments, range, "alignof");
+}
+
+void emitLayout(EmitContext &context, const CallExpr &call, bool alignment) {
+  if (call.arguments.empty()) {
+    context.clearResult();
+    return;
+  }
+  const types::TypeLayout layout = types::layoutOf(context.operandType(call.arguments[0]));
+  context.emitNumberResult(static_cast<double>(alignment ? layout.alignment : layout.size));
+}
+
+void emitSizeof(EmitContext &context, const CallExpr &call) { emitLayout(context, call, false); }
+
+void emitAlignof(EmitContext &context, const CallExpr &call) { emitLayout(context, call, true); }
+
+void emitSyscallExpression(EmitContext &context, const CallExpr &call) {
+  context.emitSyscall(call);
+}
 
 } // namespace
 
 void declareSyscall(BuiltinRegistry &registry) {
-  registry.declare({"syscall", true, 1, inferSyscall, emitSyscall});
+  registry.declare({"syscall", true, 1, {}, inferSyscall, emitSyscallExpression});
+}
+
+void declareSizeof(BuiltinRegistry &registry) {
+  registry.declare({"sizeof", false, 1, {OperandKind::Type}, inferSizeof, emitSizeof});
+}
+
+void declareAlignof(BuiltinRegistry &registry) {
+  registry.declare({"alignof", false, 1, {OperandKind::Type}, inferAlignof, emitAlignof});
 }
 
 } // namespace jsmm::builtins

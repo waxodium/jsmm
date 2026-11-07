@@ -9,6 +9,17 @@
 namespace jsmm::reader {
 namespace {
 
+std::size_t skipSizedIntArguments(const std::vector<Token> &tokens, std::size_t cursor) {
+  if (cursor + 4 >= tokens.size()) return cursor;
+  if (tokens[cursor].lexeme != "<") return cursor;
+  if (tokens[cursor + 1].kind != TokenKind::NumberLiteral) return cursor;
+  if (tokens[cursor + 2].lexeme != ",") return cursor;
+  if (tokens[cursor + 3].lexeme != "signed" && tokens[cursor + 3].lexeme != "unsigned")
+    return cursor;
+  if (tokens[cursor + 4].lexeme != ">") return cursor;
+  return cursor + 5;
+}
+
 bool decodeBitsLiteral(const std::string &spelling, std::string &out) {
   if (spelling.size() <= 2) return false;
   std::string bits = spelling.substr(2);
@@ -148,9 +159,9 @@ Statement Parser::parseStatement() {
     if (startsFunctionDeclaration()) return parseFunctionDeclaration();
     if (current().kind == TokenKind::Keyword) {
       const std::string &keyword = current().lexeme;
-      if (keyword == "const" || keyword == "number" || keyword == "string" ||
-          keyword == "bool" || keyword == "boolean" || keyword == "bytes" ||
-          keyword == "auto" || keyword == "void" || keyword == "int")
+      if (keyword == "const" || keyword == "string" || keyword == "bool" ||
+          keyword == "boolean" || keyword == "bytes" || keyword == "auto" ||
+          keyword == "void" || keyword == "int")
         return parseDeclaration();
       if (keyword == "type") return parseTypeDeclaration();
       if (keyword == "return") return parseReturnStatement();
@@ -167,13 +178,7 @@ Statement Parser::parseStatement() {
     if (current().kind == TokenKind::Identifier && peekNextIsColon()) {
       return parseLabeledStatement();
     }
-    // Handle type alias declarations: <TypeName> <varName> = ...
-    if (current().kind == TokenKind::Identifier && index_ + 2 < tokens_.size() &&
-        tokens_[index_ + 1].kind == TokenKind::Identifier &&
-        (tokens_[index_ + 2].lexeme == "=" ||
-         (tokens_[index_ + 2].lexeme == ";" &&
-          tokens_[index_ + 1].start.line == current().start.line)))
-      return parseDeclaration();
+    if (startsVariableDeclaration()) return parseDeclaration();
     return parseExpressionStatement();
   }();
   statement.range = SourceRange{start, tokens_.at(index_ == 0 ? 0 : index_ - 1).end};
@@ -196,9 +201,9 @@ Statement Parser::parseDeclaration() {
   const std::string kind = consume().lexeme;
   const bool isQualifier = kind == "const";
   const auto isBuiltinType = [](const std::string &text) {
-    return text == "number" || text == "string" || text == "bool" || text == "boolean" ||
-           text == "byte" || text == "bytes" || text == "auto" || text == "void" ||
-           text == "null" || text == "int";
+    return text == "string" || text == "bool" || text == "boolean" || text == "byte" ||
+           text == "bytes" || text == "auto" || text == "void" || text == "null" ||
+           text == "int";
   };
 
   std::shared_ptr<TypeExpr> annotation = std::make_shared<TypeExpr>();
@@ -209,6 +214,7 @@ Statement Parser::parseDeclaration() {
     annotation->pointerDepth.push_back(parsePointerStars());
     parseIntTypeArguments(annotation);
     annotation->pointerDepth.back() += parsePointerStars();
+    parseArraySize(annotation);
     while (eat("|") || eat(",")) {
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
         fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
@@ -237,6 +243,7 @@ Statement Parser::parseDeclaration() {
         prefix->pointerDepth.push_back(parsePointerStars());
         parseIntTypeArguments(prefix);
         prefix->pointerDepth.back() += parsePointerStars();
+        parseArraySize(prefix);
         for (;;) {
           if (eat("|")) {
             if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
@@ -315,6 +322,17 @@ int Parser::parsePointerStars() {
   }
 }
 
+void Parser::parseArraySize(const std::shared_ptr<TypeExpr> &annotation) {
+  if (!eat("[")) return;
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected array size", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->arraySize = std::stoull(consume().lexeme);
+  annotation->isArray = true;
+  if (!eat("]"))
+    fail("expected ']' after array size",
+         errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
+}
+
 std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   auto annotation = std::make_shared<TypeExpr>();
   const SourcePosition start = current().start;
@@ -341,19 +359,18 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
 
   annotation->range = SourceRange{start, tokens_.at(index_ - 1).end};
   return annotation;
-}
-
-void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
-  if (annotation->names.size() != 1 || annotation->names[0] != "int" ||
-      annotation->pointerDepth[0] != 0)
-    return;
-  if (!eat("(")) return;
+}void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
+  if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
+  const std::string &name = annotation->names[0];
+  if (name != "int") return;
+  const bool parenthesized = eat("(");
+  if (!parenthesized && !eat("<")) return;
   annotation->isIntType = true;
   if (current().kind != TokenKind::NumberLiteral)
-    fail("expected integer size in int() type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+    fail("expected integer size in sized int type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   annotation->intSize = std::stoull(consume().lexeme);
   if (!eat(","))
-    fail("expected ',' in int() type",
+    fail("expected ',' in sized int type",
          errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
   const std::string signedness = consume().lexeme;
   if (signedness == "signed") {
@@ -361,12 +378,45 @@ void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) 
   } else if (signedness == "unsigned") {
     annotation->intSigned = false;
   } else {
-    fail("expected 'signed' or 'unsigned' in int() type",
+    fail("expected 'signed' or 'unsigned' in sized int type",
          errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   }
-  if (!eat(")"))
-    fail("expected ')' after int() type arguments",
+  if (parenthesized) {
+    if (!eat(")"))
+      fail("expected ')' after int() type arguments",
+           errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
+  } else if (!eat(">")) {
+    fail("expected '>' after sized int type arguments",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
+  }
+}
+
+std::shared_ptr<TypeExpr> Parser::parseTypeOperandAnnotation() {
+  auto annotation = std::make_shared<TypeExpr>();
+  const SourcePosition start = current().start;
+  if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
+    fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+  annotation->names.push_back(consume().lexeme);
+  annotation->pointerDepth.push_back(parsePointerStars());
+  while (eat("|")) {
+    if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
+      fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+    annotation->names.push_back(consume().lexeme);
+    annotation->pointerDepth.push_back(parsePointerStars());
+  }
+  parseIntTypeArguments(annotation);
+  annotation->pointerDepth.back() += parsePointerStars();
+  if (eat("[")) {
+    if (current().kind != TokenKind::NumberLiteral)
+      fail("expected array size", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+    annotation->arraySize = std::stoull(consume().lexeme);
+    annotation->isArray = true;
+    if (!eat("]"))
+      fail("expected ']' after array size",
+           errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
+  }
+  annotation->range = SourceRange{start, tokens_.at(index_ - 1).end};
+  return annotation;
 }
 
 Statement Parser::parseFunctionDeclaration() {
@@ -392,7 +442,7 @@ Statement Parser::parseFunctionDeclaration() {
            tokens_[index_ + 1].kind == TokenKind::Keyword ||
            tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**" ||
            tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[" ||
-           tokens_[index_ + 1].lexeme == "...")) {
+           tokens_[index_ + 1].lexeme == "<" || tokens_[index_ + 1].lexeme == "...")) {
         parameterAnnotation = parseTypeAnnotation();
       }
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword
@@ -425,6 +475,11 @@ Statement Parser::parseFunctionDeclaration() {
           {parameter.lexeme, SourceRange{parameter.start, parameter.end},
            std::move(parameterAnnotation), false});
     } while (eat(","));
+    if (!function.parameters.empty()) {
+      FunctionParameter &last = function.parameters.back();
+      if (!last.isVariadic && last.annotation == nullptr && last.name == "rest")
+        last.isVariadic = true;
+    }
     if (!eat(")"))
       fail("expected ')' after parameters",
            errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
@@ -518,13 +573,10 @@ Statement Parser::parseForStatement() {
   ExprPtr initExpression;
   bool initHasSemicolon = false;
   const bool declarationInit =
-      current().lexeme == "const" || current().lexeme == "number" ||
-      current().lexeme == "string" || current().lexeme == "bool" ||
-      current().lexeme == "boolean" || current().lexeme == "bytes" ||
-      current().lexeme == "auto" || current().lexeme == "int" ||
-      (current().kind == TokenKind::Identifier && index_ + 1 < tokens_.size() &&
-       (tokens_[index_ + 1].kind == TokenKind::Identifier ||
-        tokens_[index_ + 1].kind == TokenKind::Keyword));
+      current().lexeme == "const" || current().lexeme == "string" ||
+      current().lexeme == "bool" || current().lexeme == "boolean" ||
+      current().lexeme == "bytes" || current().lexeme == "auto" ||
+      current().lexeme == "int" || startsVariableDeclaration();
   if (declarationInit) {
     Statement declaration = parseDeclaration();
     if (auto *variable = std::get_if<VariableDeclaration>(&declaration.node)) {
@@ -727,9 +779,21 @@ ExprPtr Parser::parsePostfix(ExprPtr expression) {
 ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
   (void)consume();
   const SourcePosition start = expression->range.start;
+  const auto *callee = std::get_if<IdentifierExpr>(&expression->node);
+  const bool typeOperand =
+      callee != nullptr && (callee->name == "sizeof" || callee->name == "alignof");
   std::vector<ExprPtr> arguments;
   if (!eat(")")) {
-    do { arguments.push_back(parseExpression()); } while (eat(","));
+    do {
+      if (typeOperand && arguments.empty()) {
+        auto annotation = parseTypeOperandAnnotation();
+        const SourceRange operandRange = annotation->range;
+        arguments.push_back(
+            std::make_shared<Expression>(TypeOperandExpr{std::move(annotation)}, operandRange));
+      } else {
+        arguments.push_back(parseExpression());
+      }
+    } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after call arguments",
            errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS);
@@ -879,7 +943,7 @@ bool Parser::startsFunctionDeclaration() const {
   const Token &first = tokens_[cursor];
   const bool typeKeyword =
       first.kind == TokenKind::Keyword &&
-      (first.lexeme == "number" || first.lexeme == "string" || first.lexeme == "bool" ||
+      (first.lexeme == "string" || first.lexeme == "bool" ||
        first.lexeme == "boolean" || first.lexeme == "bytes" || first.lexeme == "auto" ||
        first.lexeme == "void" || first.lexeme == "int");
   if (first.kind != TokenKind::Identifier && !typeKeyword) return false;
@@ -903,6 +967,8 @@ bool Parser::startsFunctionDeclaration() const {
     if (depth != 0) return false;
   }
 
+  cursor = skipSizedIntArguments(tokens_, cursor);
+
   while (cursor < tokens_.size() &&
          (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
     ++cursor;
@@ -922,6 +988,7 @@ bool Parser::startsFunctionDeclaration() const {
         tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
+    cursor = skipSizedIntArguments(tokens_, cursor);
     while (cursor < tokens_.size() &&
          (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
     ++cursor;
@@ -930,6 +997,54 @@ bool Parser::startsFunctionDeclaration() const {
   if (cursor + 1 >= tokens_.size()) return false;
   if (tokens_[cursor].kind != TokenKind::Identifier) return false;
   return tokens_[cursor + 1].lexeme == "(";
+}
+
+bool Parser::startsVariableDeclaration() const {
+  std::size_t cursor = index_;
+  if (cursor >= tokens_.size() || tokens_[cursor].kind != TokenKind::Identifier) return false;
+  ++cursor;
+  cursor = skipSizedIntArguments(tokens_, cursor);
+
+  while (cursor < tokens_.size() &&
+         (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
+    ++cursor;
+
+  if (cursor < tokens_.size() && tokens_[cursor].lexeme == "[") {
+    ++cursor;
+    if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::NumberLiteral) ++cursor;
+    if (cursor >= tokens_.size() || tokens_[cursor].lexeme != "]") return false;
+    ++cursor;
+  }
+
+  while (cursor < tokens_.size() &&
+         (tokens_[cursor].lexeme == "|" || tokens_[cursor].lexeme == ",")) {
+    ++cursor;
+    if (cursor >= tokens_.size()) return false;
+    if (tokens_[cursor].kind != TokenKind::Identifier &&
+        tokens_[cursor].kind != TokenKind::Keyword)
+      return false;
+    ++cursor;
+    cursor = skipSizedIntArguments(tokens_, cursor);
+    while (cursor < tokens_.size() &&
+           (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
+      ++cursor;
+  }
+
+  if (cursor >= tokens_.size() || tokens_[cursor].kind != TokenKind::Identifier) return false;
+  const std::size_t nameIndex = cursor;
+  ++cursor;
+
+  if (cursor < tokens_.size() && tokens_[cursor].lexeme == "[") {
+    ++cursor;
+    if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::NumberLiteral) ++cursor;
+    if (cursor >= tokens_.size() || tokens_[cursor].lexeme != "]") return false;
+    ++cursor;
+  }
+
+  if (cursor >= tokens_.size()) return false;
+  if (tokens_[cursor].lexeme == "=") return true;
+  return tokens_[cursor].lexeme == ";" &&
+         tokens_[cursor].start.line == tokens_[nameIndex].start.line;
 }
 
 Statement Parser::parseLabeledStatement() {

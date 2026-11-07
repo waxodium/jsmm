@@ -33,6 +33,14 @@ public:
   void useHelper(const std::string &) override;
   void callHelper(const std::string &) override;
   void emitSyscall(const reader::CallExpr &call) override;
+  types::TypePtr operandType(const reader::ExprPtr &operand) override;
+  void emitNumberResult(double value) override;
+  void emitAllocation(const reader::ExprPtr &size) override;
+  void emitVoidResult() override;
+  void emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr &src,
+                  const reader::ExprPtr &count) override;
+  void emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr &value,
+                  const reader::ExprPtr &count) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
   void formatNewline() override;
@@ -80,11 +88,15 @@ private:
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;
-  llvm::Value *buildRestArray(const std::vector<llvm::Value *> &elements);
+  llvm::Value *buildRestArray(const std::vector<EmitValue> &elements,
+                              types::TypePtr elementType);
   llvm::Value *dynamicPointer(llvm::Value *base, llvm::Value *offset) const;
   llvm::Value *allocate(std::uint64_t bytes);
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;
-  void storeSlot(llvm::Value *address, EmitValue value) const;
+  void storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type) const;
+  llvm::Type *storageType(types::TypePtr type) const;
+  std::uint64_t elementSize(types::TypePtr type) const;
+  std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 
   bool terminated() const;
   llvm::BasicBlock *createBlock(const llvm::Twine &name);
@@ -92,11 +104,11 @@ private:
   void endScope();
   Slot *lookupSlot(const std::string &name);
   long long allocateSlot();
-  llvm::AllocaInst *slotAlloca(long long index);
+  llvm::AllocaInst *slotAlloca(long long index, types::TypePtr type);
   llvm::AllocaInst *createEntryAlloca();
 
   llvm::GlobalVariable *internString(const std::string &text);
-  llvm::GlobalVariable *globalFor(const std::string &name);
+  llvm::GlobalVariable *globalFor(const std::string &name, types::TypePtr type);
 
   llvm::Function *runtimeFunction(llvm::StringRef name, llvm::Type *result,
                                   llvm::ArrayRef<llvm::Type *> parameters);
@@ -130,7 +142,7 @@ private:
   EmitValue emitBox(types::TypePtr payloadType, EmitValue value);
   EmitValue coerce(types::TypePtr destination, types::TypePtr source, EmitValue value);
   EmitValue convertStruct(types::TypePtr destination, types::TypePtr source, EmitValue value);
-  EmitValue convertArrayToBytes(EmitValue value);
+  EmitValue convertArrayToBytes(EmitValue value, types::TypePtr arrayType);
   EmitValue copyText(EmitValue value);
   bool sameLayout(types::TypePtr left, types::TypePtr right) const;
 

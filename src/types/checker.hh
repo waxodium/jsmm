@@ -52,6 +52,8 @@ private:
     TypePtr numberType() override;
     TypePtr booleanType() override;
     TypePtr undefinedType() override;
+    TypePtr usizeType() override;
+    TypePtr bytePointerType() override;
     TypePtr resolveType(TypePtr type) override;
     [[nodiscard]] std::string showType(TypePtr type) override;
     [[noreturn]] void report(const reader::SourceRange &range,

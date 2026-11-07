@@ -83,6 +83,9 @@ enum class ErrorCode : std::uint16_t {
   TYPE_UNKNOWN_TYPE_NAME,
   TYPE_UNION_REQUIRES_SINGLE_PAYLOAD,
   TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH,
+  TYPE_TYPE_OPERAND_EXPECTED,
+  TYPE_TYPE_OPERAND_HAS_NO_LAYOUT,
+  TYPE_TYPE_USED_AS_VALUE,
 
   CODEGEN_UNKNOWN_RUNTIME_HELPER,
   CODEGEN_TARGET_UNAVAILABLE,
@@ -254,6 +257,12 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "a union may hold at most one non-nullable member";
     case ErrorCode::TYPE_NULLABLE_COMPARISON_REQUIRES_NULLISH:
       return "a nullable value may only be compared with null or undefined";
+    case ErrorCode::TYPE_TYPE_OPERAND_EXPECTED:
+      return "expected a type operand";
+    case ErrorCode::TYPE_TYPE_OPERAND_HAS_NO_LAYOUT:
+      return "size and alignment are not defined for this type";
+    case ErrorCode::TYPE_TYPE_USED_AS_VALUE:
+      return "a type name cannot be used as a value";
 
     case ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER:
       return "unknown runtime helper";

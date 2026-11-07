@@ -10,6 +10,12 @@ BuiltinRegistry &BuiltinRegistry::instance() {
 void BuiltinRegistry::registerAll() {
   declareCat(instance());
   declareSyscall(instance());
+  declareSizeof(instance());
+  declareAlignof(instance());
+  declareAlloc(instance());
+  declareFree(instance());
+  declareMemcpy(instance());
+  declareMemset(instance());
 }
 
 void BuiltinRegistry::declare(BuiltinSpec spec) { builtins_.push_back(std::move(spec)); }

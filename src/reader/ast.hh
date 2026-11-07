@@ -132,6 +132,10 @@ struct TypeExpr {
   SourceRange range{};
 };
 
+struct TypeOperandExpr {
+  std::shared_ptr<TypeExpr> annotation;
+};
+
 struct Statement;
 
 struct BlockStatement {
@@ -251,7 +255,8 @@ struct Expression {
     ArrayExpr,
     BooleanLiteralExpr,
     NullLiteralExpr,
-    UndefinedLiteralExpr
+    UndefinedLiteralExpr,
+    TypeOperandExpr
   > node;
   SourceRange range{};
 };

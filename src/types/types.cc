@@ -75,8 +75,6 @@ TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr resul
 }
 
 TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
-  std::sort(fields.begin(), fields.end(),
-            [](const auto &left, const auto &right) { return left.first < right.first; });
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Struct;
   type->id = nextId_++;
@@ -129,7 +127,7 @@ std::string TypeContext::showType(TypePtr type) {
   type = resolve(type);
   if (type == nullptr) return "?";
   switch (type->kind) {
-  case TypeKind::Number: return "number";
+  case TypeKind::Number: return "f64";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
   case TypeKind::Byte: return "byte";
@@ -178,6 +176,82 @@ std::string TypeContext::showType(TypePtr type) {
   }
   }
   return "?";
+}
+
+namespace {
+
+std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment) {
+  if (alignment <= 1) return value;
+  return (value + alignment - 1) / alignment * alignment;
+}
+
+std::uint64_t floorPowerOfTwo(std::uint64_t value) {
+  std::uint64_t result = 1;
+  while (result * 2 <= value) result *= 2;
+  return result;
+}
+
+TypeLayout knownLayout(std::uint64_t size, std::uint64_t alignment) {
+  return TypeLayout{size, alignment, true};
+}
+
+TypePtr followLinks(TypePtr type) {
+  while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr)
+    type = type->link;
+  return type;
+}
+
+} // namespace
+
+TypeLayout layoutOf(TypePtr type) {
+  type = followLinks(std::move(type));
+  if (type == nullptr) return {};
+  switch (type->kind) {
+  case TypeKind::Byte:
+  case TypeKind::Boolean: return knownLayout(1, 1);
+  case TypeKind::Integer: {
+    if (type->length == 0 || type->length % 8 != 0) return {};
+    const std::uint64_t size = type->length / 8;
+    return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
+  }
+  case TypeKind::Number:
+  case TypeKind::String:
+  case TypeKind::Bytes:
+  case TypeKind::Pointer:
+  case TypeKind::Function: return knownLayout(8, 8);
+  case TypeKind::Array: {
+    if (type->length == 0) return {};
+    const TypeLayout element = layoutOf(type->element);
+    if (!element.defined) return {};
+    return knownLayout(element.size * type->length, element.alignment);
+  }
+  case TypeKind::Struct: {
+    std::uint64_t offset = 0;
+    std::uint64_t alignment = 1;
+    for (const auto &field : type->fields) {
+      const TypeLayout fieldLayout = layoutOf(field.second);
+      if (!fieldLayout.defined) return {};
+      offset = alignUp(offset, fieldLayout.alignment) + fieldLayout.size;
+      if (fieldLayout.alignment > alignment) alignment = fieldLayout.alignment;
+    }
+    return knownLayout(alignUp(offset, alignment), alignment);
+  }
+  default: return {};
+  }
+}
+
+std::uint64_t fieldOffset(TypePtr type, std::size_t index) {
+  type = followLinks(std::move(type));
+  if (type == nullptr || type->kind != TypeKind::Struct) return 0;
+  std::uint64_t offset = 0;
+  for (std::size_t position = 0; position < type->fields.size(); ++position) {
+    const TypeLayout fieldLayout = layoutOf(type->fields[position].second);
+    if (!fieldLayout.defined) return 0;
+    offset = alignUp(offset, fieldLayout.alignment);
+    if (position == index) return offset;
+    offset += fieldLayout.size;
+  }
+  return 0;
 }
 
 } // namespace jsmm::types

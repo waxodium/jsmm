@@ -70,7 +70,7 @@ void emitCat(EmitContext &context, const CallExpr &call) {
 } // namespace
 
 void declareCat(BuiltinRegistry &registry) {
-  registry.declare({"cat", true, 0, inferCat, emitCat});
+  registry.declare({"cat", true, 0, {}, inferCat, emitCat});
 }
 
 } // namespace jsmm::builtins

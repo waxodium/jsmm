@@ -475,6 +475,9 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
           return booleanType();
         } else if constexpr (std::is_same_v<T, reader::NullLiteralExpr>) {
           return nullType();
+        } else if constexpr (std::is_same_v<T, reader::TypeOperandExpr>) {
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_TYPE_USED_AS_VALUE, {}, expr->range}};
         } else if constexpr (std::is_same_v<T, reader::UndefinedLiteralExpr>) {
           throw errors::ErrorException{errors::ErrorStatus{
               errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "undefined", expr->range}};
@@ -661,7 +664,13 @@ TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateEx
 TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
                                  const reader::AssignmentExpr &assignment) {
   TypePtr right = inferExpression(assignment.right);
-  TypePtr target = targetType(assignment.left);
+  TypePtr target = resolve(inferExpression(assignment.left));
+  const bool deferredTarget =
+      target != nullptr && target->kind == TypeKind::Variable &&
+      std::get_if<reader::DereferenceExpr>(&assignment.left->node) != nullptr;
+  if (target == nullptr || (target->kind == TypeKind::Variable && !deferredTarget))
+    throw errors::ErrorException{errors::ErrorStatus{
+        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "assignment", assignment.left->range}};
   if (isReadOnlyLength(assignment.left))
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "length", expr->range}};
@@ -701,6 +710,18 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
     return numberType();
   }
 
+  if (deferredTarget) {
+    const TypePtr expectedTarget = target;
+    const TypePtr assignedType = right;
+    const reader::SourceRange range = expr->range;
+    deferredChecks_.push_back([this, expectedTarget, assignedType, range]() {
+      if (!unifies(expectedTarget, assignedType, "assignment"))
+        throw errors::ErrorException{errors::ErrorStatus{
+            errors::ErrorCode::TYPE_CANNOT_UNIFY, "assignment", range}};
+    });
+    annotations_.argumentTypes.insert_or_assign(expr.get(), right);
+    return right;
+  }
   if (!unifies(target, right, "assignment"))
     throw errors::ErrorException{
         errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, "assignment", expr->range}};
@@ -882,6 +903,7 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
     return kind == TypeKind::Number || kind == TypeKind::Byte || kind == TypeKind::Integer;
   };
   if (numericKind(left->kind) && numericKind(right->kind)) return true;
+  if (right->kind == TypeKind::Boolean && numericKind(left->kind)) return true;
   if (left->kind == TypeKind::Union && right->kind == TypeKind::Union) {
     for (const auto &member : right->members)
       if (!unifies(left, member, context)) return false;
@@ -921,8 +943,12 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
   }
   if (left->kind == TypeKind::Struct) {
     if (left->fields.size() != right->fields.size()) return false;
-    for (std::size_t i = 0; i < left->fields.size(); ++i)
-      if (!unifies(left->fields[i].second, right->fields[i].second, context)) return false;
+    for (const auto &field : left->fields) {
+      const auto match = std::find_if(right->fields.begin(), right->fields.end(),
+                                      [&](const auto &candidate) { return candidate.first == field.first; });
+      if (match == right->fields.end()) return false;
+      if (!unifies(field.second, match->second, context)) return false;
+    }
     return true;
   }
   return true;
@@ -966,7 +992,26 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
       }
       std::vector<TypePtr> argumentTypes;
       argumentTypes.reserve(call.arguments.size());
-      for (const auto &arg : call.arguments) argumentTypes.push_back(inferExpression(arg));
+      for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+        const bool expectsType =
+            index < builtin->operands.size() &&
+            builtin->operands[index] == builtins::OperandKind::Type;
+        if (!expectsType) {
+          argumentTypes.push_back(inferExpression(call.arguments[index]));
+          continue;
+        }
+        const auto *operand = std::get_if<reader::TypeOperandExpr>(&call.arguments[index]->node);
+        if (operand == nullptr)
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_TYPE_OPERAND_EXPECTED, identifier->name, expr->range}};
+        const TypePtr resolved = resolveTypeAnnotation(operand->annotation);
+        if (resolved == nullptr)
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_TYPE_OPERAND_HAS_NO_LAYOUT, identifier->name,
+              call.arguments[index]->range}};
+        annotations_.expressionTypes.insert_or_assign(call.arguments[index].get(), resolved);
+        argumentTypes.push_back(resolved);
+      }
       const TypePtr result = builtin->infer(builtinInference_, argumentTypes, expr->range);
       TypePtr calleeType = this->makeFunctionType(result, argumentTypes, false);
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
@@ -1079,7 +1124,7 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();
     else if (name == "bytes") type = bytesType();
-    else if (name == "i32") {
+    else if (name == "int") {
       const std::size_t bits = annotation->isIntType ? annotation->intSize : 32;
       const bool isSigned = annotation->isIntType ? annotation->intSigned : true;
       type = typeContext_.integerType(bits, isSigned);
@@ -1087,9 +1132,11 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "f64") {
       type = numberType(); // f64 resolves to number kind for arithmetic
     }
+    else if (name == "usize") type = typeContext_.integerType(64, false);
     else if (name == "va_list") type = numberType(); // va_list is treated as number-sized
     else if (name == "void") type = nullptr; // void is not a valid variable type
-    else if (name == "auto") type = nullptr; // auto is handled by inference
+    else if (name == "auto")
+      type = annotation->pointerDepth[index] > 0 ? freshVariable() : nullptr;
     else if (name == "null") type = nullType();
 
     // Check type aliases (skip for auto and void, which are intentionally null)
@@ -1120,6 +1167,15 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
 
   if (resolved.size() == 1) return resolved[0];
   return typeContext_.unionType(std::move(resolved));
+}
+
+TypePtr Checker::BuiltinInference::usizeType() {
+  return checker_.typeContext_.integerType(64, false);
+}
+
+TypePtr Checker::BuiltinInference::bytePointerType() {
+  TypeContext &context = checker_.typeContext_;
+  return context.pointerType(context.byteType());
 }
 
 } // namespace jsmm::types

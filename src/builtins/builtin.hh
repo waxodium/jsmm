@@ -24,6 +24,8 @@ public:
   virtual TypePtr numberType() = 0;
   virtual TypePtr booleanType() = 0;
   virtual TypePtr undefinedType() = 0;
+  virtual TypePtr usizeType() = 0;
+  virtual TypePtr bytePointerType() = 0;
   virtual TypePtr resolveType(TypePtr type) = 0;
   [[nodiscard]] virtual std::string showType(TypePtr type) = 0;
   [[noreturn]] virtual void report(const SourceRange &range, const std::string &message) = 0;
@@ -44,15 +46,24 @@ public:
   virtual void useHelper(const std::string &symbol) = 0;
   virtual void callHelper(const std::string &symbol) = 0;
   virtual void emitSyscall(const CallExpr &call) = 0;
+  virtual TypePtr operandType(const ExprPtr &operand) = 0;
+  virtual void emitNumberResult(double value) = 0;
+  virtual void emitAllocation(const ExprPtr &size) = 0;
+  virtual void emitVoidResult() = 0;
+  virtual void emitMemcpy(const ExprPtr &dest, const ExprPtr &src, const ExprPtr &count) = 0;
+  virtual void emitMemset(const ExprPtr &dest, const ExprPtr &value, const ExprPtr &count) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
 };
 
+enum class OperandKind { Value, Type };
+
 struct BuiltinSpec {
   std::string name;
   bool variadic = false;
   std::size_t minimumArguments = 0;
+  std::vector<OperandKind> operands;
   std::function<TypePtr(InferContext &, const std::vector<TypePtr> &, const SourceRange &)> infer;
   std::function<void(EmitContext &, const CallExpr &)> emit;
 };
@@ -72,5 +83,11 @@ private:
 
 void declareCat(BuiltinRegistry &registry);
 void declareSyscall(BuiltinRegistry &registry);
+void declareSizeof(BuiltinRegistry &registry);
+void declareAlignof(BuiltinRegistry &registry);
+void declareAlloc(BuiltinRegistry &registry);
+void declareFree(BuiltinRegistry &registry);
+void declareMemcpy(BuiltinRegistry &registry);
+void declareMemset(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

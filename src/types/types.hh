@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -43,6 +44,15 @@ struct Type {
   TypePtr pointed;
   std::vector<TypePtr> members;
 };
+
+struct TypeLayout {
+  std::uint64_t size = 0;
+  std::uint64_t alignment = 1;
+  bool defined = false;
+};
+
+TypeLayout layoutOf(TypePtr type);
+std::uint64_t fieldOffset(TypePtr type, std::size_t index);
 
 class TypeContext final {
 public:
