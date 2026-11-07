@@ -1053,11 +1053,8 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::DereferenceExpr>) {
           EmitValue ptrValue = generateExpression(node.operand);
           llvm::Value *pointer = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
-          llvm::Value *loaded = builder_->CreateLoad(i64Type_, pointer);
           const TypePtr pointedType = resolve(typeOf(expression));
-          if (pointedType != nullptr && isNumber(pointedType))
-            return EmitValue{builder_->CreateBitCast(loaded, doubleType_), true};
-          return rawValue(loaded);
+          return loadSlot(pointer, pointedType);
         } else if constexpr (std::is_same_v<T, reader::BinaryExpr>) {
           return generateBinary(node);
         } else if constexpr (std::is_same_v<T, reader::UpdateExpr>) {
@@ -1220,7 +1217,7 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
 IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &binary) {
   if (binary.op == "==" || binary.op == "!=" || binary.op == "===" || binary.op == "!==")
     return generateEquality(binary);
-  if (binary.op == "&&" || binary.op == "||" || binary.op == "??") return generateLogical(binary);
+  if (binary.op == "&&" || binary.op == "||") return generateLogical(binary);
   if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
       binary.op == "%" || binary.op == "**")
     return generateArithmetic(binary);
@@ -1362,24 +1359,17 @@ IrGenerator::EmitValue IrGenerator::generateEquality(const reader::BinaryExpr &b
 IrGenerator::EmitValue IrGenerator::generateLogical(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
   const TypePtr leftType = typeOf(binary.left);
-  const bool nullish = binary.op == "??";
-  const TypePtr resolvedLeft = resolve(leftType);
-  const TypePtr resultType = nullish && resolvedLeft != nullptr &&
-                                     resolvedLeft->kind == TypeKind::Null
-                                 ? typeOf(binary.right)
-                                 : leftType;
   llvm::Value *leftBits = asRaw(left);
   llvm::BasicBlock *leftBlock = builder_->GetInsertBlock();
   llvm::BasicBlock *rightBlock = createBlock("logic.rhs");
   llvm::BasicBlock *endBlock = createBlock("logic.end");
   const bool andOp = binary.op == "&&";
   llvm::Value *isTruthy = emitTruthy(left, leftType);
-  llvm::Value *takeLeft = nullish ? builder_->CreateNot(emitNullish(left, leftType))
-                                  : (andOp ? builder_->CreateNot(isTruthy) : isTruthy);
+  llvm::Value *takeLeft = andOp ? builder_->CreateNot(isTruthy) : isTruthy;
   builder_->CreateCondBr(takeLeft, endBlock, rightBlock);
   builder_->SetInsertPoint(rightBlock);
   EmitValue right = generateExpression(binary.right);
-  right = coerce(resultType, typeOf(binary.right), right);
+  right = coerce(leftType, typeOf(binary.right), right);
   llvm::Value *rightBits = asRaw(right);
   llvm::BasicBlock *rightEnd = builder_->GetInsertBlock();
   if (!terminated()) builder_->CreateBr(endBlock);
@@ -1387,7 +1377,7 @@ IrGenerator::EmitValue IrGenerator::generateLogical(const reader::BinaryExpr &bi
   auto *result = builder_->CreatePHI(i64Type_, 2, "logic.value");
   result->addIncoming(leftBits, leftBlock);
   result->addIncoming(rightBits, rightEnd);
-  return asTyped(result, resultType);
+  return asTyped(result, leftType);
 }
 
 IrGenerator::EmitValue IrGenerator::generateUpdate(const reader::UpdateExpr &update) {

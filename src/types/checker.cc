@@ -568,11 +568,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
   const TypePtr right = inferExpression(binary.right);
   annotations_.argumentTypes.insert_or_assign(expr.get(), left);
 
-  if (binary.op == "||" || binary.op == "&&" || binary.op == "??") {
-    if (binary.op == "??") {
-      const TypePtr resolvedLeft = resolve(left);
-      if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Null) return right;
-    }
+  if (binary.op == "||" || binary.op == "&&") {
     if (!unifies(left, right, binary.op))
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
@@ -1119,7 +1115,10 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     TypePtr type = nullptr;
 
     // Check built-in types
-    if (name == "string") type = stringType();
+    if (annotation->isIntType) {
+      type = typeContext_.integerType(annotation->intSize, annotation->intSigned);
+    }
+    else if (name == "string") type = stringType();
     else if (name == "bool") type = booleanType();
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();

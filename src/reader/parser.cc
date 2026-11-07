@@ -54,7 +54,6 @@ const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParse
       {">>=", {{1, true}, &P::parseAssignmentInfix, true}},
       {">>>=", {{1, true}, &P::parseAssignmentInfix, true}},
       {"||", {{2, false}, &P::parseBinaryInfix}},
-      {"??", {{2, false}, &P::parseBinaryInfix}},
       {"&&", {{3, false}, &P::parseBinaryInfix}},
       {"|", {{4, false}, &P::parseBinaryInfix}},
       {"^", {{5, false}, &P::parseBinaryInfix}},
@@ -361,8 +360,6 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   return annotation;
 }void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
   if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
-  const std::string &name = annotation->names[0];
-  if (name != "int") return;
   const bool parenthesized = eat("(");
   if (!parenthesized && !eat("<")) return;
   annotation->isIntType = true;
