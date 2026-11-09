@@ -599,6 +599,20 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
+    const TypePtr resolvedLeft = resolve(left);
+    const TypePtr resolvedRight = resolve(right);
+    if (resolvedLeft == nullptr || resolvedRight == nullptr ||
+        resolvedLeft->kind != resolvedRight->kind)
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
+    if (resolvedLeft->kind == TypeKind::Integer &&
+        (resolvedLeft->length != resolvedRight->length ||
+         resolvedLeft->isSigned != resolvedRight->isSigned))
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
+    if (!requireNumeric(left) || !requireNumeric(right))
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                        binary.op, expr->range}};
     return numberType();
   }
 
@@ -1077,7 +1091,12 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();
     else if (name == "bytes") type = bytesType();
-    else if (name == "int") type = typeContext_.integerType(32, true);
+    else if (name == "int") {
+      if (annotation->isIntType)
+        type = typeContext_.integerType(annotation->intSize, annotation->intSigned);
+      else
+        type = typeContext_.integerType(32, true);
+    }
     else if (name == "f64") {
       type = numberType(); // f64 resolves to number kind for arithmetic
     }

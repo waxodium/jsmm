@@ -118,6 +118,9 @@ struct UndefinedLiteralExpr {};
 struct TypeExpr {
   std::vector<std::string> names;
   std::vector<int> pointerDepth;  // 1} for T*, {2} for T**, ...
+  std::size_t intSize = 0;
+  bool intSigned = false;
+  bool isIntType = false;
   std::size_t arraySize = 0;
   bool isArray = false;
   bool isStruct = false;

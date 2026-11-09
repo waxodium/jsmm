@@ -141,11 +141,6 @@ std::string TypeContext::showType(TypePtr type) {
       if (i != 0) out += ", ";
       out += showType(type->parameters[i]);
     }
-    if (type->isVariadic) {
-      if (!type->parameters.empty()) out += ", ";
-      out += "...";
-      if (type->variadicElement != nullptr) out += showType(type->variadicElement);
-    }
     out += ") -> ";
     out += showType(type->result);
     return out;
@@ -207,8 +202,8 @@ TypeLayout layoutOf(TypePtr type) {
   case TypeKind::Byte:
   case TypeKind::Boolean: return knownLayout(1, 1);
   case TypeKind::Integer: {
-    if (type->length == 0 || type->length % 8 != 0) return {};
-    const std::uint64_t size = type->length / 8;
+    if (type->length == 0) return {};
+    const std::uint64_t size = (type->length + 7) / 8;  // round up to whole bytes
     return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
   }
   case TypeKind::Number:

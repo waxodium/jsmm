@@ -30,8 +30,6 @@ struct Type;
 using TypePtr = std::shared_ptr<Type>;
 
 struct Type {
-  bool isVariadic = false;
-  TypePtr variadicElement;
   TypeKind kind;
   int id = 0;
   std::size_t length = 0;

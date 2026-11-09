@@ -10,8 +10,14 @@ namespace jsmm::reader {
 namespace {
 
 std::size_t skipSizedIntArguments(const std::vector<Token> &tokens, std::size_t cursor) {
-  (void)tokens;
-  return cursor;
+  if (cursor + 4 >= tokens.size()) return cursor;
+  if (tokens[cursor].lexeme != "<") return cursor;
+  if (tokens[cursor + 1].kind != TokenKind::NumberLiteral) return cursor;
+  if (tokens[cursor + 2].lexeme != ",") return cursor;
+  if (tokens[cursor + 3].lexeme != "signed" && tokens[cursor + 3].lexeme != "unsigned")
+    return cursor;
+  if (tokens[cursor + 4].lexeme != ">") return cursor;
+  return cursor + 5;
 }
 
 bool decodeBitsLiteral(const std::string &spelling, std::string &out) {
@@ -374,8 +380,27 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   annotation->range = SourceRange{start, tokens_.at(index_ - 1).end};
   return annotation;
 }void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
-  (void)annotation;
-  // Sized integer syntax (int<N, signed|unsigned>) removed; int is a plain keyword.
+  if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
+  if (!eat("<")) return;
+  annotation->isIntType = true;
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected integer size in sized int type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->intSize = std::stoull(consume().lexeme);
+  if (!eat(","))
+    fail("expected ',' in sized int type",
+         errors::ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME);
+  const std::string signedness = consume().lexeme;
+  if (signedness == "signed") {
+    annotation->intSigned = true;
+  } else if (signedness == "unsigned") {
+    annotation->intSigned = false;
+  } else {
+    fail("expected 'signed' or 'unsigned' in sized int type",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  }
+  if (!eat(">"))
+    fail("expected '>' after sized int type arguments",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
 }
 
 std::shared_ptr<TypeExpr> Parser::parseTypeOperandAnnotation() {
