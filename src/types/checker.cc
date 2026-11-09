@@ -99,9 +99,22 @@ void Checker::hoistFunctions(const reader::Program &program,
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
       reader::FunctionDeclaration hoisted{declaration->name, declaration->parameters, nullptr,
                                           declaration->returnAnnotation};
-      FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back()};
+      FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back(), false,
+                          nullptr};
       entry.parameterTypes.reserve(declaration->parameters.size());
       for (std::size_t index = 0; index < declaration->parameters.size(); ++index) {
+        const reader::FunctionParameter &parameter = declaration->parameters[index];
+        if (parameter.isVariadic) {
+          entry.isVariadic = true;
+          if (parameter.annotation != nullptr) {
+            entry.variadicElement = freshVariable();
+            const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
+            if (annotated != nullptr) {
+              (void)unifies(annotated, entry.variadicElement, "parameter");
+            }
+          }
+          continue;
+        }
         entry.parameterTypes.push_back(freshVariable());
       }
       functions.push_back(std::move(entry));
@@ -114,6 +127,24 @@ void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *bo
   std::size_t fixedIndex = 0;
   for (std::size_t index = 0; index < entry.declaration.parameters.size(); ++index) {
     const reader::FunctionParameter &parameter = entry.declaration.parameters[index];
+    if (parameter.isVariadic) {
+      TypePtr elementType = entry.variadicElement;
+      if (parameter.annotation != nullptr) {
+        const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
+        if (annotated != nullptr) {
+          if (elementType == nullptr)
+            entry.variadicElement = annotated;
+          else
+            (void)unifies(annotated, elementType, "parameter");
+          elementType = entry.variadicElement;
+        }
+      }
+      if (parameter.name != "...") {
+        if (elementType == nullptr) elementType = freshVariable();
+        scope.bindings.insert_or_assign(parameter.name, typeContext_.arrayType(elementType));
+      }
+      continue;
+    }
     if (fixedIndex >= entry.parameterTypes.size()) break;
     if (parameter.annotation != nullptr) {
       const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
@@ -472,7 +503,8 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
   for (const auto &function : functions_) {
     if (function.declaration.name == identifier.name) {
       TypePtr resultType = function.returnType ? function.returnType : nullType();
-      TypePtr calleeType = this->makeFunctionType(resultType, function.parameterTypes);
+      TypePtr calleeType = this->makeFunctionType(resultType, function.parameterTypes,
+                                                  function.isVariadic, function.variadicElement);
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
       annotations_.expressionTypes.insert_or_assign(expr.get(), calleeType);
       return calleeType;
@@ -806,7 +838,8 @@ void Checker::recordTopLevelTypes() {
     if (function.returnType == nullptr) function.returnType = nullType();
     annotations_.functionTypes.insert_or_assign(
         function.declaration.name,
-        makeFunctionType(function.returnType, function.parameterTypes));
+        makeFunctionType(function.returnType, function.parameterTypes,
+                         function.isVariadic, function.variadicElement));
   }
 }
 
@@ -917,13 +950,18 @@ void Checker::checkCallArguments(
     const std::vector<std::pair<TypePtr, reader::SourceRange>> &arguments,
     const reader::SourceRange &range) {
   const std::size_t fixedParameters = function->parameters.size();
-  if (arguments.size() != fixedParameters) {
+  if (arguments.size() < fixedParameters ||
+      (!function->isVariadic && arguments.size() != fixedParameters)) {
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS, "call", range}};
   }
 
   for (std::size_t i = 0; i < arguments.size(); ++i) {
-    TypePtr expected = function->parameters[i];
+    TypePtr expected = nullptr;
+    if (i < fixedParameters)
+      expected = function->parameters[i];
+    else if (function->isVariadic)
+      expected = function->variadicElement;
     if (expected != nullptr && !unifies(expected, arguments[i].first, "argument"))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY,
                                                        "argument", arguments[i].second}};
@@ -1021,9 +1059,12 @@ bool Checker::sameFunctionSignature(TypePtr left, TypePtr right) {
   if (left->kind == TypeKind::Array && right->kind == TypeKind::Array)
     return sameFunctionSignature(left->element, right->element);
   if (left->kind != TypeKind::Function || right->kind != TypeKind::Function) return false;
+  if (left->isVariadic != right->isVariadic) return false;
   if (left->parameters.size() != right->parameters.size()) return false;
   for (std::size_t i = 0; i < left->parameters.size(); ++i)
     if (!unifies(left->parameters[i], right->parameters[i], "array")) return false;
+  if (left->isVariadic && !unifies(left->variadicElement, right->variadicElement, "array"))
+    return false;
   return unifies(left->result, right->result, "array");
 }
 

@@ -186,9 +186,12 @@ bool Unifier::unify(TypePtr left, TypePtr right) {
   switch (left->kind) {
   case TypeKind::Integer: return true;
   case TypeKind::Function: {
+    if (left->isVariadic != right->isVariadic) return false;
     if (left->parameters.size() != right->parameters.size()) return false;
     for (std::size_t i = 0; i < left->parameters.size(); ++i)
       if (!unify(left->parameters[i], right->parameters[i])) return false;
+    if (left->isVariadic && !unify(left->variadicElement, right->variadicElement))
+      return false;
     return unify(left->result, right->result);
   }
   case TypeKind::Struct: {

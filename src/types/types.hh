@@ -34,6 +34,8 @@ struct Type {
   int id = 0;
   std::size_t length = 0;
   bool isSigned = true;
+  bool isVariadic = false;
+  TypePtr variadicElement;
   TypePtr link;
   std::vector<TypePtr> parameters;
   TypePtr result;
@@ -65,7 +67,8 @@ public:
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();
-  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
+  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result,
+                       bool isVariadic = false, TypePtr variadicElement = nullptr);
   TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
   TypePtr arrayType(TypePtr element, std::size_t length = 0);
   TypePtr pointerType(TypePtr pointed);

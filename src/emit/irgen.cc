@@ -1559,14 +1559,18 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   llvm::Value *functionPointer =
       builder_->CreateIntToPtr(asRaw(callee), llvm::PointerType::getUnqual(*context_));
   std::vector<llvm::Value *> arguments;
+  const std::size_t fixedParameters = target->parameters.size();
+  bool isVariadic = target->isVariadic;
   for (std::size_t index = 0; index < call.arguments.size(); ++index) {
     EmitValue argument = generateExpression(call.arguments[index]);
     TypePtr argumentType = typeOf(call.arguments[index]);
-    argument = coerce(target->parameters[index], argumentType, argument);
+    if (index < fixedParameters) {
+      argument = coerce(target->parameters[index], argumentType, argument);
+    }
     arguments.push_back(asRaw(argument));
   }
   llvm::FunctionType *functionType = llvm::FunctionType::get(
-      i64Type_, std::vector<llvm::Type *>(arguments.size(), i64Type_), false);
+      i64Type_, std::vector<llvm::Type *>(arguments.size(), i64Type_), isVariadic);
   return asTyped(builder_->CreateCall(functionType, functionPointer, arguments), target->result);
 }
 
@@ -1602,7 +1606,15 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
   for (const auto &statement : program.statements) {
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
       std::vector<llvm::Type *> parameters(declaration->parameters.size(), i64Type_);
-      llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, false);
+      bool isVariadic = false;
+      for (const auto &param : declaration->parameters) {
+        if (param.isVariadic) {
+          isVariadic = true;
+          break;
+        }
+      }
+      llvm::FunctionType *signature =
+          llvm::FunctionType::get(i64Type_, parameters, isVariadic);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
                                                         declaration->name, *module_);
       function->setDSOLocal(true);
@@ -1669,6 +1681,7 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   auto argument = function->arg_begin();
   std::size_t parameterIndex = 0;
   for (const auto &parameter : declaration.parameters) {
+    if (parameter.isVariadic) break;
     const TypePtr parameterType =
         functionType != nullptr && parameterIndex < functionType->parameters.size()
             ? resolve(functionType->parameters[parameterIndex])

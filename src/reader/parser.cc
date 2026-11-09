@@ -454,16 +454,24 @@ Statement Parser::parseFunctionDeclaration() {
            tokens_[index_ + 1].kind == TokenKind::Keyword ||
            tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**" ||
            tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[" ||
-           tokens_[index_ + 1].lexeme == "<")) {
+           tokens_[index_ + 1].lexeme == "<" || tokens_[index_ + 1].lexeme == "...")) {
         parameterAnnotation = parseTypeAnnotation();
       }
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword
         && current().kind != TokenKind::Punctuator)
         fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
       const Token parameter = consume();
+      if (parameter.lexeme == "...") {
+        function.parameters.push_back(
+            {"...", SourceRange{parameter.start, parameter.end}, nullptr, true});
+        if (eat(","))
+          fail("a variadic parameter must be the last parameter",
+               errors::ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST);
+        break;
+      }
       function.parameters.push_back(
           {parameter.lexeme, SourceRange{parameter.start, parameter.end},
-           std::move(parameterAnnotation)});
+           std::move(parameterAnnotation), false});
     } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after parameters",

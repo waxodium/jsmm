@@ -62,12 +62,15 @@ TypePtr TypeContext::variable() {
   return type;
 }
 
-TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr result) {
+TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr result,
+                                  bool isVariadic, TypePtr variadicElement) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Function;
   type->id = nextId_++;
   type->parameters = std::move(parameters);
   type->result = std::move(result);
+  type->isVariadic = isVariadic;
+  type->variadicElement = std::move(variadicElement);
   return type;
 }
 
@@ -140,6 +143,11 @@ std::string TypeContext::showType(TypePtr type) {
     for (std::size_t i = 0; i < type->parameters.size(); ++i) {
       if (i != 0) out += ", ";
       out += showType(type->parameters[i]);
+    }
+    if (type->isVariadic) {
+      if (!type->parameters.empty()) out += ", ";
+      out += "...";
+      if (type->variadicElement != nullptr) out += showType(type->variadicElement);
     }
     out += ") -> ";
     out += showType(type->result);
