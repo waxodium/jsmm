@@ -504,7 +504,7 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
     if (function.declaration.name == identifier.name) {
       TypePtr resultType = function.returnType ? function.returnType : nullType();
       TypePtr calleeType = this->makeFunctionType(resultType, function.parameterTypes,
-                                                  function.isVariadic, function.variadicElement);
+                                                  function.isVariadic);
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
       annotations_.expressionTypes.insert_or_assign(expr.get(), calleeType);
       return calleeType;
@@ -839,7 +839,7 @@ void Checker::recordTopLevelTypes() {
     annotations_.functionTypes.insert_or_assign(
         function.declaration.name,
         makeFunctionType(function.returnType, function.parameterTypes,
-                         function.isVariadic, function.variadicElement));
+                         function.isVariadic));
   }
 }
 
@@ -957,14 +957,13 @@ void Checker::checkCallArguments(
   }
 
   for (std::size_t i = 0; i < arguments.size(); ++i) {
-    TypePtr expected = nullptr;
-    if (i < fixedParameters)
-      expected = function->parameters[i];
-    else if (function->isVariadic)
-      expected = function->variadicElement;
-    if (expected != nullptr && !unifies(expected, arguments[i].first, "argument"))
-      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY,
-                                                       "argument", arguments[i].second}};
+    // Fixed parameters are type-checked; variadic arguments are NOT.
+    if (i < fixedParameters) {
+      TypePtr expected = function->parameters[i];
+      if (expected != nullptr && !unifies(expected, arguments[i].first, "argument"))
+        throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY,
+                                                         "argument", arguments[i].second}};
+    }
   }
 }
 
@@ -1063,8 +1062,6 @@ bool Checker::sameFunctionSignature(TypePtr left, TypePtr right) {
   if (left->parameters.size() != right->parameters.size()) return false;
   for (std::size_t i = 0; i < left->parameters.size(); ++i)
     if (!unifies(left->parameters[i], right->parameters[i], "array")) return false;
-  if (left->isVariadic && !unifies(left->variadicElement, right->variadicElement, "array"))
-    return false;
   return unifies(left->result, right->result, "array");
 }
 

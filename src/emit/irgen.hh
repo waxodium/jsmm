@@ -91,6 +91,8 @@ private:
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;
+  llvm::Value *buildRestArray(const std::vector<EmitValue> &elements,
+                              types::TypePtr elementType);
   llvm::Value *dynamicPointer(llvm::Value *base, llvm::Value *offset) const;
   llvm::Value *allocate(std::uint64_t bytes);
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;

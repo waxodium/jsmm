@@ -164,6 +164,16 @@ llvm::Value *IrGenerator::allocate(std::uint64_t bytes) {
   return builder_->CreateCall(allocFunction(), {i64(bytes)});
 }
 
+llvm::Value *IrGenerator::buildRestArray(const std::vector<EmitValue> &elements,
+                                         types::TypePtr elementType) {
+  const std::uint64_t stride = elementSize(elementType);
+  llvm::Value *base = allocate(8 + stride * elements.size());
+  builder_->CreateStore(i64(elements.size()), bytePointer(base, 0));
+  for (std::size_t index = 0; index < elements.size(); ++index)
+    storeSlot(bytePointer(base, 8 + stride * index), elements[index], elementType);
+  return base;
+}
+
 llvm::Type *IrGenerator::storageType(types::TypePtr type) const {
   const types::TypeLayout layout = types::layoutOf(type);
   if (!layout.defined) return i64Type_;
@@ -1613,8 +1623,7 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
           break;
         }
       }
-      llvm::FunctionType *signature =
-          llvm::FunctionType::get(i64Type_, parameters, isVariadic);
+      llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, isVariadic);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
                                                         declaration->name, *module_);
       function->setDSOLocal(true);
@@ -1681,7 +1690,10 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   auto argument = function->arg_begin();
   std::size_t parameterIndex = 0;
   for (const auto &parameter : declaration.parameters) {
-    if (parameter.isVariadic) break;
+    if (parameter.isVariadic && parameter.name == "...") {
+      ++argument;
+      continue;
+    }
     const TypePtr parameterType =
         functionType != nullptr && parameterIndex < functionType->parameters.size()
             ? resolve(functionType->parameters[parameterIndex])
