@@ -79,12 +79,6 @@ struct BinaryExpr {
   ExprPtr right;
 };
 
-struct UpdateExpr {
-  std::string op;
-  bool prefix;
-  ExprPtr operand;
-};
-
 struct AssignmentExpr {
   std::string op;
   ExprPtr left;
@@ -124,11 +118,10 @@ struct UndefinedLiteralExpr {};
 struct TypeExpr {
   std::vector<std::string> names;
   std::vector<int> pointerDepth;  // 1} for T*, {2} for T**, ...
-  std::size_t intSize = 0;
-  bool intSigned = false;
-  bool isIntType = false;
   std::size_t arraySize = 0;
   bool isArray = false;
+  bool isStruct = false;
+  std::vector<std::pair<std::string, std::shared_ptr<TypeExpr>>> fields;
   SourceRange range{};
 };
 
@@ -194,7 +187,6 @@ struct FunctionParameter {
   std::string name;
   SourceRange range{};
   std::shared_ptr<TypeExpr> annotation = nullptr;
-  bool isVariadic = false;
 };
 
 struct FunctionDeclaration {
@@ -248,7 +240,6 @@ struct Expression {
     AddressOfExpr,
     DereferenceExpr,
     BinaryExpr,
-    UpdateExpr,
     AssignmentExpr,
     MemberExpr,
     ObjectExpr,

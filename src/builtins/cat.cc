@@ -21,6 +21,7 @@ bool formattable(InferContext &context, const types::TypePtr &type) {
   case TypeKind::Bytes:
   case TypeKind::Null:
   case TypeKind::Never:
+  case TypeKind::Pointer:
   case TypeKind::Variable: return true;
   case TypeKind::Array: return formattable(context, resolved->element);
   case TypeKind::Union: {

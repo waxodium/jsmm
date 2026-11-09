@@ -99,16 +99,9 @@ void Checker::hoistFunctions(const reader::Program &program,
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
       reader::FunctionDeclaration hoisted{declaration->name, declaration->parameters, nullptr,
                                           declaration->returnAnnotation};
-      FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back(), false,
-                          nullptr};
+      FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back()};
       entry.parameterTypes.reserve(declaration->parameters.size());
       for (std::size_t index = 0; index < declaration->parameters.size(); ++index) {
-        const reader::FunctionParameter &parameter = declaration->parameters[index];
-        if (parameter.isVariadic) {
-          entry.isVariadic = true;
-          if (parameter.annotation != nullptr) entry.variadicElement = freshVariable();
-          continue;
-        }
         entry.parameterTypes.push_back(freshVariable());
       }
       functions.push_back(std::move(entry));
@@ -121,24 +114,6 @@ void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *bo
   std::size_t fixedIndex = 0;
   for (std::size_t index = 0; index < entry.declaration.parameters.size(); ++index) {
     const reader::FunctionParameter &parameter = entry.declaration.parameters[index];
-    if (parameter.isVariadic) {
-      TypePtr elementType = entry.variadicElement;
-      if (parameter.annotation != nullptr) {
-        const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
-        if (annotated != nullptr) {
-          if (elementType == nullptr)
-            entry.variadicElement = annotated;
-          else
-            (void)unifies(annotated, elementType, "parameter");
-          elementType = entry.variadicElement;
-        }
-      }
-      if (parameter.name != "...") {
-        if (elementType == nullptr) elementType = freshVariable();
-        scope.bindings.insert_or_assign(parameter.name, typeContext_.arrayType(elementType));
-      }
-      continue;
-    }
     if (fixedIndex >= entry.parameterTypes.size()) break;
     if (parameter.annotation != nullptr) {
       const TypePtr annotated = resolveTypeAnnotation(parameter.annotation);
@@ -423,8 +398,6 @@ void Checker::inferStatement(const reader::Statement &statement) {
             throw errors::ErrorException{errors::ErrorStatus{
                 errors::ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP, "continue", statement.range}};
           }
-        } else if constexpr (std::is_same_v<T, reader::ThrowStatement>) {
-          if (node.argument != nullptr) (void)inferExpression(node.argument);
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
           if (node.body != nullptr) {
             const bool loopBody =
@@ -461,8 +434,6 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
           return inferDereference(expr, node);
         } else if constexpr (std::is_same_v<T, reader::BinaryExpr>) {
           return inferBinary(expr, node);
-        } else if constexpr (std::is_same_v<T, reader::UpdateExpr>) {
-          return inferUpdate(expr, node);
         } else if constexpr (std::is_same_v<T, reader::AssignmentExpr>) {
           return inferAssignment(expr, node);
         } else if constexpr (std::is_same_v<T, reader::MemberExpr>) {
@@ -501,8 +472,7 @@ TypePtr Checker::inferIdentifier(const reader::ExprPtr &expr,
   for (const auto &function : functions_) {
     if (function.declaration.name == identifier.name) {
       TypePtr resultType = function.returnType ? function.returnType : nullType();
-      TypePtr calleeType = this->makeFunctionType(resultType, function.parameterTypes,
-                                                 function.isVariadic, function.variadicElement);
+      TypePtr calleeType = this->makeFunctionType(resultType, function.parameterTypes);
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
       annotations_.expressionTypes.insert_or_assign(expr.get(), calleeType);
       return calleeType;
@@ -575,7 +545,7 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     return left;
   }
 
-  if (binary.op == "==" || binary.op == "!=" || binary.op == "===" || binary.op == "!==") {
+  if (binary.op == "==" || binary.op == "!=") {
     if (!unifies(left, right, binary.op))
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
@@ -634,27 +604,6 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
 
   throw errors::ErrorException{
       errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op, expr->range}};
-}
-
-TypePtr Checker::inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update) {
-  if (!isAddressable(update.operand))
-    throw errors::ErrorException{errors::ErrorStatus{
-        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, update.op, expr->range}};
-  if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&update.operand->node)) {
-    for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope)
-      if (scope->constants.contains(identifier->name))
-        throw errors::ErrorException{errors::ErrorStatus{
-            errors::ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST, identifier->name, expr->range}};
-  }
-  TypePtr target = targetType(update.operand);
-  if (isReadOnlyLength(update.operand))
-    throw errors::ErrorException{errors::ErrorStatus{
-        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, "length", expr->range}};
-  if (!requireNumeric(target))
-    throw errors::ErrorException{
-        errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, update.op, expr->range}};
-  annotations_.argumentTypes.insert_or_assign(expr.get(), target);
-  return numberType();
 }
 
 TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
@@ -843,8 +792,7 @@ void Checker::recordTopLevelTypes() {
     if (function.returnType == nullptr) function.returnType = nullType();
     annotations_.functionTypes.insert_or_assign(
         function.declaration.name,
-        makeFunctionType(function.returnType, function.parameterTypes, function.isVariadic,
-                         function.variadicElement));
+        makeFunctionType(function.returnType, function.parameterTypes));
   }
 }
 
@@ -955,18 +903,13 @@ void Checker::checkCallArguments(
     const std::vector<std::pair<TypePtr, reader::SourceRange>> &arguments,
     const reader::SourceRange &range) {
   const std::size_t fixedParameters = function->parameters.size();
-  if (arguments.size() < fixedParameters ||
-      (!function->isVariadic && arguments.size() != fixedParameters)) {
+  if (arguments.size() != fixedParameters) {
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS, "call", range}};
   }
 
   for (std::size_t i = 0; i < arguments.size(); ++i) {
-    TypePtr expected = nullptr;
-    if (i < fixedParameters)
-      expected = function->parameters[i];
-    else if (function->isVariadic)
-      expected = function->variadicElement;
+    TypePtr expected = function->parameters[i];
     if (expected != nullptr && !unifies(expected, arguments[i].first, "argument"))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY,
                                                        "argument", arguments[i].second}};
@@ -977,14 +920,15 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
   if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node)) {
     if (const builtins::BuiltinSpec *builtin =
             builtins::BuiltinRegistry::instance().find(identifier->name)) {
-      if (!builtin->variadic && call.arguments.size() != builtin->minimumArguments) {
+      if (builtin->variadic) {
+        if (call.arguments.size() < builtin->minimumArguments) {
+          throw errors::ErrorException{
+              errors::ErrorStatus{errors::ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS,
+                                  identifier->name, expr->range}};
+        }
+      } else if (call.arguments.size() != builtin->minimumArguments) {
         throw errors::ErrorException{errors::ErrorStatus{
             errors::ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS, identifier->name, expr->range}};
-      }
-      if (call.arguments.size() < builtin->minimumArguments) {
-        throw errors::ErrorException{
-            errors::ErrorStatus{errors::ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS,
-                                identifier->name, expr->range}};
       }
       std::vector<TypePtr> argumentTypes;
       argumentTypes.reserve(call.arguments.size());
@@ -1009,7 +953,7 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
         argumentTypes.push_back(resolved);
       }
       const TypePtr result = builtin->infer(builtinInference_, argumentTypes, expr->range);
-      TypePtr calleeType = this->makeFunctionType(result, argumentTypes, false);
+      TypePtr calleeType = this->makeFunctionType(result, argumentTypes);
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
       return result;
     }
@@ -1063,12 +1007,9 @@ bool Checker::sameFunctionSignature(TypePtr left, TypePtr right) {
   if (left->kind == TypeKind::Array && right->kind == TypeKind::Array)
     return sameFunctionSignature(left->element, right->element);
   if (left->kind != TypeKind::Function || right->kind != TypeKind::Function) return false;
-  if (left->isVariadic != right->isVariadic) return false;
   if (left->parameters.size() != right->parameters.size()) return false;
   for (std::size_t i = 0; i < left->parameters.size(); ++i)
     if (!unifies(left->parameters[i], right->parameters[i], "array")) return false;
-  if (left->isVariadic && !unifies(left->variadicElement, right->variadicElement, "array"))
-    return false;
   return unifies(left->result, right->result, "array");
 }
 
@@ -1105,7 +1046,23 @@ TypePtr Checker::inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr
 }
 
 TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation) {
-  if (annotation == nullptr || annotation->names.empty()) return nullptr;
+  if (annotation == nullptr) return nullptr;
+
+  // Struct type: { fieldType fieldName; ... }
+  if (annotation->isStruct) {
+    std::vector<std::pair<std::string, TypePtr>> fields;
+    fields.reserve(annotation->fields.size());
+    for (const auto &[fieldName, fieldAnnotation] : annotation->fields) {
+      TypePtr fieldType = resolveTypeAnnotation(fieldAnnotation);
+      if (fieldType == nullptr)
+        throw errors::ErrorException{errors::ErrorStatus{
+            errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, fieldName, annotation->range}};
+      fields.emplace_back(fieldName, fieldType);
+    }
+    return typeContext_.structType(std::move(fields));
+  }
+
+  if (annotation->names.empty()) return nullptr;
 
   // Resolve each name in the annotation
   std::vector<TypePtr> resolved;
@@ -1115,19 +1072,12 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     TypePtr type = nullptr;
 
     // Check built-in types
-    if (annotation->isIntType) {
-      type = typeContext_.integerType(annotation->intSize, annotation->intSigned);
-    }
-    else if (name == "string") type = stringType();
+    if (name == "string") type = stringType();
     else if (name == "bool") type = booleanType();
     else if (name == "boolean") type = booleanType();
     else if (name == "byte") type = byteType();
     else if (name == "bytes") type = bytesType();
-    else if (name == "int") {
-      const std::size_t bits = annotation->isIntType ? annotation->intSize : 32;
-      const bool isSigned = annotation->isIntType ? annotation->intSigned : true;
-      type = typeContext_.integerType(bits, isSigned);
-    }
+    else if (name == "int") type = typeContext_.integerType(32, true);
     else if (name == "f64") {
       type = numberType(); // f64 resolves to number kind for arithmetic
     }

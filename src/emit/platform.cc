@@ -51,14 +51,8 @@ jsmm_alloc_commit:
   mov QWORD PTR [rip + jsmm_arena_pointer], rcx
   ret
 jsmm_alloc_oom:
-  mov eax, 1
-  mov edi, 2
-  lea rsi, [rip + jsmm_message_oom]
-  mov edx, offset jsmm_message_oom_len
-  syscall
-  mov edi, 1
-  mov eax, 60
-  syscall
+  xor eax, eax
+  ret
 .section .data
 .align 8
 jsmm_arena_pointer:

@@ -50,8 +50,13 @@ public:
   virtual void emitNumberResult(double value) = 0;
   virtual void emitAllocation(const ExprPtr &size) = 0;
   virtual void emitVoidResult() = 0;
-  virtual void emitMemcpy(const ExprPtr &dest, const ExprPtr &src, const ExprPtr &count) = 0;
-  virtual void emitMemset(const ExprPtr &dest, const ExprPtr &value, const ExprPtr &count) = 0;
+  virtual void emitFree(const ExprPtr &ptr) = 0;
+  virtual void emitMemcpy(const ExprPtr &dest, const ExprPtr &src,
+                          const ExprPtr &count) = 0;
+  virtual void emitMemset(const ExprPtr &dest, const ExprPtr &value,
+                          const ExprPtr &count) = 0;
+  virtual void emitMemcmp(const ExprPtr &a, const ExprPtr &b,
+                          const ExprPtr &count) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
@@ -89,5 +94,6 @@ void declareAlloc(BuiltinRegistry &registry);
 void declareFree(BuiltinRegistry &registry);
 void declareMemcpy(BuiltinRegistry &registry);
 void declareMemset(BuiltinRegistry &registry);
+void declareMemcmp(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

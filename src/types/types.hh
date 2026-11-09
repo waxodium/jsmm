@@ -67,8 +67,7 @@ public:
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();
-  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result,
-                       bool isVariadic = false, TypePtr variadicElement = nullptr);
+  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
   TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
   TypePtr arrayType(TypePtr element, std::size_t length = 0);
   TypePtr pointerType(TypePtr pointed);

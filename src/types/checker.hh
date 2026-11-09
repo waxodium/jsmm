@@ -39,8 +39,6 @@ private:
     TypePtr returnType;
     std::vector<TypePtr> parameterTypes;
     Scope *parentScope = nullptr;
-    bool isVariadic = false;
-    TypePtr variadicElement;
   };
 
   class BuiltinInference final : public builtins::InferContext {
@@ -78,7 +76,6 @@ private:
   TypePtr inferAddressOf(const reader::ExprPtr &expr, const reader::AddressOfExpr &addrOf);
   TypePtr inferDereference(const reader::ExprPtr &expr, const reader::DereferenceExpr &deref);
   TypePtr inferBinary(const reader::ExprPtr &expr, const reader::BinaryExpr &binary);
-  TypePtr inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update);
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
   TypePtr targetType(const reader::ExprPtr &target);
   TypePtr inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member);
@@ -98,10 +95,8 @@ private:
   TypePtr nullType() const { return typeContext_.nullType(); }
   TypePtr neverType() const { return typeContext_.never(); }
   TypePtr pointerType(TypePtr pointed) { return typeContext_.pointerType(std::move(pointed)); }
-  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes,
-                           bool isVariadic = false, TypePtr variadicElement = nullptr) {
-    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType), isVariadic,
-                                     std::move(variadicElement));
+  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes) {
+    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType));
   }
   TypePtr freshVariable();
 

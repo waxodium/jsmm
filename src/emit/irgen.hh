@@ -37,9 +37,12 @@ public:
   void emitNumberResult(double value) override;
   void emitAllocation(const reader::ExprPtr &size) override;
   void emitVoidResult() override;
+  void emitFree(const reader::ExprPtr &ptr) override;
   void emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr &src,
                   const reader::ExprPtr &count) override;
   void emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr &value,
+                  const reader::ExprPtr &count) override;
+  void emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
                   const reader::ExprPtr &count) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
@@ -88,8 +91,6 @@ private:
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;
-  llvm::Value *buildRestArray(const std::vector<EmitValue> &elements,
-                              types::TypePtr elementType);
   llvm::Value *dynamicPointer(llvm::Value *base, llvm::Value *offset) const;
   llvm::Value *allocate(std::uint64_t bytes);
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;
@@ -161,7 +162,6 @@ private:
   EmitValue generateRelational(const reader::BinaryExpr &binary);
   EmitValue generateEquality(const reader::BinaryExpr &binary);
   EmitValue generateLogical(const reader::BinaryExpr &binary);
-  EmitValue generateUpdate(const reader::UpdateExpr &update);
   EmitValue generateAssignment(const reader::AssignmentExpr &assignment);
   llvm::Value *generateLValueAddress(const reader::ExprPtr &target);
   llvm::Value *generateMemberAddress(const reader::MemberExpr &member,

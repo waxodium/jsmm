@@ -45,7 +45,6 @@ private:
   Statement parseDeclaration();
   Statement parseFunctionDeclaration();
   Statement parseReturnStatement();
-  Statement parseThrowStatement();
   Statement parseTypeDeclaration();
   Statement parseBlock();
   StatementList parseBlockBody();
@@ -60,17 +59,14 @@ private:
   bool peekNextIsColon() const;
   bool startsVariableDeclaration() const;
   bool startsFunctionDeclaration() const;
-  bool restParameterFollows() const;
 
   ExprPtr parseExpression(int minimumBindingPower = 1);
   ExprPtr parsePrefix();
   ExprPtr parseUnaryPrefix();
-  ExprPtr parseUpdatePrefix();
   ExprPtr parsePostfix(ExprPtr expression);
   ExprPtr parseCallPostfix(ExprPtr expression);
   ExprPtr parseMemberPostfix(ExprPtr expression);
   ExprPtr parseComputedMemberPostfix(ExprPtr expression);
-  ExprPtr parseUpdatePostfix(ExprPtr expression);
   ExprPtr parseBinaryInfix(ExprPtr left, const std::string &op, OperatorInfo info);
   ExprPtr parseAssignmentInfix(ExprPtr left, const std::string &op, OperatorInfo info);
   ExprPtr parsePrimary();

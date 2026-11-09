@@ -164,16 +164,6 @@ llvm::Value *IrGenerator::allocate(std::uint64_t bytes) {
   return builder_->CreateCall(allocFunction(), {i64(bytes)});
 }
 
-llvm::Value *IrGenerator::buildRestArray(const std::vector<EmitValue> &elements,
-                                         types::TypePtr elementType) {
-  const std::uint64_t stride = elementSize(elementType);
-  llvm::Value *base = allocate(8 + stride * elements.size());
-  builder_->CreateStore(i64(elements.size()), bytePointer(base, 0));
-  for (std::size_t index = 0; index < elements.size(); ++index)
-    storeSlot(bytePointer(base, 8 + stride * index), elements[index], elementType);
-  return base;
-}
-
 llvm::Type *IrGenerator::storageType(types::TypePtr type) const {
   const types::TypeLayout layout = types::layoutOf(type);
   if (!layout.defined) return i64Type_;
@@ -1057,8 +1047,6 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           return loadSlot(pointer, pointedType);
         } else if constexpr (std::is_same_v<T, reader::BinaryExpr>) {
           return generateBinary(node);
-        } else if constexpr (std::is_same_v<T, reader::UpdateExpr>) {
-          return generateUpdate(node);
         } else if constexpr (std::is_same_v<T, reader::AssignmentExpr>) {
           return generateAssignment(node);
         } else if constexpr (std::is_same_v<T, reader::MemberExpr>) {
@@ -1380,25 +1368,6 @@ IrGenerator::EmitValue IrGenerator::generateLogical(const reader::BinaryExpr &bi
   return asTyped(result, leftType);
 }
 
-IrGenerator::EmitValue IrGenerator::generateUpdate(const reader::UpdateExpr &update) {
-  llvm::Value *address = generateLValueAddress(update.operand);
-  if (address == nullptr)
-    throw errors::ErrorException{errors::ErrorStatus{
-        errors::ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET, update.op, update.operand->range}};
-  const TypePtr updateType = typeOf(update.operand);
-  const bool byteTarget = byteElement(update.operand);
-  EmitValue previous = byteTarget ? loadByteElement(address) : loadSlot(address, updateType);
-  llvm::Value *one = llvm::ConstantFP::get(doubleType_, 1.0);
-  EmitValue updated{update.op == "++" ? builder_->CreateFAdd(previous.value, one)
-                                       : builder_->CreateFSub(previous.value, one),
-                    true};
-  if (byteTarget)
-    storeByteElement(address, updated);
-  else
-    storeSlot(address, updated, updateType);
-  return update.prefix ? updated : previous;
-}
-
 bool IrGenerator::byteElement(const reader::ExprPtr &expression) const {
   const auto *member = std::get_if<reader::MemberExpr>(&expression->node);
   if (member == nullptr || !member->computedFlag) return false;
@@ -1590,21 +1559,12 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   llvm::Value *functionPointer =
       builder_->CreateIntToPtr(asRaw(callee), llvm::PointerType::getUnqual(*context_));
   std::vector<llvm::Value *> arguments;
-  std::vector<EmitValue> restElements;
-  const std::size_t fixedParameters = target->parameters.size();
   for (std::size_t index = 0; index < call.arguments.size(); ++index) {
     EmitValue argument = generateExpression(call.arguments[index]);
     TypePtr argumentType = typeOf(call.arguments[index]);
-    if (index < fixedParameters) {
-      argument = coerce(target->parameters[index], argumentType, argument);
-      arguments.push_back(asRaw(argument));
-    } else {
-      if (target->variadicElement != nullptr)
-        argument = coerce(target->variadicElement, argumentType, argument);
-      restElements.push_back(argument);
-    }
+    argument = coerce(target->parameters[index], argumentType, argument);
+    arguments.push_back(asRaw(argument));
   }
-  if (target->isVariadic) arguments.push_back(buildRestArray(restElements, target->variadicElement));
   llvm::FunctionType *functionType = llvm::FunctionType::get(
       i64Type_, std::vector<llvm::Type *>(arguments.size(), i64Type_), false);
   return asTyped(builder_->CreateCall(functionType, functionPointer, arguments), target->result);
@@ -1709,10 +1669,6 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   auto argument = function->arg_begin();
   std::size_t parameterIndex = 0;
   for (const auto &parameter : declaration.parameters) {
-    if (parameter.isVariadic && parameter.name == "...") {
-      ++argument;
-      continue;
-    }
     const TypePtr parameterType =
         functionType != nullptr && parameterIndex < functionType->parameters.size()
             ? resolve(functionType->parameters[parameterIndex])
@@ -1746,6 +1702,11 @@ void IrGenerator::emitAllocation(const reader::ExprPtr &size) {
 
 void IrGenerator::emitVoidResult() { lastValue_ = rawValue(i64(0)); }
 
+void IrGenerator::emitFree(const reader::ExprPtr &ptr) {
+  (void)generateExpression(ptr);
+  lastValue_ = rawValue(i64(0));
+}
+
 void IrGenerator::emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr &src,
                              const reader::ExprPtr &count) {
   EmitValue destination = generateExpression(dest);
@@ -1771,7 +1732,7 @@ void IrGenerator::emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr 
   if (!terminated()) builder_->CreateBr(condition);
   index->addIncoming(next, bodyEnd);
   builder_->SetInsertPoint(done);
-  lastValue_ = rawValue(i64(0));
+  lastValue_ = rawValue(destinationBase);
 }
 
 void IrGenerator::emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr &value,
@@ -1798,7 +1759,58 @@ void IrGenerator::emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr 
   if (!terminated()) builder_->CreateBr(condition);
   index->addIncoming(next, bodyEnd);
   builder_->SetInsertPoint(done);
-  lastValue_ = rawValue(i64(0));
+  lastValue_ = rawValue(destinationBase);
+}
+
+void IrGenerator::emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
+                             const reader::ExprPtr &count) {
+  EmitValue baseA = generateExpression(a);
+  EmitValue baseB = generateExpression(b);
+  EmitValue length = generateExpression(count);
+  llvm::Value *total = toInt64(length);
+  llvm::Value *aBase = asRaw(baseA);
+  llvm::Value *bBase = asRaw(baseB);
+
+  llvm::Value *resultSlot = builder_->CreateAlloca(i64Type_);
+  builder_->CreateStore(i64(0), resultSlot);
+
+  llvm::BasicBlock *preheader = createBlock("memcmp.preheader");
+  llvm::BasicBlock *condition = createBlock("memcmp.cond");
+  llvm::BasicBlock *body = createBlock("memcmp.body");
+  llvm::BasicBlock *diffFound = createBlock("memcmp.diff");
+  llvm::BasicBlock *done = createBlock("memcmp.done");
+
+  builder_->CreateBr(preheader);
+  builder_->SetInsertPoint(preheader);
+  builder_->CreateBr(condition);
+  builder_->SetInsertPoint(condition);
+  auto *index = builder_->CreatePHI(i64Type_, 2, "memcmp.index");
+  index->addIncoming(i64(0), preheader);
+  builder_->CreateCondBr(builder_->CreateICmpULT(index, total), body, done);
+
+  llvm::BasicBlock *bodyEnd = createBlock("memcmp.body.end");
+  builder_->SetInsertPoint(body);
+  llvm::Value *byteA =
+      builder_->CreateLoad(i8Type_, dynamicPointer(aBase, index));
+  llvm::Value *byteB =
+      builder_->CreateLoad(i8Type_, dynamicPointer(bBase, index));
+  llvm::Value *diff = builder_->CreateSub(byteA, byteB);
+  llvm::Value *diffExt = builder_->CreateSExt(diff, i64Type_);
+  llvm::Value *isNonZero = builder_->CreateICmpNE(diffExt, i64(0));
+  builder_->CreateCondBr(isNonZero, diffFound, bodyEnd);
+
+  builder_->SetInsertPoint(bodyEnd);
+  llvm::Value *next = builder_->CreateAdd(index, i64(1));
+  builder_->CreateBr(condition);
+  index->addIncoming(next, bodyEnd);
+
+  builder_->SetInsertPoint(diffFound);
+  builder_->CreateStore(diffExt, resultSlot);
+  builder_->CreateBr(done);
+
+  builder_->SetInsertPoint(done);
+  llvm::Value *finalResult = builder_->CreateLoad(i64Type_, resultSlot);
+  lastValue_ = rawValue(builder_->CreateSIToFP(finalResult, doubleType_));
 }
 void IrGenerator::declareHelper(std::string, std::string) {}
 void IrGenerator::useHelper(const std::string &) {}
