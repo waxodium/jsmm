@@ -3,6 +3,7 @@
 #include "errors/errors.hh"
 
 #include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 
@@ -765,11 +766,23 @@ ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
 ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
   (void)consume();
   const SourcePosition start = expression->range.start;
-  auto property = parseExpression();
+  auto startExpr = parseExpression();
+
+  if (eat(":")) {
+    // Range expression: obj[start:end]
+    auto endExpr = parseExpression();
+    if (!eat("]"))
+      fail("expected ']' after computed property range",
+           errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
+    auto range = std::make_shared<Expression>(RangeExpr{std::move(startExpr), std::move(endExpr)});
+    return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, range, true},
+                                    SourceRange{start, tokens_.at(index_ - 1).end});
+  }
+
   if (!eat("]"))
     fail("expected ']' after computed property",
          errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
-  return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, std::move(property), true},
+  return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, std::move(startExpr), true},
                                 SourceRange{start, tokens_.at(index_ - 1).end});
 }
 

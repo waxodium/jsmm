@@ -17,6 +17,7 @@ void BuiltinRegistry::registerAll() {
   declareMemcpy(instance());
   declareMemset(instance());
   declareMemcmp(instance());
+  declareLength(instance());
 }
 
 void BuiltinRegistry::declare(BuiltinSpec spec) { builtins_.push_back(std::move(spec)); }

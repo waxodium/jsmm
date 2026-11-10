@@ -1060,26 +1060,12 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::AssignmentExpr>) {
           return generateAssignment(node);
         } else if constexpr (std::is_same_v<T, reader::MemberExpr>) {
-          const TypePtr objectType = resolve(typeOf(node.object));
-          const TypePtr targetType =
-              objectType != nullptr && objectType->kind == TypeKind::Pointer
-                  ? resolve(objectType->pointed)
-                  : objectType;
-          const bool lengthObject =
-              targetType != nullptr &&
-              (targetType->kind == TypeKind::String || targetType->kind == TypeKind::Bytes ||
-               targetType->kind == TypeKind::Array);
-          if (!node.computedFlag && node.property == "length" && lengthObject) {
-            llvm::Value *base = asRaw(generateExpression(node.object));
-            if (objectType != nullptr && objectType->kind == TypeKind::Pointer)
-              base = builder_->CreateLoad(i64Type_, builder_->CreateIntToPtr(base, ptrType_));
-            llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
-            return EmitValue{builder_->CreateSIToFP(length, doubleType_), true};
-          }
           llvm::Value *address = generateMemberAddress(node, expression->range);
-          if (node.computedFlag && targetType != nullptr &&
-              targetType->kind == TypeKind::Bytes)
-            return loadByteElement(address);
+          if (node.computedFlag) {
+            const TypePtr objectType = resolve(typeOf(node.object));
+            if (objectType != nullptr && objectType->kind == TypeKind::Bytes)
+              return loadByteElement(address);
+          }
           return loadSlot(builder_->CreateIntToPtr(address, ptrType_), typeOf(expression));
         } else if constexpr (std::is_same_v<T, reader::ObjectExpr>) {
           const TypePtr structType = resolve(typeOf(expression));
@@ -1241,12 +1227,7 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
     if (binary.op == "+") return rawValue(builder_->CreateAdd(asRaw(left), offset));
     if (binary.op == "-") return rawValue(builder_->CreateSub(asRaw(left), offset));
   }
-  if (binary.op == "+") {
-    if (isText(typeOf(binary.left)) && isText(typeOf(binary.right)))
-      return EmitValue{builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)}),
-                       false};
-    return EmitValue{builder_->CreateFAdd(left.value, right.value), true};
-  }
+  if (binary.op == "+") return EmitValue{builder_->CreateFAdd(left.value, right.value), true};
   if (binary.op == "-") return EmitValue{builder_->CreateFSub(left.value, right.value), true};
   if (binary.op == "*") return EmitValue{builder_->CreateFMul(left.value, right.value), true};
   if (binary.op == "/") return EmitValue{builder_->CreateFDiv(left.value, right.value), true};
@@ -1444,15 +1425,7 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
   if (assignment.op != "=") {
     EmitValue current = byteTarget ? loadByteElement(address) : loadSlot(address, targetType);
     const std::string op = assignment.op.substr(0, assignment.op.size() - 1);
-    if (op == "+" && isText(targetType) && isText(valueType)) {
-      value =
-          EmitValue{builder_->CreateCall(stringConcatFunction(), {asRaw(current), asRaw(value)}),
-                    false};
-      valueType = targetType;
-    } else if (isText(targetType) || isText(valueType)) {
-      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
-                                                       assignment.op, assignment.left->range}};
-    } else if (op == "+")
+    if (op == "+")
       value = EmitValue{builder_->CreateFAdd(current.value, value.value), true};
     else if (op == "-")
       value = EmitValue{builder_->CreateFSub(current.value, value.value), true};
@@ -1462,14 +1435,12 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       value = EmitValue{builder_->CreateFDiv(current.value, value.value), true};
     else if (op == "%")
       value = EmitValue{builder_->CreateCall(moduloFunction(), {current.value, value.value}), true};
-    else if (op == "**")
-      value = EmitValue{builder_->CreateCall(powerFunction(), {current.value, value.value}), true};
     else if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == ">>>")
       value = emitBitwiseOperation(op, current, value);
     else
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, assignment.left->range}};
-    if (!isText(targetType)) valueType = types_->number();
+    valueType = types_->number();
   }
 
   value = coerce(targetType, valueType, value);
@@ -1504,8 +1475,75 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
   }
 
   if (member.computedFlag) {
+    // Check if this is a range expression (slicing)
+    if (const auto *rangeExpr =
+            std::get_if<reader::RangeExpr>(&member.computed->node)) {
+      // String or bytes slicing: obj[start:end]
+      if (objectType == nullptr ||
+          (objectType->kind != TypeKind::String && objectType->kind != TypeKind::Bytes))
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", range}};
+
+      EmitValue startValue = generateExpression(rangeExpr->start);
+      EmitValue endValue = generateExpression(rangeExpr->end);
+      llvm::Value *startIdx = toInt64(startValue);
+      llvm::Value *endIdx = toInt64(endValue);
+
+      llvm::Value *lengthPtr = bytePointer(base, 0);
+      llvm::Value *length = builder_->CreateLoad(i64Type_, lengthPtr);
+
+      llvm::BasicBlock *oobBlock = createBlock("slice.oob");
+      llvm::BasicBlock *okBlock = createBlock("slice.ok");
+      llvm::BasicBlock *endBlock = createBlock("slice.end");
+
+      // Check start < length and end <= length and start <= end
+      llvm::Value *startOk = builder_->CreateICmpULT(startIdx, length);
+      llvm::Value *endOk = builder_->CreateICmpULE(endIdx, length);
+      llvm::Value *startLeEnd = builder_->CreateICmpSLE(startIdx, endIdx);
+      llvm::Value *boundsOk =
+          builder_->CreateAnd(builder_->CreateAnd(startOk, endOk), startLeEnd);
+
+      builder_->CreateCondBr(boundsOk, okBlock, oobBlock);
+
+      builder_->SetInsertPoint(oobBlock);
+      builder_->CreateCall(boundsFunction());
+      builder_->CreateBr(endBlock);
+
+      builder_->SetInsertPoint(okBlock);
+      // Compute slice pointer: base + 8 + start
+      llvm::Value *slicePtr =
+          builder_->CreateAdd(base, builder_->CreateAdd(i64(8), startIdx));
+      // Compute slice length: end - start
+      llvm::Value *sliceLen = builder_->CreateSub(endIdx, startIdx);
+
+      // Allocate 16 bytes for the result string descriptor {ptr, len}
+      llvm::Value *resultDesc = allocate(16);
+      builder_->CreateStore(slicePtr, bytePointer(resultDesc, 0));
+      builder_->CreateStore(sliceLen, bytePointer(resultDesc, 8));
+
+      builder_->CreateBr(endBlock);
+
+      builder_->SetInsertPoint(endBlock);
+      llvm::PHINode *ptrPhi = builder_->CreatePHI(i64Type_, 2, "slice.ptr");
+      ptrPhi->addIncoming(resultDesc, okBlock);
+      ptrPhi->addIncoming(builder_->CreatePtrToInt(builder_->CreateIntToPtr(i64(0), ptrType_), i64Type_),
+                          oobBlock);
+      return ptrPhi;
+    }
+
+    // Pointer arithmetic: ptr + index * sizeof(element)
+    if (objectType != nullptr && objectType->kind == TypeKind::Pointer) {
+      EmitValue indexValue = generateExpression(member.computed);
+      llvm::Value *index = toInt64(indexValue);
+      llvm::Value *stride = i64(elementSize(objectType->pointed));
+      llvm::Value *offset = builder_->CreateMul(index, stride);
+      return builder_->CreateAdd(base, offset);
+    }
+
+    // Indexing: obj[index]
     if (objectType == nullptr ||
-        (objectType->kind != TypeKind::Array && objectType->kind != TypeKind::Bytes))
+        (objectType->kind != TypeKind::Array && objectType->kind != TypeKind::Bytes &&
+         objectType->kind != TypeKind::String))
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", range}};
     EmitValue indexValue = generateExpression(member.computed);
@@ -1732,6 +1770,13 @@ void IrGenerator::emitFree(const reader::ExprPtr &ptr) {
   lastValue_ = rawValue(i64(0));
 }
 
+void IrGenerator::emitLength(const reader::ExprPtr &operand) {
+  EmitValue base = generateExpression(operand);
+  llvm::Value *basePtr = asRaw(base);
+  llvm::Value *len = builder_->CreateLoad(i64Type_, bytePointer(basePtr, 0));
+  lastValue_ = EmitValue{builder_->CreateSIToFP(len, doubleType_), true};
+}
+
 void IrGenerator::emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr &src,
                              const reader::ExprPtr &count) {
   EmitValue destination = generateExpression(dest);
@@ -1842,12 +1887,12 @@ void IrGenerator::useHelper(const std::string &) {}
 void IrGenerator::callHelper(const std::string &) {}
 
 void IrGenerator::formatValue(const reader::ExprPtr &expression) {
-  EmitValue value = generateExpression(expression);
+  IrGenerator::EmitValue value = generateExpression(expression);
   emitFormatValue(value, typeOf(expression));
   lastValue_ = rawValue(i64(0));
 }
 void IrGenerator::formatArray(const reader::ExprPtr &expression) {
-  EmitValue value = generateExpression(expression);
+  IrGenerator::EmitValue value = generateExpression(expression);
   emitFormatArray(value, typeOf(expression));
   lastValue_ = rawValue(i64(0));
 }
@@ -1855,7 +1900,7 @@ void IrGenerator::formatNewline() {
   builder_->CreateCall(stringWriter(), {builder_->CreatePtrToInt(internString("\n"), i64Type_)});
 }
 
-void IrGenerator::emitFormatValue(EmitValue value, TypePtr type) {
+void IrGenerator::emitFormatValue(IrGenerator::EmitValue value, types::TypePtr type) {
   type = resolve(type);
   if (type == nullptr) {
     builder_->CreateCall(nullWriter());
@@ -1880,7 +1925,7 @@ void IrGenerator::emitFormatValue(EmitValue value, TypePtr type) {
   case TypeKind::Variable: builder_->CreateCall(nullWriter()); break;
   }
 }
-void IrGenerator::emitFormatArray(EmitValue value, TypePtr type) {
+void IrGenerator::emitFormatArray(IrGenerator::EmitValue value, types::TypePtr type) {
   builder_->CreateCall(lbracketWriter());
   llvm::Value *base = asRaw(value);
   llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
@@ -1902,7 +1947,7 @@ void IrGenerator::emitFormatArray(EmitValue value, TypePtr type) {
   builder_->CreateBr(itemBlock);
   builder_->SetInsertPoint(itemBlock);
   const std::uint64_t stride = elementSize(type->element);
-  EmitValue item = loadSlot(
+  IrGenerator::EmitValue item = loadSlot(
       dynamicPointer(base, builder_->CreateAdd(i64(8), builder_->CreateMul(index, i64(stride)))),
       type->element);
   emitFormatValue(item, type->element);
@@ -1913,7 +1958,7 @@ void IrGenerator::emitFormatArray(EmitValue value, TypePtr type) {
   builder_->SetInsertPoint(end);
   builder_->CreateCall(rbracketWriter());
 }
-void IrGenerator::emitFormatUnion(EmitValue value, TypePtr type) {
+void IrGenerator::emitFormatUnion(IrGenerator::EmitValue value, types::TypePtr type) {
   llvm::Value *base = asRaw(value);
   llvm::Value *tag = builder_->CreateLoad(i64Type_, bytePointer(base, 0));
   llvm::Value *payload = builder_->CreateLoad(i64Type_, bytePointer(base, 8));

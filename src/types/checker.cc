@@ -483,6 +483,9 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
         } else if constexpr (std::is_same_v<T, reader::UndefinedLiteralExpr>) {
           throw errors::ErrorException{errors::ErrorStatus{
               errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "undefined", expr->range}};
+        } else if constexpr (std::is_same_v<T, reader::RangeExpr>) {
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_TYPE_USED_AS_VALUE, {}, expr->range}};
         }
         return neverType();
       },
@@ -584,16 +587,8 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     return booleanType();
   }
 
-  if (binary.op == "+" && (isText(left) || isText(right))) {
-    if (!isText(left) || !isText(right))
-      throw errors::ErrorException{errors::ErrorStatus{
-          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op, expr->range}};
-    if (isString(left) && isString(right)) return stringType();
-    return bytesType();
-  }
-
   if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
-      binary.op == "%" || binary.op == "**") {
+      binary.op == "%") {
     const TypePtr resolvedLeft = resolve(left);
     const TypePtr resolvedRight = resolve(right);
     const bool pointerOperands =
@@ -735,17 +730,8 @@ bool Checker::isAddressable(const reader::ExprPtr &expr) const {
   return false;
 }
 
-bool Checker::isReadOnlyLength(const reader::ExprPtr &target) const {
-  const auto *member = std::get_if<reader::MemberExpr>(&target->node);
-  if (member == nullptr || member->computedFlag || member->property != "length") return false;
-  const auto object = annotations_.expressionTypes.find(member->object.get());
-  if (object == annotations_.expressionTypes.end()) return false;
-  TypePtr objectType = resolve(object->second);
-  if (objectType != nullptr && objectType->kind == TypeKind::Pointer)
-    objectType = resolve(objectType->pointed);
-  if (objectType == nullptr) return false;
-  return objectType->kind == TypeKind::String || objectType->kind == TypeKind::Bytes ||
-         objectType->kind == TypeKind::Array;
+bool Checker::isReadOnlyLength(const reader::ExprPtr & /*target*/) const {
+  return false;
 }
 
 TypePtr Checker::memberResultType(const reader::MemberExpr &member,
@@ -754,18 +740,31 @@ TypePtr Checker::memberResultType(const reader::MemberExpr &member,
   const TypePtr pointed = pointerObject ? resolve(objectType->pointed) : nullptr;
   if (pointerObject) objectType = pointed;
   if (member.computedFlag) {
-    if (pointerObject && pointed != nullptr && pointed->kind != TypeKind::Array &&
-        pointed->kind != TypeKind::Bytes)
-      return pointed;
-    if (objectType != nullptr && objectType->kind == TypeKind::Array) return objectType->element;
+    // Range expression (slicing): obj[start:end]
+    if (std::get_if<reader::RangeExpr>(&member.computed->node)) {
+      // Slicing returns the same type as the object
+      return objectType;
+    }
+    // Indexing: obj[index]
+    TypePtr indexType = inferExpression(member.computed);
+    if (!requireNumeric(indexType))
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", expression.range}};
+    if (objectType != nullptr && objectType->kind == TypeKind::Array)
+      return objectType->element;
     if (objectType != nullptr && objectType->kind == TypeKind::Bytes) return byteType();
+    if (objectType != nullptr && objectType->kind == TypeKind::String) return bytesType();
+    // Pointer indexing: ptr[i] returns the element (pointed) type
+    if (pointerObject) return pointed;
     throw errors::ErrorException{errors::ErrorStatus{
         errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "[]", expression.range}};
   }
   if (objectType != nullptr &&
       (objectType->kind == TypeKind::String || objectType->kind == TypeKind::Bytes ||
        objectType->kind == TypeKind::Array)) {
-    if (member.property == "length") return numberType();
+    if (member.property == "length")
+      throw errors::ErrorException{errors::ErrorStatus{
+          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "length", expression.range}};
   }
   if (objectType != nullptr && objectType->kind == TypeKind::Struct) {
     for (const auto &[fieldName, fieldType] : objectType->fields) {
@@ -779,6 +778,11 @@ TypePtr Checker::memberResultType(const reader::MemberExpr &member,
 TypePtr Checker::inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member) {
   TypePtr objectType = resolve(inferExpression(member.object));
   if (member.computedFlag) {
+    // Range expression (slicing): obj[start:end]
+    if (std::get_if<reader::RangeExpr>(&member.computed->node)) {
+      return objectType;
+    }
+    // Indexing: obj[index]
     TypePtr indexType = inferExpression(member.computed);
     if (!requireNumeric(indexType))
       throw errors::ErrorException{

@@ -57,6 +57,7 @@ public:
                           const ExprPtr &count) = 0;
   virtual void emitMemcmp(const ExprPtr &a, const ExprPtr &b,
                           const ExprPtr &count) = 0;
+  virtual void emitLength(const ExprPtr &operand) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
@@ -95,5 +96,6 @@ void declareFree(BuiltinRegistry &registry);
 void declareMemcpy(BuiltinRegistry &registry);
 void declareMemset(BuiltinRegistry &registry);
 void declareMemcmp(BuiltinRegistry &registry);
+void declareLength(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

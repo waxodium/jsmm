@@ -44,6 +44,7 @@ public:
                   const reader::ExprPtr &count) override;
   void emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
                   const reader::ExprPtr &count) override;
+  void emitLength(const reader::ExprPtr &operand) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
   void formatNewline() override;

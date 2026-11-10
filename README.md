@@ -8,11 +8,7 @@
     </tr>
 </table>
 
-[/dʒeɪ ɛs ɛm ɛm/](https://ipa-reader.com/?text=%2Fd%CA%92e%C9%AA%20%C9%9Bs%20%C9%9Bm%20%C9%9Bm%2F) 
-can also be JavaScript decremented
-
-"**JSMM**" is a non-standard and statical subset of JavaScript programming language. 
- 
+Please read [JSD Documentation](https://github.com/waxodium/jsddoc)
 Source code of **Compiler Engine for JS minus-minus**
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](./LICENSE)
@@ -21,15 +17,6 @@ Source code of **Compiler Engine for JS minus-minus**
 
 
 ## About
-
-*jsmm* uses **ES2015 (ECMAScript 2015) as its base syntax**. 
-It does not introduce a separate programming language or modify JavaScript syntax. 
-Instead, it restricts the supported ECMAScript features to a statical subset suitable for native compilation.
-
-The compiler uses implicit type inference and static analysis to reject unsupported or unsafe dynamic features at compile time.
-
-
-*jsmm* excludes JavaScript built-ins, those includes `console`, `arrays`, `objects`
 
 | Operating System | Arch | Standing |
 | :--- | :--- | :--- | 
@@ -43,16 +30,7 @@ make
 ./build/jsd # executable
 ```
 
-## Sample
-```js
-function a(b) {
-  for (let i = 1; i <= 10; i++) { cat(i, ".", b) }
-}
-
-a("Hello, World");
-
-```
-
 ## License
 
 *jsmm* is licensed under the terms of the [Mozilla Public License 2.0](./LICENSE). Review `LICENSE` file for details.
+

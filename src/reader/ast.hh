@@ -73,6 +73,11 @@ struct DereferenceExpr {
   ExprPtr operand;
 };
 
+struct RangeExpr {
+  ExprPtr start;
+  ExprPtr end;
+};
+
 struct BinaryExpr {
   std::string op;
   ExprPtr left;
@@ -251,7 +256,8 @@ struct Expression {
     BooleanLiteralExpr,
     NullLiteralExpr,
     UndefinedLiteralExpr,
-    TypeOperandExpr
+    TypeOperandExpr,
+    RangeExpr
   > node;
   SourceRange range{};
 };

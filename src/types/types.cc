@@ -215,10 +215,10 @@ TypeLayout layoutOf(TypePtr type) {
     return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
   }
   case TypeKind::Number:
-  case TypeKind::String:
-  case TypeKind::Bytes:
   case TypeKind::Pointer:
   case TypeKind::Function: return knownLayout(8, 8);
+  case TypeKind::String:
+  case TypeKind::Bytes: return knownLayout(16, 8);
   case TypeKind::Array: {
     if (type->length == 0) return {};
     const TypeLayout element = layoutOf(type->element);
