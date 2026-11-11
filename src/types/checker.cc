@@ -1146,7 +1146,7 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     else if (name == "va_list") type = numberType(); // va_list is treated as number-sized
     else if (name == "void") type = nullptr; // void is not a valid variable type
     else if (name == "auto")
-      type = annotation->pointerDepth[index] > 0 ? freshVariable() : nullptr;
+      type = freshVariable();
     else if (name == "null") type = nullType();
 
     // Check type aliases (skip for auto and void, which are intentionally null)

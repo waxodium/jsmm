@@ -1609,26 +1609,63 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   std::vector<llvm::Value *> arguments;
   const std::size_t fixedParameters = target->parameters.size();
   bool isVariadic = target->isVariadic;
+  std::vector<llvm::Value *> rawArgs;
+  rawArgs.reserve(call.arguments.size());
   for (std::size_t index = 0; index < call.arguments.size(); ++index) {
     EmitValue argument = generateExpression(call.arguments[index]);
     TypePtr argumentType = typeOf(call.arguments[index]);
     if (index < fixedParameters) {
       argument = coerce(target->parameters[index], argumentType, argument);
     }
-    arguments.push_back(asRaw(argument));
+    // For variadic args stored in shadow array, convert double to i64 using FPToSI
+    // (not bitcast) so the callee can correctly interpret via SIToFP/UIToFP.
+    llvm::Value *rawArg;
+    if (index >= fixedParameters && argument.number) {
+      rawArg = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat,
+                                         {i64Type_, doubleType_}, {argument.value});
+    } else {
+      rawArg = asRaw(argument);
+    }
+    rawArgs.push_back(rawArg);
+    arguments.push_back(rawArg);
   }
   if (isVariadic) {
-    std::size_t variadicCount = call.arguments.size() - fixedParameters;
-    // Allocate shadow array and copy variadic args into it
-    llvm::Value *shadowArray = builder_->CreateAlloca(i64Type_, i64(variadicCount));
-    for (std::size_t i = 0; i < variadicCount; ++i) {
-      llvm::Value *elemPtr = builder_->CreateGEP(i64Type_, shadowArray, {i64(i)});
-      builder_->CreateStore(arguments[fixedParameters + i], elemPtr);
+    // Count i64 slots: bytes = 2 slots (ptr + len), everything else = 1 slot
+    std::size_t slotCount = 0;
+    for (std::size_t index = fixedParameters; index < call.arguments.size(); ++index) {
+      TypePtr argType = typeOf(call.arguments[index]);
+      if (argType && isBytes(argType)) slotCount += 2;
+      else slotCount += 1;
     }
+    // Allocate shadow array with slotCount entries
+    llvm::Value *shadowArray = builder_->CreateAlloca(i64Type_, i64(slotCount));
+    std::size_t slotIndex = 0;
+    for (std::size_t i = fixedParameters; i < call.arguments.size(); ++i) {
+      TypePtr argType = typeOf(call.arguments[i]);
+      llvm::Value *rawArg = rawArgs[i];
+      if (argType && isBytes(argType)) {
+        // Store pointer (slot) and length (slot + 1)
+        llvm::Value *elemPtr = builder_->CreateGEP(i64Type_, shadowArray, {i64(slotIndex)});
+        builder_->CreateStore(rawArg, elemPtr);
+        slotIndex++;
+        // Length is at pointer + 8 in the bytes descriptor
+        llvm::Value *lenPtr =
+            builder_->CreateGEP(i8Type_, builder_->CreateIntToPtr(rawArg, ptrType_), i64(8));
+        llvm::Value *lenVal = builder_->CreateLoad(i64Type_, lenPtr);
+        elemPtr = builder_->CreateGEP(i64Type_, shadowArray, {i64(slotIndex)});
+        builder_->CreateStore(lenVal, elemPtr);
+        slotIndex++;
+      } else {
+        llvm::Value *elemPtr = builder_->CreateGEP(i64Type_, shadowArray, {i64(slotIndex)});
+        builder_->CreateStore(rawArg, elemPtr);
+        slotIndex++;
+      }
+    }
+    // Insert hidden params right after fixed JSmm params
     arguments.insert(arguments.begin() + fixedParameters,
-                     i64(variadicCount));    // hidden va_count
+                     i64(slotCount));    // hidden va_count (slot count)
     arguments.insert(arguments.begin() + fixedParameters + 1,
-                     shadowArray);           // hidden va_array pointer
+                     builder_->CreateBitCast(shadowArray, ptrType_)); // hidden va_array pointer
   }
   // Build call parameter types: fixed JSmm params are i64, va_count is i64,
   // va_array pointer is ptr. Variadic args go into ... (not fixed params).
@@ -1637,8 +1674,8 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   for (std::size_t index = 0; index < fixedParameters; ++index)
     callParamTypes.push_back(i64Type_);
   if (isVariadic) {
-    callParamTypes.push_back(i64Type_);  // va_count
-    callParamTypes.push_back(ptrType_);  // va_array pointer
+    callParamTypes.push_back(i64Type_);   // va_count
+    callParamTypes.push_back(ptrType_);   // va_array pointer
   }
   llvm::FunctionType *functionType = llvm::FunctionType::get(
       i64Type_, callParamTypes, isVariadic);
@@ -1688,8 +1725,8 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
         }
       }
       if (isVariadic) {
-        parameters.push_back(i64Type_);  // hidden va_count
-        parameters.push_back(ptrType_);  // hidden va_array pointer
+        parameters.push_back(i64Type_);   // hidden va_count
+        parameters.push_back(ptrType_);   // hidden va_array pointer
       }
       llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, isVariadic);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
@@ -1791,8 +1828,7 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
     vaCountSlot_->setName("va.count");
     builder_->CreateStore(vaCountVal, vaCountSlot_);
 
-    // va_array is the parameter right after va_count
-    vaArraySlot_ = function->getArg(jsmmFixedCount + 1);
+    vaArraySlot_ = &*argument;
     ++argument;
   }
   generateStatements(declaration.body->statements);
