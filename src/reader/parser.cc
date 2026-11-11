@@ -729,12 +729,18 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
   (void)consume();
   const SourcePosition start = expression->range.start;
   const auto *callee = std::get_if<IdentifierExpr>(&expression->node);
-  const bool typeOperand =
-      callee != nullptr && (callee->name == "sizeof" || callee->name == "alignof");
+  // Which argument indexes are type operands (vs value expressions).
+  auto isTypeOperandIndex = [&](std::size_t argIndex) -> bool {
+    if (callee == nullptr) return false;
+    if (callee->name == "sizeof" || callee->name == "alignof") return argIndex == 0;
+    if (callee->name == "va_arg") return argIndex == 1;
+    return false;
+  };
   std::vector<ExprPtr> arguments;
+  std::size_t argIndex = 0;
   if (!eat(")")) {
     do {
-      if (typeOperand && arguments.empty()) {
+      if (isTypeOperandIndex(argIndex)) {
         auto annotation = parseTypeOperandAnnotation();
         const SourceRange operandRange = annotation->range;
         arguments.push_back(
@@ -742,6 +748,7 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
       } else {
         arguments.push_back(parseExpression());
       }
+      ++argIndex;
     } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after call arguments",

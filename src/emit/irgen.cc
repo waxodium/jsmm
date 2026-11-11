@@ -1617,8 +1617,31 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
     }
     arguments.push_back(asRaw(argument));
   }
+  if (isVariadic) {
+    std::size_t variadicCount = call.arguments.size() - fixedParameters;
+    // Allocate shadow array and copy variadic args into it
+    llvm::Value *shadowArray = builder_->CreateAlloca(i64Type_, i64(variadicCount));
+    for (std::size_t i = 0; i < variadicCount; ++i) {
+      llvm::Value *elemPtr = builder_->CreateGEP(i64Type_, shadowArray, {i64(i)});
+      builder_->CreateStore(arguments[fixedParameters + i], elemPtr);
+    }
+    arguments.insert(arguments.begin() + fixedParameters,
+                     i64(variadicCount));    // hidden va_count
+    arguments.insert(arguments.begin() + fixedParameters + 1,
+                     shadowArray);           // hidden va_array pointer
+  }
+  // Build call parameter types: fixed JSmm params are i64, va_count is i64,
+  // va_array pointer is ptr. Variadic args go into ... (not fixed params).
+  std::vector<llvm::Type *> callParamTypes;
+  callParamTypes.reserve(fixedParameters + (isVariadic ? 2 : 0));
+  for (std::size_t index = 0; index < fixedParameters; ++index)
+    callParamTypes.push_back(i64Type_);
+  if (isVariadic) {
+    callParamTypes.push_back(i64Type_);  // va_count
+    callParamTypes.push_back(ptrType_);  // va_array pointer
+  }
   llvm::FunctionType *functionType = llvm::FunctionType::get(
-      i64Type_, std::vector<llvm::Type *>(arguments.size(), i64Type_), isVariadic);
+      i64Type_, callParamTypes, isVariadic);
   return asTyped(builder_->CreateCall(functionType, functionPointer, arguments), target->result);
 }
 
@@ -1653,13 +1676,20 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
 
   for (const auto &statement : program.statements) {
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
-      std::vector<llvm::Type *> parameters(declaration->parameters.size(), i64Type_);
+      std::size_t jsmmFixedCount = 0;
+      for (const auto &param : declaration->parameters)
+        if (!param.isVariadic) ++jsmmFixedCount;
+      std::vector<llvm::Type *> parameters(jsmmFixedCount, i64Type_);
       bool isVariadic = false;
       for (const auto &param : declaration->parameters) {
         if (param.isVariadic) {
           isVariadic = true;
           break;
         }
+      }
+      if (isVariadic) {
+        parameters.push_back(i64Type_);  // hidden va_count
+        parameters.push_back(ptrType_);  // hidden va_array pointer
       }
       llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, isVariadic);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
@@ -1715,6 +1745,9 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   labels_.clear();
   pendingLoopLabel_.clear();
   slotCount_ = 0;
+  vaCountSlot_ = nullptr;
+  vaCountValue_ = nullptr;
+  vaArraySlot_ = nullptr;
   const auto declaredFunction = annotations_->functionTypes.find(declaration.name);
   const TypePtr functionType =
       declaredFunction != annotations_->functionTypes.end() ? declaredFunction->second : nullptr;
@@ -1727,20 +1760,40 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   beginScope();
   auto argument = function->arg_begin();
   std::size_t parameterIndex = 0;
-  for (const auto &parameter : declaration.parameters) {
-    if (parameter.isVariadic && parameter.name == "...") {
-      ++argument;
-      continue;
-    }
+  std::size_t jsmmFixedCount = 0;
+  for (const auto &parameter : declaration.parameters)
+    if (!parameter.isVariadic) ++jsmmFixedCount;
+
+  // Store JSmm fixed parameters
+  for (std::size_t i = 0; i < jsmmFixedCount; ++i) {
     const TypePtr parameterType =
         functionType != nullptr && parameterIndex < functionType->parameters.size()
             ? resolve(functionType->parameters[parameterIndex])
             : nullptr;
     llvm::Value *address = slotAlloca(allocateSlot(), parameterType);
-    scopes_.back().slots.emplace(parameter.name, Slot{address});
+    const reader::FunctionParameter &param = declaration.parameters[i];
+    scopes_.back().slots.emplace(param.name, Slot{address});
     storeSlot(address, asTyped(&*argument, parameterType), parameterType);
     ++argument;
     ++parameterIndex;
+  }
+
+  // Variadic prologue: store hidden va_count and va_array pointer
+  if (functionType != nullptr && functionType->isVariadic) {
+    auto argument = function->arg_begin();
+    // Skip fixed JSmm params to reach va_count
+    for (std::size_t i = 0; i < jsmmFixedCount; ++i)
+        ++argument;
+    llvm::Value *vaCountVal = &*argument;
+    vaCountValue_ = vaCountVal;
+    ++argument;
+    vaCountSlot_ = builder_->CreateAlloca(i64Type_);
+    vaCountSlot_->setName("va.count");
+    builder_->CreateStore(vaCountVal, vaCountSlot_);
+
+    // va_array is the parameter right after va_count
+    vaArraySlot_ = function->getArg(jsmmFixedCount + 1);
+    ++argument;
   }
   generateStatements(declaration.body->statements);
   if (!terminated()) builder_->CreateBr(returnBlock_);
@@ -1768,6 +1821,72 @@ void IrGenerator::emitVoidResult() { lastValue_ = rawValue(i64(0)); }
 void IrGenerator::emitFree(const reader::ExprPtr &ptr) {
   (void)generateExpression(ptr);
   lastValue_ = rawValue(i64(0));
+}
+
+IrGenerator::EmitValue IrGenerator::coerceI64ToType(llvm::Value *i64val, types::TypePtr type) {
+  type = resolve(type);
+  if (type == nullptr) return rawValue(i64val);
+  switch (type->kind) {
+  case TypeKind::Pointer: return rawValue(i64val);
+  case TypeKind::Number:
+  case TypeKind::Byte:
+  case TypeKind::Integer: {
+    const bool signedNum =
+        type->kind == TypeKind::Byte || (type->kind == TypeKind::Integer && type->isSigned);
+    return EmitValue{
+        signedNum ? builder_->CreateSIToFP(i64val, doubleType_)
+                  : builder_->CreateUIToFP(i64val, doubleType_),
+        true};
+  }
+  case TypeKind::Boolean:
+    return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
+  default:
+    return rawValue(i64val);
+  }
+}
+
+void IrGenerator::emitVaCount() {
+  if (vaCountValue_ == nullptr) {
+    lastValue_ = numberValue(0.0);
+    return;
+  }
+  lastValue_ = EmitValue{builder_->CreateSIToFP(vaCountValue_, doubleType_), true};
+}
+
+void IrGenerator::emitVaArg(const reader::CallExpr &call) {
+  if (vaArraySlot_ == nullptr || vaCountValue_ == nullptr) {
+    lastValue_ = rawValue(i64(0));
+    return;
+  }
+  if (call.arguments.size() != 2) {
+    lastValue_ = rawValue(i64(0));
+    return;
+  }
+  EmitValue idx = generateExpression(call.arguments[0]);
+  llvm::Value *indexVal = toInt64(idx);
+
+  // Look up the resolved type of the type operand (TypeOperandExpr)
+  TypePtr resultType = annotations_->expressionTypes.at(call.arguments[1].get());
+
+  // Bounds check: index < va_count
+  llvm::Value *count = builder_->CreateLoad(i64Type_, vaCountSlot_);
+  llvm::Value *oob = builder_->CreateICmpUGE(indexVal, count);
+  llvm::BasicBlock *oobBlock = createBlock("va_arg.oob");
+  llvm::BasicBlock *okBlock = createBlock("va_arg.ok");
+  llvm::BasicBlock *endBlock = createBlock("va_arg.end");
+  builder_->CreateCondBr(oob, oobBlock, okBlock);
+
+  builder_->SetInsertPoint(oobBlock);
+  builder_->CreateCall(boundsFunction());
+  builder_->CreateUnreachable();
+
+  builder_->SetInsertPoint(okBlock);
+  llvm::Value *elemPtr = builder_->CreateGEP(i64Type_, vaArraySlot_, {indexVal});
+  llvm::Value *loaded = builder_->CreateLoad(i64Type_, elemPtr);
+  lastValue_ = coerceI64ToType(loaded, resultType);
+  builder_->CreateBr(endBlock);
+
+  builder_->SetInsertPoint(endBlock);
 }
 
 void IrGenerator::emitLength(const reader::ExprPtr &operand) {

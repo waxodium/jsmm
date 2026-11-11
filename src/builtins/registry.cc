@@ -18,6 +18,8 @@ void BuiltinRegistry::registerAll() {
   declareMemset(instance());
   declareMemcmp(instance());
   declareLength(instance());
+  declareVaCount(instance());
+  declareVaArg(instance());
 }
 
 void BuiltinRegistry::declare(BuiltinSpec spec) { builtins_.push_back(std::move(spec)); }

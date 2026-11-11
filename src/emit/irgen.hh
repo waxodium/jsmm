@@ -176,6 +176,11 @@ private:
   void emitFormatUnion(EmitValue value, types::TypePtr type);
   std::string typeofName(types::TypePtr type) const;
 
+  // Variadic builtin emission
+  void emitVaCount() override;
+  void emitVaArg(const reader::CallExpr &call) override;
+  EmitValue coerceI64ToType(llvm::Value *i64val, types::TypePtr type);
+
   void generateFunction(const reader::FunctionDeclaration &declaration, llvm::Function *function);
   void generateEntry(const reader::Program &program);
 
@@ -205,6 +210,9 @@ private:
   llvm::BasicBlock *returnBlock_ = nullptr;
   llvm::AllocaInst *returnSlot_ = nullptr;
   types::TypePtr returnType_;
+  llvm::Value *vaCountSlot_ = nullptr;     // hidden variadic count parameter slot
+  llvm::Value *vaCountValue_ = nullptr;    // direct va_count argument value
+  llvm::Value *vaArraySlot_ = nullptr;     // va_array pointer (shadow array)
   std::vector<Loop> loops_;
   std::vector<Label> labels_;
   std::string pendingLoopLabel_;
