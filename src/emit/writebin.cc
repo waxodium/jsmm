@@ -39,7 +39,7 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(const llvm::Module &mod
   options.ExceptionModel = llvm::ExceptionHandling::None;
   std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
       triple, "generic", "", options, llvm::Reloc::Static, llvm::CodeModel::Small,
-      llvm::CodeGenOptLevel::None));
+      llvm::CodeGenOptLevel::Default));
   if (machine == nullptr)
     fail(errors::ErrorCode::CODEGEN_TARGET_UNAVAILABLE,
          "cannot create a target machine for '" + triple.str() + "'");

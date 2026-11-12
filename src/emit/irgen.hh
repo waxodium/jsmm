@@ -131,6 +131,9 @@ private:
   llvm::Function *stringConcatFunction();
   llvm::Function *stringCompareFunction();
   llvm::Function *bytesCopyFunction();
+  llvm::Function *memcpyFunction();
+  llvm::Function *memsetFunction();
+  llvm::Function *memcmpFunction();
   llvm::Function *throwFunction();
   llvm::Function *syscallFunction();
 

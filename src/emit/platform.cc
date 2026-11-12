@@ -58,7 +58,7 @@ jsmm_alloc_oom:
 jsmm_arena_pointer:
   .quad jsmm_arena
 jsmm_arena_end:
-  .quad jsmm_arena + 67108864
+  .quad jsmm_arena + 65536
 .section .rodata
 jsmm_message_oom:
   .ascii "jsmm: out of memory\n"
@@ -67,7 +67,7 @@ jsmm_message_oom_end:
 .section .bss,"aw",@nobits
 .align 16
 jsmm_arena:
-  .zero 67108864
+  .zero 65536
 )ASM";
 
 constexpr const char *moduloText = R"ASM(.section .text
@@ -248,6 +248,71 @@ jsmm_str_eq_true:
   ret
 jsmm_str_eq_false:
   xor eax, eax
+  ret
+)ASM";
+
+constexpr const char *memcpyText = R"ASM(.section .text
+.globl jsmm_memcpy
+jsmm_memcpy:
+  mov rax, rdi
+  mov rcx, rdx
+  shr rcx, 3
+  jz jsmm_memcpy_tail
+  rep movsq
+  mov rcx, rdx
+  and rcx, 7
+  jz jsmm_memcpy_done
+jsmm_memcpy_tail:
+  rep movsb
+jsmm_memcpy_done:
+  ret
+)ASM";
+
+constexpr const char *memsetText = R"ASM(.section .text
+.globl jsmm_memset
+jsmm_memset:
+  mov rax, rdi
+  mov rcx, rdx
+  mov r8, rsi
+  shl r8, 8
+  add r8, rsi
+  shl r8, 8
+  add r8, rsi
+  shl r8, 8
+  add r8, rsi
+  shr rcx, 3
+  jz jsmm_memset_tail
+  rep stosq
+  mov rcx, rdx
+  and rcx, 7
+  jz jsmm_memset_done
+jsmm_memset_tail:
+  rep stosb
+jsmm_memset_done:
+  ret
+)ASM";
+
+constexpr const char *memcmpText = R"ASM(.section .text
+.globl jsmm_memcmp
+jsmm_memcmp:
+  mov rcx, rdx
+  jz jsmm_memcmp_equal
+  xor rax, rax
+jsmm_memcmp_loop:
+  mov r9b, BYTE PTR [rdi + rax]
+  mov r10b, BYTE PTR [rsi + rax]
+  cmp r9b, r10b
+  jne jsmm_memcmp_diff
+  inc rax
+  dec rcx
+  jnz jsmm_memcmp_loop
+jsmm_memcmp_equal:
+  xor eax, eax
+  ret
+jsmm_memcmp_diff:
+  movsx rax, r9b
+  movsx rdx, r10b
+  sub rax, rdx
   ret
 )ASM";
 
@@ -673,9 +738,12 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(boundsSymbol), boundsText);
   registry.declare("string_writer", stringWriterText);
   registry.declare("string_equal", stringEqualText);
-  registry.declare("string_concat", stringConcatText);
   registry.declare("string_compare", stringCompareText);
   registry.declare("bytes_copy", bytesCopyText);
+  registry.declare("string_concat", stringConcatText);
+  registry.declare("memcpy", memcpyText);
+  registry.declare("memset", memsetText);
+  registry.declare("memcmp", memcmpText);
   registry.declare("syscall", syscallText);
   registry.declare("throw", throwText);
   registry.declare("literals", literalText);

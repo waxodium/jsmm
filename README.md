@@ -3,6 +3,8 @@
 Source code of JSmm compiler, 
 
 Please read [JSD Documentation](https://github.com/waxodium/jsddoc) for more documented technical details.
+Contribution is NOT ACCEPTED. 
+
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](./LICENSE)
 [![Version: Unrelease](https://img.shields.io/badge/Version-Unrelease-red.svg)](#)

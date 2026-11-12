@@ -401,6 +401,18 @@ llvm::Function *IrGenerator::bytesCopyFunction() {
   return runtimeFunction("jsmm_bytes_copy", i64Type_, {i64Type_});
 }
 
+llvm::Function *IrGenerator::memcpyFunction() {
+  return runtimeFunction("jsmm_memcpy", i64Type_, {i64Type_, i64Type_, i64Type_});
+}
+
+llvm::Function *IrGenerator::memsetFunction() {
+  return runtimeFunction("jsmm_memset", i64Type_, {i64Type_, i64Type_, i64Type_});
+}
+
+llvm::Function *IrGenerator::memcmpFunction() {
+  return runtimeFunction("jsmm_memcmp", i64Type_, {i64Type_, i64Type_, i64Type_});
+}
+
 llvm::Function *IrGenerator::throwFunction() {
   return runtimeFunction("jsmm_throw", voidType_, {});
 }
@@ -1467,10 +1479,9 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
     }
   }
 
-  // Dereference pointer if needed
+  // Dereference pointer if needed - for member access, we keep the pointer
+  // value as the base and add the field offset directly
   if (objectType != nullptr && objectType->kind == TypeKind::Pointer) {
-    llvm::Value *pointer = builder_->CreateIntToPtr(base, ptrType_);
-    base = builder_->CreateLoad(i64Type_, pointer);
     objectType = objectType->pointed;
   }
 
@@ -1593,6 +1604,116 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
 IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expression,
                                                  const reader::CallExpr &call) {
   if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node)) {
+    const std::string &name = identifier->name;
+    // Math builtins handled directly for inline comparison/select operations
+    if (name == "min" || name == "max" || name == "abs" || name == "floor" ||
+        name == "ceil" || name == "round") {
+      if (call.arguments.size() != 1 && call.arguments.size() != 2) {
+        lastValue_ = rawValue(i64(0));
+        return lastValue_;
+      }
+      if (name == "min" || name == "max") {
+        if (call.arguments.size() != 2) {
+          lastValue_ = rawValue(i64(0));
+          return lastValue_;
+        }
+        EmitValue left = generateExpression(call.arguments[0]);
+        EmitValue right = generateExpression(call.arguments[1]);
+        TypePtr leftType = typeOf(call.arguments[0]);
+        TypePtr rightType = typeOf(call.arguments[1]);
+        right = coerce(leftType, rightType, right);
+        llvm::Value *lv = left.value;
+        llvm::Value *rv = right.value;
+        llvm::Value *cmp = builder_->CreateFCmpOLT(lv, rv);
+        llvm::Value *selected = builder_->CreateSelect(cmp,
+            name == "min" ? lv : rv,
+            name == "min" ? rv : lv);
+        lastValue_ = EmitValue{selected, true};
+        return lastValue_;
+      } else if (name == "abs") {
+        EmitValue arg = generateExpression(call.arguments[0]);
+        llvm::Value *av = arg.value;
+        llvm::Value *zero = llvm::ConstantFP::get(doubleType_, 0.0);
+        llvm::Value *cmp = builder_->CreateFCmpOLT(av, zero);
+        llvm::Value *negated = builder_->CreateFNeg(av);
+        llvm::Value *selected = builder_->CreateSelect(cmp, negated, av);
+        lastValue_ = EmitValue{selected, true};
+        return lastValue_;
+      } else if (name == "floor") {
+        EmitValue arg = generateExpression(call.arguments[0]);
+        llvm::Value *av = arg.value;
+        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
+        llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
+        llvm::Value *isNeg = builder_->CreateFCmpOLT(av, llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *hasFrac = builder_->CreateFCmpONE(av, truncD);
+        llvm::Value *adjust = builder_->CreateSelect(
+            builder_->CreateAnd(isNeg, hasFrac),
+            llvm::ConstantFP::get(doubleType_, 1.0),
+            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *floored = builder_->CreateFSub(truncD, adjust);
+        lastValue_ = EmitValue{floored, true};
+        return lastValue_;
+      } else if (name == "ceil") {
+        EmitValue arg = generateExpression(call.arguments[0]);
+        llvm::Value *av = arg.value;
+        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
+        llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
+        llvm::Value *isPos = builder_->CreateFCmpOGT(av, llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *hasFrac = builder_->CreateFCmpONE(av, truncD);
+        llvm::Value *adjust = builder_->CreateSelect(
+            builder_->CreateAnd(isPos, hasFrac),
+            llvm::ConstantFP::get(doubleType_, 1.0),
+            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *ceiled = builder_->CreateFAdd(truncD, adjust);
+        lastValue_ = EmitValue{ceiled, true};
+        return lastValue_;
+      } else if (name == "round") {
+        EmitValue arg = generateExpression(call.arguments[0]);
+        llvm::Value *av = arg.value;
+        llvm::Value *plus = builder_->CreateFAdd(av, llvm::ConstantFP::get(doubleType_, 0.5));
+        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {plus});
+        llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
+        llvm::Value *isNeg = builder_->CreateFCmpOLT(plus, llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *hasFrac = builder_->CreateFCmpONE(plus, truncD);
+        llvm::Value *adjust = builder_->CreateSelect(
+            builder_->CreateAnd(isNeg, hasFrac),
+            llvm::ConstantFP::get(doubleType_, 1.0),
+            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *rounded = builder_->CreateFSub(truncD, adjust);
+        lastValue_ = EmitValue{rounded, true};
+        return lastValue_;
+      }
+    }
+    if (name == "assert") {
+      if (call.arguments.size() < 1 || call.arguments.size() > 2) {
+        lastValue_ = rawValue(i64(0));
+        return lastValue_;
+      }
+      EmitValue cond = generateExpression(call.arguments[0]);
+      TypePtr condType = typeOf(call.arguments[0]);
+      llvm::Value *condVal;
+      if (condType != nullptr && isNumber(condType)) {
+        condVal = builder_->CreateFCmpONE(cond.value, llvm::ConstantFP::get(doubleType_, 0.0));
+      } else {
+        condVal = builder_->CreateICmpNE(cond.value, llvm::ConstantInt::get(i64Type_, 0));
+      }
+      llvm::BasicBlock *assertOk = createBlock("assert.ok");
+      llvm::BasicBlock *assertFail = createBlock("assert.fail");
+      llvm::BasicBlock *assertEnd = createBlock("assert.end");
+      builder_->CreateCondBr(condVal, assertOk, assertFail);
+      builder_->SetInsertPoint(assertFail);
+      if (call.arguments.size() == 2) {
+        // Print message
+        (void)generateExpression(call.arguments[1]);
+      }
+      builder_->CreateCall(boundsFunction());
+      builder_->CreateUnreachable();
+      builder_->SetInsertPoint(assertOk);
+      builder_->CreateBr(assertEnd);
+      builder_->SetInsertPoint(assertEnd);
+      lastValue_ = rawValue(i64(0));
+      return lastValue_;
+    }
     if (const builtins::BuiltinSpec *builtin =
             builtins::BuiltinRegistry::instance().find(identifier->name)) {
       builtin->emit(*this, call);
@@ -1849,13 +1970,29 @@ void IrGenerator::emitNumberResult(double value) { lastValue_ = numberValue(valu
 
 void IrGenerator::emitAllocation(const reader::ExprPtr &size) {
   EmitValue amount = generateExpression(size);
-  lastValue_ = rawValue(builder_->CreateCall(allocFunction(), {toInt64(amount)}));
+  llvm::Value *result = builder_->CreateCall(allocFunction(), {toInt64(amount)});
+  // Check for allocation failure (null return)
+  llvm::Value *isNull = builder_->CreateICmpEQ(result, i64(0));
+  llvm::BasicBlock *allocOk = createBlock("alloc.ok");
+  llvm::BasicBlock *allocFail = createBlock("alloc.fail");
+  llvm::BasicBlock *allocEnd = createBlock("alloc.end");
+  builder_->CreateCondBr(isNull, allocFail, allocOk);
+  builder_->SetInsertPoint(allocFail);
+  builder_->CreateCall(boundsFunction());
+  builder_->CreateUnreachable();
+  builder_->SetInsertPoint(allocOk);
+  builder_->CreateBr(allocEnd);
+  builder_->SetInsertPoint(allocEnd);
+  lastValue_ = rawValue(result);
 }
 
 void IrGenerator::emitVoidResult() { lastValue_ = rawValue(i64(0)); }
 
 void IrGenerator::emitFree(const reader::ExprPtr &ptr) {
-  (void)generateExpression(ptr);
+  EmitValue p = generateExpression(ptr);
+  // free is a no-op in the arena allocator (reclaimed at process exit),
+  // but we still evaluate the argument for side effects and type-checking.
+  (void)p;
   lastValue_ = rawValue(i64(0));
 }
 
@@ -1940,24 +2077,9 @@ void IrGenerator::emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr 
   llvm::Value *total = toInt64(length);
   llvm::Value *destinationBase = asRaw(destination);
   llvm::Value *sourceBase = asRaw(source);
-  llvm::BasicBlock *preheader = builder_->GetInsertBlock();
-  llvm::BasicBlock *condition = createBlock("memcpy.cond");
-  llvm::BasicBlock *body = createBlock("memcpy.body");
-  llvm::BasicBlock *done = createBlock("memcpy.done");
-  builder_->CreateBr(condition);
-  builder_->SetInsertPoint(condition);
-  auto *index = builder_->CreatePHI(i64Type_, 2, "memcpy.index");
-  index->addIncoming(i64(0), preheader);
-  builder_->CreateCondBr(builder_->CreateICmpULT(index, total), body, done);
-  builder_->SetInsertPoint(body);
-  llvm::Value *byte = builder_->CreateLoad(i8Type_, dynamicPointer(sourceBase, index));
-  builder_->CreateStore(byte, dynamicPointer(destinationBase, index));
-  llvm::Value *next = builder_->CreateAdd(index, i64(1));
-  llvm::BasicBlock *bodyEnd = builder_->GetInsertBlock();
-  if (!terminated()) builder_->CreateBr(condition);
-  index->addIncoming(next, bodyEnd);
-  builder_->SetInsertPoint(done);
-  lastValue_ = rawValue(destinationBase);
+  llvm::Value *result =
+      builder_->CreateCall(memcpyFunction(), {destinationBase, sourceBase, total});
+  lastValue_ = rawValue(result);
 }
 
 void IrGenerator::emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr &value,
@@ -1967,24 +2089,10 @@ void IrGenerator::emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr 
   EmitValue length = generateExpression(count);
   llvm::Value *total = toInt64(length);
   llvm::Value *destinationBase = asRaw(destination);
-  llvm::Value *byte = builder_->CreateTrunc(toInt64(fill), i8Type_);
-  llvm::BasicBlock *preheader = builder_->GetInsertBlock();
-  llvm::BasicBlock *condition = createBlock("memset.cond");
-  llvm::BasicBlock *body = createBlock("memset.body");
-  llvm::BasicBlock *done = createBlock("memset.done");
-  builder_->CreateBr(condition);
-  builder_->SetInsertPoint(condition);
-  auto *index = builder_->CreatePHI(i64Type_, 2, "memset.index");
-  index->addIncoming(i64(0), preheader);
-  builder_->CreateCondBr(builder_->CreateICmpULT(index, total), body, done);
-  builder_->SetInsertPoint(body);
-  builder_->CreateStore(byte, dynamicPointer(destinationBase, index));
-  llvm::Value *next = builder_->CreateAdd(index, i64(1));
-  llvm::BasicBlock *bodyEnd = builder_->GetInsertBlock();
-  if (!terminated()) builder_->CreateBr(condition);
-  index->addIncoming(next, bodyEnd);
-  builder_->SetInsertPoint(done);
-  lastValue_ = rawValue(destinationBase);
+  llvm::Value *fillValue = toInt64(fill);
+  llvm::Value *result =
+      builder_->CreateCall(memsetFunction(), {destinationBase, fillValue, total});
+  lastValue_ = rawValue(result);
 }
 
 void IrGenerator::emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
@@ -1995,47 +2103,9 @@ void IrGenerator::emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
   llvm::Value *total = toInt64(length);
   llvm::Value *aBase = asRaw(baseA);
   llvm::Value *bBase = asRaw(baseB);
-
-  llvm::Value *resultSlot = builder_->CreateAlloca(i64Type_);
-  builder_->CreateStore(i64(0), resultSlot);
-
-  llvm::BasicBlock *preheader = createBlock("memcmp.preheader");
-  llvm::BasicBlock *condition = createBlock("memcmp.cond");
-  llvm::BasicBlock *body = createBlock("memcmp.body");
-  llvm::BasicBlock *diffFound = createBlock("memcmp.diff");
-  llvm::BasicBlock *done = createBlock("memcmp.done");
-
-  builder_->CreateBr(preheader);
-  builder_->SetInsertPoint(preheader);
-  builder_->CreateBr(condition);
-  builder_->SetInsertPoint(condition);
-  auto *index = builder_->CreatePHI(i64Type_, 2, "memcmp.index");
-  index->addIncoming(i64(0), preheader);
-  builder_->CreateCondBr(builder_->CreateICmpULT(index, total), body, done);
-
-  llvm::BasicBlock *bodyEnd = createBlock("memcmp.body.end");
-  builder_->SetInsertPoint(body);
-  llvm::Value *byteA =
-      builder_->CreateLoad(i8Type_, dynamicPointer(aBase, index));
-  llvm::Value *byteB =
-      builder_->CreateLoad(i8Type_, dynamicPointer(bBase, index));
-  llvm::Value *diff = builder_->CreateSub(byteA, byteB);
-  llvm::Value *diffExt = builder_->CreateSExt(diff, i64Type_);
-  llvm::Value *isNonZero = builder_->CreateICmpNE(diffExt, i64(0));
-  builder_->CreateCondBr(isNonZero, diffFound, bodyEnd);
-
-  builder_->SetInsertPoint(bodyEnd);
-  llvm::Value *next = builder_->CreateAdd(index, i64(1));
-  builder_->CreateBr(condition);
-  index->addIncoming(next, bodyEnd);
-
-  builder_->SetInsertPoint(diffFound);
-  builder_->CreateStore(diffExt, resultSlot);
-  builder_->CreateBr(done);
-
-  builder_->SetInsertPoint(done);
-  llvm::Value *finalResult = builder_->CreateLoad(i64Type_, resultSlot);
-  lastValue_ = rawValue(builder_->CreateSIToFP(finalResult, doubleType_));
+  llvm::Value *result =
+      builder_->CreateCall(memcmpFunction(), {aBase, bBase, total});
+  lastValue_ = EmitValue{builder_->CreateSIToFP(result, doubleType_), true};
 }
 void IrGenerator::declareHelper(std::string, std::string) {}
 void IrGenerator::useHelper(const std::string &) {}

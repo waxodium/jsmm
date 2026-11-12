@@ -18,7 +18,7 @@ inline constexpr std::string_view boundsSymbol = "jsmm_oob";
 inline constexpr std::string_view arenaSymbol = "jsmm_arena";
 inline constexpr std::string_view arenaPointerSymbol = "jsmm_arena_pointer";
 
-inline constexpr std::uint64_t arenaSize = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t arenaSize = 64ULL * 1024ULL;
 
 class HelperRegistry final {
 public:

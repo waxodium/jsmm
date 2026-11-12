@@ -207,6 +207,8 @@ void Checker::inferStatements(const reader::StatementList &statements) {
 void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
   if (declaration.kind == "type") {
     for (const auto &declarator : declaration.declarations) {
+      // Add placeholder for recursive type references (e.g., Node* next inside Node)
+      typeAliases_.insert_or_assign(declarator.name, typeContext_.variable());
       TypePtr resolved = resolveTypeAnnotation(declarator.annotation);
       typeAliases_.insert_or_assign(declarator.name, resolved);
     }
@@ -753,7 +755,7 @@ TypePtr Checker::memberResultType(const reader::MemberExpr &member,
     if (objectType != nullptr && objectType->kind == TypeKind::Array)
       return objectType->element;
     if (objectType != nullptr && objectType->kind == TypeKind::Bytes) return byteType();
-    if (objectType != nullptr && objectType->kind == TypeKind::String) return bytesType();
+    if (objectType != nullptr && objectType->kind == TypeKind::String) return byteType();
     // Pointer indexing: ptr[i] returns the element (pointed) type
     if (pointerObject) return pointed;
     throw errors::ErrorException{errors::ErrorStatus{
@@ -919,6 +921,13 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
   // byte is compatible with number (byte literals are numbers)
   if ((left->kind == TypeKind::Byte && right->kind == TypeKind::Number) ||
       (left->kind == TypeKind::Number && right->kind == TypeKind::Byte))
+    return true;
+  // byte* is compatible with any pointer type (like C's void*)
+  if (left->kind == TypeKind::Pointer && left->pointed != nullptr &&
+      left->pointed->kind == TypeKind::Byte && right->kind == TypeKind::Pointer)
+    return true;
+  if (right->kind == TypeKind::Pointer && right->pointed != nullptr &&
+      right->pointed->kind == TypeKind::Byte && left->kind == TypeKind::Pointer)
     return true;
   if ((left->kind == TypeKind::String && right->kind == TypeKind::Bytes) ||
       (left->kind == TypeKind::Bytes && right->kind == TypeKind::String))

@@ -21,6 +21,9 @@ std::unique_ptr<llvm::Module> createRuntimeModule(llvm::LLVMContext &context) {
   helpers.use("string_concat");
   helpers.use("string_compare");
   helpers.use("bytes_copy");
+  helpers.use("memcpy");
+  helpers.use("memset");
+  helpers.use("memcmp");
   helpers.use("syscall");
   helpers.use("throw");
   helpers.use("literals");

@@ -341,13 +341,13 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
           fail("expected struct field type name",
                errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
         std::string fieldType = consume().lexeme;
+        auto fieldAnnotation = std::make_shared<TypeExpr>();
+        fieldAnnotation->names.push_back(fieldType);
+        fieldAnnotation->pointerDepth.push_back(parsePointerStars());
         if (current().kind != TokenKind::Identifier)
           fail("expected struct field name",
                errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
         std::string fieldName = consume().lexeme;
-        auto fieldAnnotation = std::make_shared<TypeExpr>();
-        fieldAnnotation->names.push_back(fieldType);
-        fieldAnnotation->pointerDepth.push_back(parsePointerStars());
         parseIntTypeArguments(fieldAnnotation);
         fieldAnnotation->pointerDepth.back() += parsePointerStars();
         annotation->fields.push_back({fieldName, fieldAnnotation});
