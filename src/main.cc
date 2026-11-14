@@ -1,4 +1,5 @@
 #include "builtins/builtin.hh"
+#include "emit/runtime.hh"
 #include "emit/writebin.hh"
 #include "emit/irgen.hh"
 #include "errors/errors.hh"
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstdio>
 
 namespace {
 

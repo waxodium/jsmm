@@ -41,6 +41,7 @@ private:
     Scope *parentScope = nullptr;
     bool isVariadic = false;
     TypePtr variadicElement;
+    std::vector<std::pair<std::string, TypePtr>> typeParameters;
   };
 
   class BuiltinInference final : public builtins::InferContext {
@@ -141,6 +142,7 @@ private:
   TypeContext typeContext_;
   Annotations annotations_;
   std::unordered_map<std::string, TypePtr> typeAliases_;
+  std::unordered_map<std::string, TypePtr> typeParameters_;
 };
 
 } // namespace jsmm::types

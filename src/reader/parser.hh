@@ -75,6 +75,7 @@ private:
   std::shared_ptr<TypeExpr> parseTypeAnnotation();
   std::shared_ptr<TypeExpr> parseTypeOperandAnnotation();
   void parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
+  void parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
   void parseArraySize(const std::shared_ptr<TypeExpr> &annotation);
   int parsePointerStars();
 

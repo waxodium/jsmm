@@ -42,6 +42,19 @@ TypePtr TypeContext::byteType() const { return byte_; }
 
 TypePtr TypeContext::bytesType() const { return bytes_; }
 
+TypePtr TypeContext::floatType(std::size_t bits, const std::string &format) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Float;
+  type->id = nextId_++;
+  type->length = bits;
+  type->floatFormat = format;
+  return type;
+}
+
+TypePtr TypeContext::floatType(std::size_t bits) {
+  return floatType(bits, "ieee");
+}
+
 TypePtr TypeContext::integerType(std::size_t bits, bool isSigned) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Integer;
@@ -52,7 +65,6 @@ TypePtr TypeContext::integerType(std::size_t bits, bool isSigned) {
 }
 
 TypePtr TypeContext::nullType() const { return null_; }
-
 TypePtr TypeContext::never() const { return never_; }
 
 TypePtr TypeContext::variable() {
@@ -135,6 +147,8 @@ std::string TypeContext::showType(TypePtr type) {
   case TypeKind::Integer:
     return "int(" + std::to_string(type->length) + ", " +
            (type->isSigned ? "signed" : "unsigned") + ")";
+  case TypeKind::Float:
+    return "float(" + std::to_string(type->length) + ")";
   case TypeKind::Null: return "null";
   case TypeKind::Never: return "never";
   case TypeKind::Variable: return "t" + std::to_string(++showCounter_);
@@ -214,11 +228,20 @@ TypeLayout layoutOf(TypePtr type) {
     const std::uint64_t size = (type->length + 7) / 8;  // round up to whole bytes
     return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
   }
+  case TypeKind::Float: {
+    if (type->length == 0) return {};
+    if (type->length <= 16) return knownLayout(2, 2);
+    if (type->length <= 32) return knownLayout(4, 4);
+    return knownLayout(8, 8);
+  }
   case TypeKind::Number:
   case TypeKind::Pointer:
   case TypeKind::Function: return knownLayout(8, 8);
   case TypeKind::String:
   case TypeKind::Bytes: return knownLayout(16, 8);
+  case TypeKind::Null: return knownLayout(0, 0);
+  case TypeKind::Never: return knownLayout(0, 0);
+  case TypeKind::Variable: return {};
   case TypeKind::Array: {
     if (type->length == 0) return {};
     const TypeLayout element = layoutOf(type->element);
@@ -235,6 +258,17 @@ TypeLayout layoutOf(TypePtr type) {
       if (fieldLayout.alignment > alignment) alignment = fieldLayout.alignment;
     }
     return knownLayout(alignUp(offset, alignment), alignment);
+  }
+  case TypeKind::Union: {
+    std::uint64_t maxSize = 0;
+    std::uint64_t maxAlign = 1;
+    for (const auto &member : type->members) {
+      const TypeLayout memberLayout = layoutOf(member);
+      if (!memberLayout.defined) return {};
+      if (memberLayout.size > maxSize) maxSize = memberLayout.size;
+      if (memberLayout.alignment > maxAlign) maxAlign = memberLayout.alignment;
+    }
+    return knownLayout(alignUp(maxSize, maxAlign), maxAlign);
   }
   default: return {};
   }

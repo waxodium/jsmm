@@ -1,0 +1,25 @@
+The build of src/emit/irgen.cc now fails early: after the anonymous namespace, the
+IrGenerator method definitions are being parsed as free functions (for example
+'bytePointer', 'dynamicPointer', 'storeSlot'), with errors like "'IrGenerator' does
+not name a type".
+
+This means namespace jsmm::emit { ... } was closed too early or a stray '}'/
+namespace close was inserted before those member definitions.
+
+Current known-good end of file is:
+  builder_->SetInsertPoint(endBlock);
+}
+
+} // namespace jsmm::emit
+
+and a second copy of emitFormatArray/emitFormatUnion (without IrGenerator::) still
+exists after that, which produces the duplicate-definition failures at the end.
+
+Next step:
+1) Find the FIRST correctly-placed '} // namespace jsmm::emit' that comes after the
+   first emitFormatArray + emitFormatUnion bodies.
+2) Truncate the file to end right after that, discarding any later duplicate bodies.
+3) Verify the last ~25 lines before the close are the first (correct, IrGenerator::)
+   emitFormatArray and emitFormatUnion definitions.
+4) Rebuild; if it succeeds, remove src/emit/irgen.mmt, src/emit/irgen.nan,
+   src/emit/irgen.issue and continue to rerunning all tests.

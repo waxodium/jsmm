@@ -89,6 +89,7 @@ private:
   llvm::Value *asRaw(EmitValue value) const;
   llvm::Value *toInt32(llvm::Value *value) const;
   llvm::Value *toInt64(EmitValue value) const;
+  llvm::Value *fpToI64(llvm::Value *fpValue) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;
@@ -99,6 +100,8 @@ private:
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;
   void storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type) const;
   llvm::Type *storageType(types::TypePtr type) const;
+  llvm::Type *floatStorageType(types::TypePtr type) const;
+  bool isBfloat16(types::TypePtr type) const;
   std::uint64_t elementSize(types::TypePtr type) const;
   std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 
@@ -160,9 +163,11 @@ private:
   EmitValue generateUnary(const reader::UnaryExpr &unary);
   EmitValue generateBinary(const reader::BinaryExpr &binary);
   EmitValue generateArithmetic(const reader::BinaryExpr &binary);
+  EmitValue generateStringConcat(const reader::BinaryExpr &binary);
   EmitValue generateBitwise(const reader::BinaryExpr &binary);
   EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right);
   EmitValue loadByteElement(llvm::Value *address) const;
+  EmitValue loadStringByteElement(llvm::Value *address) const;
   void storeByteElement(llvm::Value *address, EmitValue value) const;
   bool byteElement(const reader::ExprPtr &expression) const;
   EmitValue generateRelational(const reader::BinaryExpr &binary);

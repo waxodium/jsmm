@@ -1,6 +1,7 @@
 #include "types/checker.hh"
 #include "builtins/builtin.hh"
 #include "errors/errors.hh"
+#include "types/substitution.hh"
 #include "types/unifier.hh"
 #include <algorithm>
 #include <memory>
@@ -15,7 +16,7 @@ bool Checker::isNumber(TypePtr type) const {
   type = resolve(std::move(type));
   return type != nullptr &&
          (type->kind == TypeKind::Number || type->kind == TypeKind::Byte ||
-          type->kind == TypeKind::Integer);
+          type->kind == TypeKind::Integer || type->kind == TypeKind::Float);
 }
 
 bool Checker::isString(TypePtr type) const {
@@ -98,9 +99,15 @@ void Checker::hoistFunctions(const reader::Program &program,
   for (const auto &statement : program.statements) {
     if (const auto *declaration = std::get_if<reader::FunctionDeclaration>(&statement->node)) {
       reader::FunctionDeclaration hoisted{declaration->name, declaration->parameters, nullptr,
-                                          declaration->returnAnnotation};
+                                          declaration->returnAnnotation, {}};
       FunctionEntry entry{std::move(hoisted), freshVariable(), {}, &scopes_.back(), false,
-                          nullptr};
+                          nullptr, {}};
+      const auto savedTypeParameters = typeParameters_;
+      for (const std::string &name : declaration->typeParameters) {
+        TypePtr parameter = freshVariable();
+        entry.typeParameters.emplace_back(name, parameter);
+        typeParameters_.insert_or_assign(name, parameter);
+      }
       entry.parameterTypes.reserve(declaration->parameters.size());
       for (std::size_t index = 0; index < declaration->parameters.size(); ++index) {
         const reader::FunctionParameter &parameter = declaration->parameters[index];
@@ -118,11 +125,15 @@ void Checker::hoistFunctions(const reader::Program &program,
         entry.parameterTypes.push_back(freshVariable());
       }
       functions.push_back(std::move(entry));
+      typeParameters_ = savedTypeParameters;
     }
   }
 }
 
 void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body) {
+  const auto savedTypeParameters = typeParameters_;
+  for (const auto &[name, parameter] : entry.typeParameters)
+    typeParameters_.insert_or_assign(name, parameter);
   Scope scope;
   std::size_t fixedIndex = 0;
   for (std::size_t index = 0; index < entry.declaration.parameters.size(); ++index) {
@@ -198,6 +209,7 @@ void Checker::inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *bo
   } else {
     entry.returnType = computed;
   }
+  typeParameters_ = savedTypeParameters;
 }
 
 void Checker::inferStatements(const reader::StatementList &statements) {
@@ -589,21 +601,21 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     return booleanType();
   }
 
-  if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
-      binary.op == "%") {
+  if (binary.op == "+") {
     const TypePtr resolvedLeft = resolve(left);
     const TypePtr resolvedRight = resolve(right);
-    const bool pointerOperands =
-        (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer) ||
-        (resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer);
-    if (pointerOperands && binary.op != "+" && binary.op != "-")
-      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
-                                                       binary.op, expr->range}};
+    if (isText(left) && isText(right)) return stringType();
     if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
         resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer)
       return numberType();
     if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer && requireNumeric(right))
       return pointerType(resolvedLeft->pointed);
+    if (!requireNumeric(left) || !requireNumeric(right))
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       binary.op, expr->range}};
+    return numberType();
+  }
+  if (binary.op == "-" || binary.op == "*" || binary.op == "/" || binary.op == "%") {
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
@@ -670,6 +682,26 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
       if (found != scope->constants.end()) {
         throw errors::ErrorException{errors::ErrorStatus{
             errors::ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST, identifier->name, expr->range}};
+      }
+    }
+  }
+
+  if (const auto *member = std::get_if<reader::MemberExpr>(&assignment.left->node)) {
+    if (member->computedFlag) {
+      const TypePtr objectType = resolve(inferExpression(member->object));
+      if (objectType != nullptr && objectType->kind == TypeKind::String) {
+        throw errors::ErrorException{errors::ErrorStatus{
+            errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "string index assignment", expr->range}};
+      }
+    }
+    const reader::Expression *root = member->object.get();
+    while (const auto *inner = std::get_if<reader::MemberExpr>(&root->node))
+      root = inner->object.get();
+    if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&root->node)) {
+      for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
+        if (scope->constants.find(identifier->name) != scope->constants.end())
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST, identifier->name, expr->range}};
       }
     }
   }
@@ -897,7 +929,8 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
     return unifier.unify(left, right);
   }
   const auto numericKind = [](TypeKind kind) {
-    return kind == TypeKind::Number || kind == TypeKind::Byte || kind == TypeKind::Integer;
+    return kind == TypeKind::Number || kind == TypeKind::Byte || kind == TypeKind::Integer ||
+           kind == TypeKind::Float;
   };
   if (numericKind(left->kind) && numericKind(right->kind)) return true;
   if (right->kind == TypeKind::Boolean && numericKind(left->kind)) return true;
@@ -1021,6 +1054,24 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
       annotations_.argumentTypes.insert_or_assign(expr.get(), calleeType);
       return result;
     }
+    for (const auto &function : functions_) {
+      if (function.declaration.name != identifier->name || function.typeParameters.empty())
+        continue;
+      std::vector<std::pair<TypePtr, reader::SourceRange>> argumentTypes;
+      argumentTypes.reserve(call.arguments.size());
+      for (const auto &argument : call.arguments)
+        argumentTypes.emplace_back(inferExpression(argument), argument->range);
+      const TypePtr genericType =
+          makeFunctionType(function.returnType != nullptr ? function.returnType : nullType(),
+                           function.parameterTypes, function.isVariadic, function.variadicElement);
+      Substitution mapping;
+      for (const int id : freeTypeVariables(genericType, typeContext_))
+        mapping[id] = freshVariable();
+      const TypePtr instantiated = substitute(genericType, mapping, typeContext_);
+      checkCallArguments(instantiated, argumentTypes, expr->range);
+      annotations_.argumentTypes.insert_or_assign(expr.get(), instantiated);
+      return resolve(instantiated->result);
+    }
   }
   const TypePtr target = resolve(inferExpression(call.callee));
   annotations_.argumentTypes.insert_or_assign(expr.get(), target);
@@ -1120,8 +1171,8 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     for (const auto &[fieldName, fieldAnnotation] : annotation->fields) {
       TypePtr fieldType = resolveTypeAnnotation(fieldAnnotation);
       if (fieldType == nullptr)
-        throw errors::ErrorException{errors::ErrorStatus{
-            errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, fieldName, annotation->range}};
+        throw errors::ErrorStatus{
+            errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, fieldName, annotation->range};
       fields.emplace_back(fieldName, fieldType);
     }
     return typeContext_.structType(std::move(fields));
@@ -1148,6 +1199,16 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
       else
         type = typeContext_.integerType(32, true);
     }
+    else if (name == "float") {
+      // float<bits> or float<bits, "format">
+      // Note: format is parsed by the parser but not stored long-term;
+      // default to IEEE 754 double precision
+      if (annotation->isIntType && annotation->intSize > 0) {
+        type = typeContext_.floatType(annotation->intSize);
+      } else {
+        type = typeContext_.floatType(64);  // default 64-bit IEEE 754
+      }
+    }
     else if (name == "f64") {
       type = numberType(); // f64 resolves to number kind for arithmetic
     }
@@ -1158,14 +1219,19 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
       type = freshVariable();
     else if (name == "null") type = nullType();
 
+    if (type == nullptr) {
+      const auto parameter = typeParameters_.find(name);
+      if (parameter != typeParameters_.end()) type = parameter->second;
+    }
+
     // Check type aliases (skip for auto and void, which are intentionally null)
     if (type == nullptr && name != "auto" && name != "void") {
       const auto found = typeAliases_.find(name);
       if (found != typeAliases_.end()) {
         type = found->second;
       } else {
-        throw errors::ErrorException{errors::ErrorStatus{
-            errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, name, annotation->range}};
+        throw errors::ErrorStatus{
+            errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME, name, annotation->range};
       }
     }
 
@@ -1186,9 +1252,7 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
 
   if (resolved.size() == 1) return resolved[0];
   return typeContext_.unionType(std::move(resolved));
-}
-
-TypePtr Checker::BuiltinInference::usizeType() {
+}TypePtr Checker::BuiltinInference::usizeType() {
   return checker_.typeContext_.integerType(64, false);
 }
 

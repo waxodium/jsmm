@@ -122,7 +122,8 @@ struct UndefinedLiteralExpr {};
 
 struct TypeExpr {
   std::vector<std::string> names;
-  std::vector<int> pointerDepth;  // 1} for T*, {2} for T**, ...
+  std::vector<int> pointerDepth;
+  std::string floatFormat = "ieee";
   std::size_t intSize = 0;
   bool intSigned = false;
   bool isIntType = false;
@@ -203,6 +204,7 @@ struct FunctionDeclaration {
   std::vector<FunctionParameter> parameters;
   std::unique_ptr<BlockStatement> body;
   std::shared_ptr<TypeExpr> returnAnnotation = nullptr;
+  std::vector<std::string> typeParameters;
   SourceRange range{};
 };
 

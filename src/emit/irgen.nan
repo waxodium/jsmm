@@ -1,0 +1,1 @@
+The build still fails with an unknown compile error around line 2351. I need to read the exact error context around there before changing anything else. Do not make another edit yet. First read src/emit/irgen.cc around line 2351 to see what is actually failing.

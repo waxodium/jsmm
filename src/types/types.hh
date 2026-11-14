@@ -16,6 +16,7 @@ enum class TypeKind {
   Byte,
   Bytes,
   Integer,
+  Float,
   Null,
   Never,
   Variable,
@@ -43,6 +44,7 @@ struct Type {
   TypePtr element;
   TypePtr pointed;
   std::vector<TypePtr> members;
+  std::string floatFormat;
 };
 
 struct TypeLayout {
@@ -64,6 +66,8 @@ public:
   TypePtr byteType() const;
   TypePtr bytesType() const;
   TypePtr integerType(std::size_t bits, bool isSigned);
+  TypePtr floatType(std::size_t bits, const std::string &format);
+  TypePtr floatType(std::size_t bits);
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();

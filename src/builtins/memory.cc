@@ -13,7 +13,7 @@ bool numeric(InferContext &context, const types::TypePtr &type) {
   const types::TypePtr resolved = context.resolveType(type);
   if (resolved == nullptr) return true;
   return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Integer ||
-         resolved->kind == TypeKind::Byte;
+         resolved->kind == TypeKind::Float || resolved->kind == TypeKind::Byte;
 }
 
 bool pointer(InferContext &context, const types::TypePtr &type) {

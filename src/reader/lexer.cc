@@ -7,7 +7,7 @@ namespace jsmm::reader {
 namespace {
 
 const std::unordered_set<std::string> keywords = {
-    "break",   "case",  "const",  "continue", "default", "else", "false", "for",
+    "break",   "case",  "const",  "continue", "default", "else", "false",   "float", "for",
     "if",      "import", "int",   "null",     "return",  "signed", "switch", "typeof",
     "true",    "unsigned", "void", "while",  "bytes",   "type",   "auto",  "string",
     "bool",    "boolean"};

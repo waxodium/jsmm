@@ -63,7 +63,7 @@ bool IrGenerator::isNumber(types::TypePtr type) const {
   const TypePtr resolved = resolve(std::move(type));
   if (resolved == nullptr) return false;
   return resolved->kind == TypeKind::Number || resolved->kind == TypeKind::Byte ||
-         resolved->kind == TypeKind::Integer;
+         resolved->kind == TypeKind::Integer || resolved->kind == TypeKind::Float;
 }
 
 bool IrGenerator::isString(types::TypePtr type) const {
@@ -96,6 +96,7 @@ std::string IrGenerator::typeofName(types::TypePtr type) const {
   switch (type->kind) {
   case TypeKind::Number: return "f64";
   case TypeKind::Integer: return types_->show(type);
+  case TypeKind::Float: return types_->show(type);
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
   case TypeKind::Byte: return "byte";
@@ -209,8 +210,19 @@ IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePt
     bits = signExtend ? builder_->CreateSExt(loaded, i64Type_)
                       : builder_->CreateZExt(loaded, i64Type_);
   }
-  if (resolved != nullptr && resolved->kind == TypeKind::Number)
+  if (resolved != nullptr &&
+      resolved->kind == TypeKind::Number)
     return EmitValue{builder_->CreateBitCast(bits, doubleType_), true};
+  if (resolved != nullptr && resolved->kind == TypeKind::Float) {
+    // Convert narrow float bits to double for computation
+    llvm::Type *narrowFloatType = doubleType_;
+    if (resolved->length <= 16)
+      narrowFloatType = llvm::Type::getHalfTy(*context_);
+    else if (resolved->length <= 32)
+      narrowFloatType = llvm::Type::getFloatTy(*context_);
+    llvm::Value *narrowBits = builder_->CreateBitCast(bits, narrowFloatType);
+    return EmitValue{builder_->CreateFPExt(narrowBits, doubleType_), true};
+  }
   if (!isNumber(resolved)) return EmitValue{bits, false};
   const bool signedNumber = resolved->kind == TypeKind::Byte ||
                             (resolved->kind == TypeKind::Integer && resolved->isSigned);
@@ -231,6 +243,17 @@ void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePt
   if (isNumber(resolved)) {
     if (resolved != nullptr && resolved->kind == TypeKind::Number) {
       bits = builder_->CreateBitCast(value.value, i64Type_);
+    } else if (resolved != nullptr && resolved->kind == TypeKind::Float) {
+      // Convert double to narrow float bits
+      llvm::Type *narrowFloatType = doubleType_;
+      if (resolved->length <= 16)
+        narrowFloatType = llvm::Type::getHalfTy(*context_);
+      else if (resolved->length <= 32)
+        narrowFloatType = llvm::Type::getFloatTy(*context_);
+      llvm::Value *narrowFloat =
+          builder_->CreateFPTrunc(value.value, narrowFloatType);
+      llvm::Value *narrowBits = builder_->CreateBitCast(narrowFloat, i64Type_);
+      bits = builder_->CreateTrunc(narrowBits, storageType(resolved));
     } else {
       const bool signedNumber = resolved->kind == TypeKind::Byte ||
                                 (resolved->kind == TypeKind::Integer && resolved->isSigned);
@@ -464,7 +487,8 @@ llvm::Value *IrGenerator::emitTruthy(EmitValue value, types::TypePtr type) {
   case TypeKind::Never: return llvm::ConstantInt::getFalse(*context_);
   case TypeKind::Number:
   case TypeKind::Byte:
-  case TypeKind::Integer: return builder_->CreateFCmpONE(value.value, zeroFloat);
+  case TypeKind::Integer:
+  case TypeKind::Float: return builder_->CreateFCmpONE(value.value, zeroFloat);
   case TypeKind::String: {
     llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(asRaw(value), 0));
     return builder_->CreateICmpNE(length, i64(0));
@@ -585,7 +609,8 @@ IrGenerator::EmitValue IrGenerator::emitZeroValue(types::TypePtr type) {
   switch (resolved->kind) {
   case TypeKind::Number:
   case TypeKind::Byte:
-  case TypeKind::Integer: return numberValue(0.0);
+  case TypeKind::Integer:
+  case TypeKind::Float: return numberValue(0.0);
   case TypeKind::String:
   case TypeKind::Bytes: return rawValue(builder_->CreatePtrToInt(emptyString_, i64Type_));
   case TypeKind::Array: {
@@ -1075,8 +1100,15 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           llvm::Value *address = generateMemberAddress(node, expression->range);
           if (node.computedFlag) {
             const TypePtr objectType = resolve(typeOf(node.object));
-            if (objectType != nullptr && objectType->kind == TypeKind::Bytes)
-              return loadByteElement(address);
+            if (objectType != nullptr &&
+                (objectType->kind == TypeKind::Bytes || objectType->kind == TypeKind::String)) {
+              if (std::get_if<reader::RangeExpr>(&node.computed->node) != nullptr) {
+                return rawValue(builder_->CreateIntToPtr(address, ptrType_));
+              }
+              if (objectType->kind == TypeKind::Bytes)
+                return loadByteElement(address);
+              return loadStringByteElement(address);
+            }
           }
           return loadSlot(builder_->CreateIntToPtr(address, ptrType_), typeOf(expression));
         } else if constexpr (std::is_same_v<T, reader::ObjectExpr>) {
@@ -1214,7 +1246,12 @@ IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &bin
   if (binary.op == "==" || binary.op == "!=" || binary.op == "===" || binary.op == "!==")
     return generateEquality(binary);
   if (binary.op == "&&" || binary.op == "||") return generateLogical(binary);
-  if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
+  if (binary.op == "+") {
+    const TypePtr leftType = resolve(typeOf(binary.left));
+    const TypePtr rightType = resolve(typeOf(binary.right));
+    if (isText(leftType) && isText(rightType)) return generateStringConcat(binary);
+  }
+  if (binary.op == "-" || binary.op == "*" || binary.op == "/" ||
       binary.op == "%" || binary.op == "**")
     return generateArithmetic(binary);
   if (binary.op == "<" || binary.op == ">" || binary.op == "<=" || binary.op == ">=")
@@ -1246,6 +1283,14 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   if (binary.op == "%")
     return EmitValue{builder_->CreateCall(moduloFunction(), {left.value, right.value}), true};
   return EmitValue{builder_->CreateCall(powerFunction(), {left.value, right.value}), true};
+}
+
+IrGenerator::EmitValue IrGenerator::generateStringConcat(const reader::BinaryExpr &binary) {
+  EmitValue left = generateExpression(binary.left);
+  EmitValue right = generateExpression(binary.right);
+  llvm::Value *result =
+      builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)});
+  return rawValue(result);
 }
 
 IrGenerator::EmitValue IrGenerator::generateBitwise(const reader::BinaryExpr &binary) {
@@ -1387,6 +1432,13 @@ IrGenerator::EmitValue IrGenerator::loadByteElement(llvm::Value *address) const 
                    true};
 }
 
+IrGenerator::EmitValue IrGenerator::loadStringByteElement(llvm::Value *address) const {
+  llvm::Value *value =
+      builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_));
+  return EmitValue{builder_->CreateSIToFP(builder_->CreateZExt(value, i64Type_), doubleType_),
+                   true};
+}
+
 void IrGenerator::storeByteElement(llvm::Value *address, EmitValue value) const {
   builder_->CreateStore(builder_->CreateTrunc(toInt32(value.value), i8Type_),
                         builder_->CreateIntToPtr(address, ptrType_));
@@ -1431,6 +1483,15 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
                                     : builder_->CreateSub(asRaw(current), offset));
     storeSlot(address, result, targetType);
     return result;
+  }
+
+  // String compound assignment: s += t concatenates
+  if (assignment.op != "=" && resolvedTarget != nullptr && isText(resolvedTarget)) {
+    EmitValue current = loadSlot(address, targetType);
+    llvm::Value *result =
+        builder_->CreateCall(stringConcatFunction(), {asRaw(current), asRaw(value)});
+    storeSlot(address, rawValue(result), targetType);
+    return rawValue(result);
   }
 
   const bool byteTarget = byteElement(assignment.left);
@@ -1527,10 +1588,10 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
       // Compute slice length: end - start
       llvm::Value *sliceLen = builder_->CreateSub(endIdx, startIdx);
 
-      // Allocate 16 bytes for the result string descriptor {ptr, len}
+      // Allocate 16 bytes for the result string descriptor {len, ptr}
       llvm::Value *resultDesc = allocate(16);
-      builder_->CreateStore(slicePtr, bytePointer(resultDesc, 0));
-      builder_->CreateStore(sliceLen, bytePointer(resultDesc, 8));
+      builder_->CreateStore(sliceLen, bytePointer(resultDesc, 0));
+      builder_->CreateStore(slicePtr, bytePointer(resultDesc, 8));
 
       builder_->CreateBr(endBlock);
 
@@ -2011,6 +2072,17 @@ IrGenerator::EmitValue IrGenerator::coerceI64ToType(llvm::Value *i64val, types::
                   : builder_->CreateUIToFP(i64val, doubleType_),
         true};
   }
+  case TypeKind::Float: {
+    // Convert i64 bits to narrow float, then extend to double
+    llvm::Type *narrowFloatType = doubleType_;
+    if (type->length <= 16)
+      narrowFloatType = llvm::Type::getHalfTy(*context_);
+    else if (type->length <= 32)
+      narrowFloatType = llvm::Type::getFloatTy(*context_);
+    llvm::Value *narrowBits = builder_->CreateTrunc(i64val, narrowFloatType);
+    llvm::Value *narrowFloat = builder_->CreateBitCast(narrowBits, narrowFloatType);
+    return EmitValue{builder_->CreateFPExt(narrowFloat, doubleType_), true};
+  }
   case TypeKind::Boolean:
     return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
   default:
@@ -2133,7 +2205,8 @@ void IrGenerator::emitFormatValue(IrGenerator::EmitValue value, types::TypePtr t
   }
   switch (type->kind) {
   case TypeKind::Number:
-  case TypeKind::Integer: builder_->CreateCall(numberWriter(), {value.value}); break;
+  case TypeKind::Integer:
+  case TypeKind::Float: builder_->CreateCall(numberWriter(), {value.value}); break;
   case TypeKind::String: builder_->CreateCall(stringWriter(), {asRaw(value)}); break;
   case TypeKind::Boolean: builder_->CreateCall(boolWriter(), {asRaw(value)}); break;
   case TypeKind::Byte: builder_->CreateCall(numberWriter(), {value.value}); break;

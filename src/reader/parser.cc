@@ -152,7 +152,7 @@ Statement Parser::parseStatement() {
       const std::string &keyword = current().lexeme;
       if (keyword == "const" || keyword == "string" || keyword == "bool" ||
           keyword == "boolean" || keyword == "bytes" || keyword == "auto" ||
-          keyword == "void" || keyword == "int")
+          keyword == "void" || keyword == "int" || keyword == "float")
         return parseDeclaration();
       if (keyword == "type") return parseTypeDeclaration();
       if (keyword == "return") return parseReturnStatement();
@@ -193,7 +193,7 @@ Statement Parser::parseDeclaration() {
   const auto isBuiltinType = [](const std::string &text) {
     return text == "string" || text == "bool" || text == "boolean" || text == "byte" ||
            text == "bytes" || text == "auto" || text == "void" || text == "null" ||
-           text == "int";
+           text == "int" || text == "float";
   };
 
   std::shared_ptr<TypeExpr> annotation = std::make_shared<TypeExpr>();
@@ -202,7 +202,10 @@ Statement Parser::parseDeclaration() {
     // Direct type declaration: number x = 42;
     annotation->names.push_back(kind);
     annotation->pointerDepth.push_back(parsePointerStars());
-    parseIntTypeArguments(annotation);
+    if (kind == "float")
+      parseFloatTypeArguments(annotation);
+    else
+      parseIntTypeArguments(annotation);
     annotation->pointerDepth.back() += parsePointerStars();
     parseArraySize(annotation);
     while (eat("|") || eat(",")) {
@@ -348,7 +351,10 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
           fail("expected struct field name",
                errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
         std::string fieldName = consume().lexeme;
-        parseIntTypeArguments(fieldAnnotation);
+        if (fieldType == "float")
+          parseFloatTypeArguments(fieldAnnotation);
+        else
+          parseIntTypeArguments(fieldAnnotation);
         fieldAnnotation->pointerDepth.back() += parsePointerStars();
         annotation->fields.push_back({fieldName, fieldAnnotation});
         if (!eat(";"))
@@ -373,7 +379,11 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
     annotation->pointerDepth.push_back(parsePointerStars());
   } while (eat("|") || eat(","));
 
-  parseIntTypeArguments(annotation);
+  // Check if the type is float<width, format>
+  if (!annotation->names.empty() && annotation->names.back() == "float")
+    parseFloatTypeArguments(annotation);
+  else
+    parseIntTypeArguments(annotation);
   annotation->pointerDepth.back() += parsePointerStars();
 
   parseArraySize(annotation);
@@ -401,6 +411,27 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
   }
   if (!eat(">"))
     fail("expected '>' after sized int type arguments",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
+}
+
+void Parser::parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
+  if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
+  if (!eat("<")) return;
+  // float<> with no size means default 64-bit IEEE 754
+  if (eat(">")) return;
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected float size in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->intSize = std::stoull(consume().lexeme);
+  annotation->isIntType = true;  // reuse isIntType to mean "has float args"
+  // Check for optional format string after comma (we parse it but don't store it long-term)
+  if (eat(",")) {
+    if (current().kind != TokenKind::StringLiteral)
+      fail("expected format string after ',' in float type");
+    annotation->floatFormat = consume().text;
+  }
+  // Default format is IEEE 754
+  if (!eat(">"))
+    fail("expected '>' after float type arguments",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
 }
 
@@ -440,8 +471,18 @@ Statement Parser::parseFunctionDeclaration() {
 
   if (current().kind != TokenKind::Identifier)
     fail("expected function name", errors::ErrorCode::PARSE_EXPECTED_FUNCTION_NAME);
-  FunctionDeclaration function{consume().lexeme, {}, nullptr};
+  FunctionDeclaration function{consume().lexeme, {}, nullptr, nullptr, {}};
   function.returnAnnotation = std::move(returnAnnotation);
+  if (eat("<")) {
+    do {
+      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
+        fail("expected type parameter name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+      function.typeParameters.push_back(consume().lexeme);
+    } while (eat(","));
+    if (!eat(">"))
+      fail("expected '>' after type parameters",
+           errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
+  }
   if (!eat("("))
     fail("expected '(' after function name",
          errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME);
@@ -836,6 +877,7 @@ ExprPtr Parser::parsePrimary() {
   if (token.lexeme == "true" || token.lexeme == "false")
     return std::make_shared<Expression>(BooleanLiteralExpr{token.lexeme == "true"}, sourceRange);
   if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
+  if (token.lexeme == "float") return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
   if (token.lexeme == "undefined")
     return std::make_shared<Expression>(UndefinedLiteralExpr{}, sourceRange);
   if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword) {
@@ -913,7 +955,7 @@ bool Parser::startsFunctionDeclaration() const {
       first.kind == TokenKind::Keyword &&
       (first.lexeme == "string" || first.lexeme == "bool" ||
        first.lexeme == "boolean" || first.lexeme == "bytes" || first.lexeme == "auto" ||
-       first.lexeme == "void" || first.lexeme == "int");
+       first.lexeme == "void" || first.lexeme == "int" || first.lexeme == "float");
   if (first.kind != TokenKind::Identifier && !typeKeyword) return false;
   ++cursor;
 
@@ -964,12 +1006,30 @@ bool Parser::startsFunctionDeclaration() const {
 
   if (cursor + 1 >= tokens_.size()) return false;
   if (tokens_[cursor].kind != TokenKind::Identifier) return false;
+  if (tokens_[cursor + 1].lexeme == "<") {
+    std::size_t angle = cursor + 1;
+    int depth = 0;
+    while (angle < tokens_.size()) {
+      if (tokens_[angle].lexeme == "<") {
+        ++depth;
+      } else if (tokens_[angle].lexeme == ">") {
+        --depth;
+        if (depth == 0) break;
+      }
+      ++angle;
+    }
+    if (angle + 1 >= tokens_.size()) return false;
+    return tokens_[angle + 1].lexeme == "(";
+  }
   return tokens_[cursor + 1].lexeme == "(";
 }
 
 bool Parser::startsVariableDeclaration() const {
   std::size_t cursor = index_;
-  if (cursor >= tokens_.size() || tokens_[cursor].kind != TokenKind::Identifier) return false;
+  if (cursor >= tokens_.size() ||
+      (tokens_[cursor].kind != TokenKind::Identifier &&
+       tokens_[cursor].kind != TokenKind::Keyword))
+    return false;
   ++cursor;
   cursor = skipSizedIntArguments(tokens_, cursor);
 
