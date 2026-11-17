@@ -87,7 +87,7 @@ private:
   EmitValue numberValue(double value) const;
   EmitValue rawValue(llvm::Value *value) const;
   llvm::Value *asRaw(EmitValue value) const;
-  llvm::Value *toInt32(llvm::Value *value) const;
+  llvm::Value *toInt32(llvm::Value *value, bool unsignedValue = false) const;
   llvm::Value *toInt64(EmitValue value) const;
   llvm::Value *fpToI64(llvm::Value *fpValue) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
@@ -128,7 +128,6 @@ private:
   llvm::Function *separatorWriter();
   llvm::Function *rbracketWriter();
   llvm::Function *moduloFunction();
-  llvm::Function *powerFunction();
   llvm::Function *boundsFunction();
   llvm::Function *stringEqualFunction();
   llvm::Function *stringConcatFunction();
@@ -137,7 +136,6 @@ private:
   llvm::Function *memcpyFunction();
   llvm::Function *memsetFunction();
   llvm::Function *memcmpFunction();
-  llvm::Function *throwFunction();
   llvm::Function *syscallFunction();
 
   llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);
@@ -165,7 +163,8 @@ private:
   EmitValue generateArithmetic(const reader::BinaryExpr &binary);
   EmitValue generateStringConcat(const reader::BinaryExpr &binary);
   EmitValue generateBitwise(const reader::BinaryExpr &binary);
-  EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right);
+  EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right,
+                                 bool unsignedOperands = false);
   EmitValue loadByteElement(llvm::Value *address) const;
   EmitValue loadStringByteElement(llvm::Value *address) const;
   void storeByteElement(llvm::Value *address, EmitValue value) const;

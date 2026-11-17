@@ -94,9 +94,9 @@ std::string IrGenerator::typeofName(types::TypePtr type) const {
   type = resolve(type);
   if (type == nullptr) return "null";
   switch (type->kind) {
-  case TypeKind::Number: return "f64";
+  case TypeKind::Number: return "float";
   case TypeKind::Integer: return types_->show(type);
-  case TypeKind::Float: return types_->show(type);
+  case TypeKind::Float: return "float";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
   case TypeKind::Byte: return "byte";
@@ -140,9 +140,11 @@ llvm::Value *IrGenerator::toInt64(EmitValue value) const {
                                    {value.value});
 }
 
-llvm::Value *IrGenerator::toInt32(llvm::Value *value) const {
+llvm::Value *IrGenerator::toInt32(llvm::Value *value, bool unsignedValue) const {
   llvm::Value *wide =
-      builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {value});
+      builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
+                                              : llvm::Intrinsic::fptosi_sat,
+                                {i64Type_, doubleType_}, {value});
   return builder_->CreateTrunc(wide, i32Type_);
 }
 
@@ -214,14 +216,27 @@ IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePt
       resolved->kind == TypeKind::Number)
     return EmitValue{builder_->CreateBitCast(bits, doubleType_), true};
   if (resolved != nullptr && resolved->kind == TypeKind::Float) {
-    // Convert narrow float bits to double for computation
-    llvm::Type *narrowFloatType = doubleType_;
-    if (resolved->length <= 16)
-      narrowFloatType = llvm::Type::getHalfTy(*context_);
-    else if (resolved->length <= 32)
-      narrowFloatType = llvm::Type::getFloatTy(*context_);
-    llvm::Value *narrowBits = builder_->CreateBitCast(bits, narrowFloatType);
-    return EmitValue{builder_->CreateFPExt(narrowBits, doubleType_), true};
+    // The loaded storage is already the exact width of the float, so decode from
+    // that width rather than from the extended i64 value.
+    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
+    if (resolved->length <= 16) {
+      if (resolved->floatFormat == "bfloat16") {
+        llvm::Value *wide =
+            builder_->CreateShl(builder_->CreateZExt(loaded, i32Type_), i32(16));
+        return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(wide, singleType),
+                                               doubleType_),
+                         true};
+      }
+      llvm::Value *narrowFloat =
+          builder_->CreateBitCast(loaded, llvm::Type::getHalfTy(*context_));
+      llvm::Value *single = builder_->CreateFPExt(narrowFloat, singleType);
+      return EmitValue{builder_->CreateFPExt(single, doubleType_), true};
+    }
+    if (resolved->length <= 32)
+      return EmitValue{builder_->CreateFPExt(
+                           builder_->CreateBitCast(loaded, singleType), doubleType_),
+                       true};
+    return EmitValue{builder_->CreateBitCast(loaded, doubleType_), true};
   }
   if (!isNumber(resolved)) return EmitValue{bits, false};
   const bool signedNumber = resolved->kind == TypeKind::Byte ||
@@ -244,16 +259,24 @@ void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePt
     if (resolved != nullptr && resolved->kind == TypeKind::Number) {
       bits = builder_->CreateBitCast(value.value, i64Type_);
     } else if (resolved != nullptr && resolved->kind == TypeKind::Float) {
-      // Convert double to narrow float bits
-      llvm::Type *narrowFloatType = doubleType_;
-      if (resolved->length <= 16)
-        narrowFloatType = llvm::Type::getHalfTy(*context_);
-      else if (resolved->length <= 32)
-        narrowFloatType = llvm::Type::getFloatTy(*context_);
-      llvm::Value *narrowFloat =
-          builder_->CreateFPTrunc(value.value, narrowFloatType);
-      llvm::Value *narrowBits = builder_->CreateBitCast(narrowFloat, i64Type_);
-      bits = builder_->CreateTrunc(narrowBits, storageType(resolved));
+      // Narrow the double to the float width and reinterpret its exact-width bits.
+      llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
+      if (resolved->length <= 16) {
+        llvm::Value *single = builder_->CreateFPTrunc(value.value, singleType);
+        if (resolved->floatFormat == "bfloat16") {
+          llvm::Value *wide = builder_->CreateBitCast(single, i32Type_);
+          bits = builder_->CreateTrunc(builder_->CreateLShr(wide, i32(16)), storageType(resolved));
+        } else {
+          llvm::Value *narrowFloat =
+              builder_->CreateFPTrunc(single, llvm::Type::getHalfTy(*context_));
+          bits = builder_->CreateBitCast(narrowFloat, storageType(resolved));
+        }
+      } else if (resolved->length <= 32) {
+        llvm::Value *narrowFloat = builder_->CreateFPTrunc(value.value, singleType);
+        bits = builder_->CreateBitCast(narrowFloat, storageType(resolved));
+      } else {
+        bits = builder_->CreateBitCast(value.value, storageType(resolved));
+      }
     } else {
       const bool signedNumber = resolved->kind == TypeKind::Byte ||
                                 (resolved->kind == TypeKind::Integer && resolved->isSigned);
@@ -266,7 +289,8 @@ void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePt
   } else {
     bits = asRaw(value);
   }
-  if (layout.size < 8) bits = builder_->CreateTrunc(bits, storageType(resolved));
+  if (layout.size < 8 && (resolved == nullptr || resolved->kind != TypeKind::Float))
+    bits = builder_->CreateTrunc(bits, storageType(resolved));
   builder_->CreateStore(bits, address);
 }
 
@@ -402,10 +426,6 @@ llvm::Function *IrGenerator::moduloFunction() {
   return runtimeFunction("jsmm_mod", doubleType_, {doubleType_, doubleType_});
 }
 
-llvm::Function *IrGenerator::powerFunction() {
-  return runtimeFunction("jsmm_pow", doubleType_, {doubleType_, doubleType_});
-}
-
 llvm::Function *IrGenerator::boundsFunction() { return runtimeFunction("jsmm_oob", voidType_, {}); }
 
 llvm::Function *IrGenerator::stringEqualFunction() {
@@ -434,10 +454,6 @@ llvm::Function *IrGenerator::memsetFunction() {
 
 llvm::Function *IrGenerator::memcmpFunction() {
   return runtimeFunction("jsmm_memcmp", i64Type_, {i64Type_, i64Type_, i64Type_});
-}
-
-llvm::Function *IrGenerator::throwFunction() {
-  return runtimeFunction("jsmm_throw", voidType_, {});
 }
 
 llvm::Function *IrGenerator::syscallFunction() {
@@ -742,6 +758,21 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
                                       : builder_->CreateUIToFP(bits, doubleType_),
                       true};
   }
+  if (target->kind == TypeKind::Float) {
+    // Narrow the double to the float width and extend back to a cell double.
+    // Use double -> float -> half to avoid libgcc __truncdfhf2 for half.
+    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
+    llvm::Value *narrowed = value.value;
+    if (target->length <= 16) {
+      narrowed = builder_->CreateFPTrunc(narrowed, singleType);
+      narrowed = builder_->CreateFPTrunc(narrowed, llvm::Type::getHalfTy(*context_));
+      narrowed = builder_->CreateFPExt(narrowed, singleType);
+    } else if (target->length <= 32) {
+      narrowed = builder_->CreateFPTrunc(narrowed, singleType);
+    }
+    // 64-bit: no narrowing needed
+    return EmitValue{builder_->CreateFPExt(narrowed, doubleType_), true};
+  }
   if (target->kind == TypeKind::Struct && origin->kind == TypeKind::Struct)
     return convertStruct(target, origin, value);
   if (target->kind == TypeKind::Bytes && origin->kind == TypeKind::String) {
@@ -1006,10 +1037,6 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           } else {
             builder_->CreateBr(loops_.back().continueBlock);
           }
-        } else if constexpr (std::is_same_v<T, reader::ThrowStatement>) {
-          if (node.argument != nullptr) (void)generateExpression(node.argument);
-          builder_->CreateCall(throwFunction());
-          builder_->CreateUnreachable();
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
           if (node.body == nullptr) return;
           const bool loopBody = std::holds_alternative<reader::WhileStatement>(node.body->node) ||
@@ -1051,9 +1078,6 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           return rawValue(i64(node.value ? 1 : 0));
         } else if constexpr (std::is_same_v<T, reader::NullLiteralExpr>) {
           return rawValue(i64(0));
-        } else if constexpr (std::is_same_v<T, reader::UndefinedLiteralExpr>) {
-          throw errors::ErrorException{errors::ErrorStatus{
-              errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "undefined", expression->range}};
         } else if constexpr (std::is_same_v<T, reader::IdentifierExpr>) {
           if (Slot *slot = lookupSlot(node.name))
             return loadSlot(slot->address, typeOf(expression));
@@ -1102,12 +1126,15 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
             const TypePtr objectType = resolve(typeOf(node.object));
             if (objectType != nullptr &&
                 (objectType->kind == TypeKind::Bytes || objectType->kind == TypeKind::String)) {
-              if (std::get_if<reader::RangeExpr>(&node.computed->node) != nullptr) {
-                return rawValue(builder_->CreateIntToPtr(address, ptrType_));
-              }
-              if (objectType->kind == TypeKind::Bytes)
-                return loadByteElement(address);
-              return loadStringByteElement(address);
+              if (std::get_if<reader::RangeExpr>(&node.computed->node) != nullptr)
+                return rawValue(address);
+              if (objectType->kind == TypeKind::Bytes) return loadByteElement(address);
+              llvm::Value *single = allocate(9);
+              builder_->CreateStore(i64(1), bytePointer(single, 0));
+              builder_->CreateStore(
+                  builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_)),
+                  bytePointer(single, 8));
+              return rawValue(single);
             }
           }
           return loadSlot(builder_->CreateIntToPtr(address, ptrType_), typeOf(expression));
@@ -1195,9 +1222,14 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
   }
   if (unary.op == "~") {
     EmitValue operand = generateExpression(unary.operand);
-    llvm::Value *value = toInt32(operand.value);
+    const TypePtr operandType = resolve(typeOf(unary.operand));
+    const bool unsignedOperand = operandType != nullptr &&
+                                 operandType->kind == TypeKind::Integer &&
+                                 !operandType->isSigned;
+    llvm::Value *value = toInt32(operand.value, unsignedOperand);
     llvm::Value *inverted = builder_->CreateNot(value);
-    llvm::Value *extended = builder_->CreateSExt(inverted, i64Type_);
+    llvm::Value *extended = unsignedOperand ? builder_->CreateZExt(inverted, i64Type_)
+                                            : builder_->CreateSExt(inverted, i64Type_);
     return EmitValue{builder_->CreateSIToFP(extended, doubleType_), true};
   }
   if (unary.op == "-") {
@@ -1243,7 +1275,7 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
 }
 
 IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &binary) {
-  if (binary.op == "==" || binary.op == "!=" || binary.op == "===" || binary.op == "!==")
+  if (binary.op == "==" || binary.op == "!=")
     return generateEquality(binary);
   if (binary.op == "&&" || binary.op == "||") return generateLogical(binary);
   if (binary.op == "+") {
@@ -1251,8 +1283,8 @@ IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &bin
     const TypePtr rightType = resolve(typeOf(binary.right));
     if (isText(leftType) && isText(rightType)) return generateStringConcat(binary);
   }
-  if (binary.op == "-" || binary.op == "*" || binary.op == "/" ||
-      binary.op == "%" || binary.op == "**")
+  if (binary.op == "+" || binary.op == "-" || binary.op == "*" || binary.op == "/" ||
+      binary.op == "%")
     return generateArithmetic(binary);
   if (binary.op == "<" || binary.op == ">" || binary.op == "<=" || binary.op == ">=")
     return generateRelational(binary);
@@ -1282,7 +1314,8 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   if (binary.op == "/") return EmitValue{builder_->CreateFDiv(left.value, right.value), true};
   if (binary.op == "%")
     return EmitValue{builder_->CreateCall(moduloFunction(), {left.value, right.value}), true};
-  return EmitValue{builder_->CreateCall(powerFunction(), {left.value, right.value}), true};
+  throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                   binary.op, {}}};
 }
 
 IrGenerator::EmitValue IrGenerator::generateStringConcat(const reader::BinaryExpr &binary) {
@@ -1294,45 +1327,33 @@ IrGenerator::EmitValue IrGenerator::generateStringConcat(const reader::BinaryExp
 }
 
 IrGenerator::EmitValue IrGenerator::generateBitwise(const reader::BinaryExpr &binary) {
+  const TypePtr leftType = resolve(typeOf(binary.left));
+  const bool unsignedOperands = leftType != nullptr && leftType->kind == TypeKind::Integer &&
+                                !leftType->isSigned;
   return emitBitwiseOperation(binary.op, generateExpression(binary.left),
-                              generateExpression(binary.right));
+                              generateExpression(binary.right), unsignedOperands);
 }
 
 IrGenerator::EmitValue IrGenerator::emitBitwiseOperation(const std::string &op, EmitValue left,
-                                                        EmitValue right) {
-  llvm::Value *leftValue = toInt32(left.value);
-  llvm::Value *rightValue = toInt32(right.value);
-  const bool shift = op == "<<" || op == ">>" || op == ">>>";
+                                                        EmitValue right, bool unsignedOperands) {
+  llvm::Value *leftValue = toInt32(left.value, unsignedOperands);
+  llvm::Value *rightValue = toInt32(right.value, unsignedOperands);
+  const bool shift = op == "<<" || op == ">>";
   if (shift) rightValue = builder_->CreateAnd(rightValue, i32(31));
-  if (op == "&")
-    return EmitValue{builder_->CreateSIToFP(
-                         builder_->CreateSExt(builder_->CreateAnd(leftValue, rightValue), i64Type_),
-                         doubleType_),
-                     true};
-  if (op == "|")
-    return EmitValue{builder_->CreateSIToFP(
-                         builder_->CreateSExt(builder_->CreateOr(leftValue, rightValue), i64Type_),
-                         doubleType_),
-                     true};
-  if (op == "^")
-    return EmitValue{builder_->CreateSIToFP(
-                         builder_->CreateSExt(builder_->CreateXor(leftValue, rightValue), i64Type_),
-                         doubleType_),
-                     true};
-  if (op == "<<")
-    return EmitValue{builder_->CreateSIToFP(
-                         builder_->CreateSExt(builder_->CreateShl(leftValue, rightValue), i64Type_),
-                         doubleType_),
-                     true};
+  auto toResult = [&](llvm::Value *bits) -> EmitValue {
+    llvm::Value *wide = unsignedOperands ? builder_->CreateZExt(bits, i64Type_)
+                                         : builder_->CreateSExt(bits, i64Type_);
+    return EmitValue{builder_->CreateSIToFP(wide, doubleType_), true};
+  };
+  if (op == "&") return toResult(builder_->CreateAnd(leftValue, rightValue));
+  if (op == "|") return toResult(builder_->CreateOr(leftValue, rightValue));
+  if (op == "^") return toResult(builder_->CreateXor(leftValue, rightValue));
+  if (op == "<<") return toResult(builder_->CreateShl(leftValue, rightValue));
   if (op == ">>")
-    return EmitValue{builder_->CreateSIToFP(
-                         builder_->CreateSExt(builder_->CreateAShr(leftValue, rightValue), i64Type_),
-                         doubleType_),
-                     true};
-  return EmitValue{builder_->CreateUIToFP(
-                       builder_->CreateZExt(builder_->CreateLShr(leftValue, rightValue), i64Type_),
-                       doubleType_),
-                   true};
+    return toResult(unsignedOperands ? builder_->CreateLShr(leftValue, rightValue)
+                                     : builder_->CreateAShr(leftValue, rightValue));
+  throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                   op, {}}};
 }
 
 IrGenerator::EmitValue IrGenerator::generateRelational(const reader::BinaryExpr &binary) {
@@ -1388,7 +1409,7 @@ IrGenerator::EmitValue IrGenerator::generateEquality(const reader::BinaryExpr &b
   } else {
     equal = builder_->CreateICmpEQ(asRaw(left), asRaw(right));
   }
-  if (binary.op == "!=" || binary.op == "!==") equal = builder_->CreateNot(equal);
+  if (binary.op == "!=") equal = builder_->CreateNot(equal);
   return rawValue(builder_->CreateZExt(equal, i64Type_));
 }
 
@@ -1508,8 +1529,13 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       value = EmitValue{builder_->CreateFDiv(current.value, value.value), true};
     else if (op == "%")
       value = EmitValue{builder_->CreateCall(moduloFunction(), {current.value, value.value}), true};
-    else if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == ">>>")
-      value = emitBitwiseOperation(op, current, value);
+    else if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+      const TypePtr operandType = resolve(targetType);
+      const bool unsignedOperands = operandType != nullptr &&
+                                    operandType->kind == TypeKind::Integer &&
+                                    !operandType->isSigned;
+      value = emitBitwiseOperation(op, current, value, unsignedOperands);
+    }
     else
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, assignment.left->range}};
@@ -1579,19 +1605,16 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
 
       builder_->SetInsertPoint(oobBlock);
       builder_->CreateCall(boundsFunction());
-      builder_->CreateBr(endBlock);
-
-      builder_->SetInsertPoint(okBlock);
-      // Compute slice pointer: base + 8 + start
-      llvm::Value *slicePtr =
-          builder_->CreateAdd(base, builder_->CreateAdd(i64(8), startIdx));
-      // Compute slice length: end - start
+      builder_->CreateBr(endBlock);      builder_->SetInsertPoint(okBlock);
       llvm::Value *sliceLen = builder_->CreateSub(endIdx, startIdx);
+      llvm::Value *sourceBytes = builder_->CreateAdd(base, builder_->CreateAdd(i64(8), startIdx));
 
-      // Allocate 16 bytes for the result string descriptor {len, ptr}
-      llvm::Value *resultDesc = allocate(16);
+      // String/bytes values store their bytes inline after the length word.
+      llvm::Value *resultDesc =
+          builder_->CreateCall(allocFunction(), {builder_->CreateAdd(i64(8), sliceLen)});
       builder_->CreateStore(sliceLen, bytePointer(resultDesc, 0));
-      builder_->CreateStore(slicePtr, bytePointer(resultDesc, 8));
+      builder_->CreateCall(memcpyFunction(),
+                           {builder_->CreateAdd(resultDesc, i64(8)), sourceBytes, sliceLen});
 
       builder_->CreateBr(endBlock);
 
@@ -1636,7 +1659,9 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
 
     builder_->SetInsertPoint(okBlock);
     const std::uint64_t stride =
-        objectType->kind == TypeKind::Bytes ? 1 : elementSize(objectType->element);
+        (objectType->kind == TypeKind::Bytes || objectType->kind == TypeKind::String)
+            ? 1
+            : elementSize(objectType->element);
     llvm::Value *elementPtr =
         dynamicPointer(base, builder_->CreateAdd(i64(8), builder_->CreateMul(index, i64(stride))));
     llvm::Value *okAddress = builder_->CreatePtrToInt(elementPtr, i64Type_);
@@ -2073,15 +2098,29 @@ IrGenerator::EmitValue IrGenerator::coerceI64ToType(llvm::Value *i64val, types::
         true};
   }
   case TypeKind::Float: {
-    // Convert i64 bits to narrow float, then extend to double
-    llvm::Type *narrowFloatType = doubleType_;
-    if (type->length <= 16)
-      narrowFloatType = llvm::Type::getHalfTy(*context_);
-    else if (type->length <= 32)
-      narrowFloatType = llvm::Type::getFloatTy(*context_);
-    llvm::Value *narrowBits = builder_->CreateTrunc(i64val, narrowFloatType);
-    llvm::Value *narrowFloat = builder_->CreateBitCast(narrowBits, narrowFloatType);
-    return EmitValue{builder_->CreateFPExt(narrowFloat, doubleType_), true};
+    // Reinterpret the low bits of the cell as the float of the declared width.
+    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
+    if (type->length <= 16) {
+      llvm::Value *narrowBits = builder_->CreateTrunc(i64val, builder_->getInt16Ty());
+      if (type->floatFormat == "bfloat16") {
+        llvm::Value *wide =
+            builder_->CreateShl(builder_->CreateZExt(narrowBits, i32Type_), i32(16));
+        return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(wide, singleType),
+                                               doubleType_),
+                         true};
+      }
+      llvm::Value *narrowFloat =
+          builder_->CreateBitCast(narrowBits, llvm::Type::getHalfTy(*context_));
+      llvm::Value *single = builder_->CreateFPExt(narrowFloat, singleType);
+      return EmitValue{builder_->CreateFPExt(single, doubleType_), true};
+    }
+    if (type->length <= 32) {
+      llvm::Value *narrowBits = builder_->CreateTrunc(i64val, i32Type_);
+      return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(narrowBits, singleType),
+                                             doubleType_),
+                       true};
+    }
+    return EmitValue{builder_->CreateBitCast(i64val, doubleType_), true};
   }
   case TypeKind::Boolean:
     return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};

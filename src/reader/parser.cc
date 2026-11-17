@@ -10,15 +10,34 @@
 namespace jsmm::reader {
 namespace {
 
-std::size_t skipSizedIntArguments(const std::vector<Token> &tokens, std::size_t cursor) {
-  if (cursor + 4 >= tokens.size()) return cursor;
-  if (tokens[cursor].lexeme != "<") return cursor;
-  if (tokens[cursor + 1].kind != TokenKind::NumberLiteral) return cursor;
-  if (tokens[cursor + 2].lexeme != ",") return cursor;
-  if (tokens[cursor + 3].lexeme != "signed" && tokens[cursor + 3].lexeme != "unsigned")
-    return cursor;
-  if (tokens[cursor + 4].lexeme != ">") return cursor;
-  return cursor + 5;
+std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t cursor) {
+  // Try int<width, signed|unsigned>
+  if (cursor + 4 < tokens.size() && tokens[cursor].lexeme == "<" &&
+      tokens[cursor + 1].kind == TokenKind::NumberLiteral &&
+      tokens[cursor + 2].lexeme == "," &&
+      (tokens[cursor + 3].lexeme == "signed" || tokens[cursor + 3].lexeme == "unsigned") &&
+      tokens[cursor + 4].lexeme == ">") {
+    return cursor + 5;
+  }
+  // Try float<>, float<bits>, or float<bits, "format">
+  if (cursor + 1 < tokens.size() && tokens[cursor].lexeme == "<") {
+    if (tokens[cursor + 1].lexeme == ">")
+      return cursor + 2;  // float<>
+    if (tokens[cursor + 1].kind == TokenKind::NumberLiteral) {
+      std::size_t c = cursor + 2;
+      if (c < tokens.size() && tokens[c].lexeme == ">")
+        return c + 1;  // float<bits>
+      if (c < tokens.size() && tokens[c].lexeme == ",") {
+        ++c;
+        if (c < tokens.size() && tokens[c].kind == TokenKind::StringLiteral) {
+          ++c;
+          if (c < tokens.size() && tokens[c].lexeme == ">")
+            return c + 1;  // float<bits, "format">
+        }
+      }
+    }
+  }
+  return cursor;
 }
 
 bool decodeBitsLiteral(const std::string &spelling, std::string &out) {
@@ -52,7 +71,6 @@ const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParse
       {"^=", {{1, true}, &P::parseAssignmentInfix, true}},
       {"<<=", {{1, true}, &P::parseAssignmentInfix, true}},
       {">>=", {{1, true}, &P::parseAssignmentInfix, true}},
-      {">>>=", {{1, true}, &P::parseAssignmentInfix, true}},
       {"||", {{2, false}, &P::parseBinaryInfix}},
       {"&&", {{3, false}, &P::parseBinaryInfix}},
       {"|", {{4, false}, &P::parseBinaryInfix}},
@@ -66,7 +84,6 @@ const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParse
       {">=", {{8, false}, &P::parseBinaryInfix}},
       {"<<", {{9, false}, &P::parseBinaryInfix}},
       {">>", {{9, false}, &P::parseBinaryInfix}},
-      {">>>", {{9, false}, &P::parseBinaryInfix}},
       {"+", {{10, false}, &P::parseBinaryInfix}},
       {"-", {{10, false}, &P::parseBinaryInfix}},
       {"*", {{11, false}, &P::parseBinaryInfix}},
@@ -190,11 +207,6 @@ Statement Parser::parseExpressionStatement() {
 Statement Parser::parseDeclaration() {
   const std::string kind = consume().lexeme;
   const bool isQualifier = kind == "const";
-  const auto isBuiltinType = [](const std::string &text) {
-    return text == "string" || text == "bool" || text == "boolean" || text == "byte" ||
-           text == "bytes" || text == "auto" || text == "void" || text == "null" ||
-           text == "int" || text == "float";
-  };
 
   std::shared_ptr<TypeExpr> annotation = std::make_shared<TypeExpr>();
 
@@ -208,7 +220,7 @@ Statement Parser::parseDeclaration() {
       parseIntTypeArguments(annotation);
     annotation->pointerDepth.back() += parsePointerStars();
     parseArraySize(annotation);
-    while (eat("|") || eat(",")) {
+    while (eat("|")) {
       if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
         fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
       annotation->names.push_back(consume().lexeme);
@@ -230,26 +242,19 @@ Statement Parser::parseDeclaration() {
           isName = true;
       }
       if (typeish && !isName) {
-        const bool builtin = isBuiltinType(current().lexeme);
         auto prefix = std::make_shared<TypeExpr>();
         prefix->names.push_back(consume().lexeme);
         prefix->pointerDepth.push_back(parsePointerStars());
-        parseIntTypeArguments(prefix);
+        if (prefix->names.back() == "float")
+          parseFloatTypeArguments(prefix);
+        else
+          parseIntTypeArguments(prefix);
         prefix->pointerDepth.back() += parsePointerStars();
         parseArraySize(prefix);
         for (;;) {
           if (eat("|")) {
             if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
               fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
-            prefix->names.push_back(consume().lexeme);
-            prefix->pointerDepth.push_back(parsePointerStars());
-            continue;
-          }
-          if (builtin && current().lexeme == "," && index_ + 2 < tokens_.size() &&
-              isBuiltinType(tokens_[index_ + 1].lexeme) &&
-              (tokens_[index_ + 2].kind == TokenKind::Identifier ||
-               tokens_[index_ + 2].kind == TokenKind::Keyword)) {
-            consume();
             prefix->names.push_back(consume().lexeme);
             prefix->pointerDepth.push_back(parsePointerStars());
             continue;
@@ -284,7 +289,7 @@ Statement Parser::parseDeclaration() {
     }
     declaration.declarations.push_back(
         {name, std::move(initializer), std::move(declaratorAnnotation)});
-  } while (eat(","));
+  } while (false);
   ensureSemicolonOrASI();
   return Statement(std::move(declaration));
 }
@@ -377,7 +382,7 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
       fail("expected a type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
     annotation->names.push_back(consume().lexeme);
     annotation->pointerDepth.push_back(parsePointerStars());
-  } while (eat("|") || eat(","));
+  } while (eat("|"));
 
   // Check if the type is float<width, format>
   if (!annotation->names.empty() && annotation->names.back() == "float")
@@ -448,7 +453,10 @@ std::shared_ptr<TypeExpr> Parser::parseTypeOperandAnnotation() {
     annotation->names.push_back(consume().lexeme);
     annotation->pointerDepth.push_back(parsePointerStars());
   }
-  parseIntTypeArguments(annotation);
+  if (annotation->names.size() == 1 && annotation->names.back() == "float")
+    parseFloatTypeArguments(annotation);
+  else
+    parseIntTypeArguments(annotation);
   annotation->pointerDepth.back() += parsePointerStars();
   if (eat("[")) {
     if (current().kind != TokenKind::NumberLiteral)
@@ -878,8 +886,6 @@ ExprPtr Parser::parsePrimary() {
     return std::make_shared<Expression>(BooleanLiteralExpr{token.lexeme == "true"}, sourceRange);
   if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
   if (token.lexeme == "float") return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
-  if (token.lexeme == "undefined")
-    return std::make_shared<Expression>(UndefinedLiteralExpr{}, sourceRange);
   if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword) {
     // Reserved keywords that are not supported in expression position produce a clear error
     if (token.kind == TokenKind::Keyword) {
@@ -888,7 +894,13 @@ ExprPtr Parser::parsePrimary() {
     }
     return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
   }
-  fail("expected expression", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  if (token.kind == TokenKind::End)
+    throw errors::ErrorException{errors::ErrorStatus{
+        errors::ErrorCode::PARSE_EXPECTED_EXPRESSION, "expected expression, found end of input",
+        token.start}};
+  throw errors::ErrorException{errors::ErrorStatus{
+      errors::ErrorCode::PARSE_EXPECTED_EXPRESSION,
+      "expected expression, found '" + token.lexeme + "'", token.start}};
 }
 
 ExprPtr Parser::parseObjectLiteral() {
@@ -977,7 +989,7 @@ bool Parser::startsFunctionDeclaration() const {
     if (depth != 0) return false;
   }
 
-  cursor = skipSizedIntArguments(tokens_, cursor);
+  cursor = skipTypeArguments(tokens_, cursor);
 
   while (cursor < tokens_.size() &&
          (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
@@ -998,7 +1010,7 @@ bool Parser::startsFunctionDeclaration() const {
         tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
-    cursor = skipSizedIntArguments(tokens_, cursor);
+    cursor = skipTypeArguments(tokens_, cursor);
     while (cursor < tokens_.size() &&
          (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
     ++cursor;
@@ -1031,7 +1043,7 @@ bool Parser::startsVariableDeclaration() const {
        tokens_[cursor].kind != TokenKind::Keyword))
     return false;
   ++cursor;
-  cursor = skipSizedIntArguments(tokens_, cursor);
+  cursor = skipTypeArguments(tokens_, cursor);
 
   while (cursor < tokens_.size() &&
          (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
@@ -1052,7 +1064,7 @@ bool Parser::startsVariableDeclaration() const {
         tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
-    cursor = skipSizedIntArguments(tokens_, cursor);
+    cursor = skipTypeArguments(tokens_, cursor);
     while (cursor < tokens_.size() &&
            (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
       ++cursor;

@@ -185,6 +185,7 @@ bool Unifier::unify(TypePtr left, TypePtr right) {
   if (left->kind != right->kind) return false;
   switch (left->kind) {
   case TypeKind::Integer: return true;
+  case TypeKind::Float: return true;
   case TypeKind::Function: {
     if (left->isVariadic != right->isVariadic) return false;
     if (left->parameters.size() != right->parameters.size()) return false;

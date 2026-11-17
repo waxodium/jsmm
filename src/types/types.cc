@@ -225,7 +225,8 @@ TypeLayout layoutOf(TypePtr type) {
   case TypeKind::Boolean: return knownLayout(1, 1);
   case TypeKind::Integer: {
     if (type->length == 0) return {};
-    const std::uint64_t size = (type->length + 7) / 8;  // round up to whole bytes
+    std::uint64_t size = (type->length + 7) / 8;  // round up to whole bytes
+    if (size > 8) size = 8;                       // widths above 64 bits use 64-bit cells
     return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
   }
   case TypeKind::Float: {

@@ -118,8 +118,6 @@ struct BooleanLiteralExpr {
 
 struct NullLiteralExpr {};
 
-struct UndefinedLiteralExpr {};
-
 struct TypeExpr {
   std::vector<std::string> names;
   std::vector<int> pointerDepth;
@@ -223,11 +221,6 @@ struct ReturnStatement {
   SourceRange range{};
 };
 
-struct ThrowStatement {
-  ExprPtr argument = nullptr;
-  SourceRange range{};
-};
-
 struct LabeledStatement {
   std::string label;
   std::unique_ptr<Statement> body;
@@ -257,7 +250,6 @@ struct Expression {
     ArrayExpr,
     BooleanLiteralExpr,
     NullLiteralExpr,
-    UndefinedLiteralExpr,
     TypeOperandExpr,
     RangeExpr
   > node;
@@ -277,7 +269,6 @@ struct Statement {
     BreakStatement,
     ContinueStatement,
     ReturnStatement,
-    ThrowStatement,
     LabeledStatement
   > node;
   SourceRange range{};

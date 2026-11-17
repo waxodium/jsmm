@@ -106,43 +106,6 @@ jsmm_mod_nan:
   ret
 )ASM";
 
-constexpr const char *powerText = R"ASM(.section .text
-.globl jsmm_pow
-jsmm_pow:
-  cvttsd2si rax, xmm1
-  cvtsi2sd xmm2, rax
-  ucomisd xmm2, xmm1
-  jne jsmm_pow_unsupported
-  jp jsmm_pow_unsupported
-  test rax, rax
-  js jsmm_pow_unsupported
-  movabs rcx, 0x3FF0000000000000
-  movq xmm3, rcx
-jsmm_pow_loop:
-  test rax, rax
-  je jsmm_pow_done
-  mulsd xmm3, xmm0
-  dec rax
-  jmp jsmm_pow_loop
-jsmm_pow_done:
-  movsd xmm0, xmm3
-  ret
-jsmm_pow_unsupported:
-  mov eax, 1
-  mov edi, 2
-  lea rsi, [rip + jsmm_message_pow]
-  mov edx, offset jsmm_message_pow_len
-  syscall
-  mov edi, 1
-  mov eax, 60
-  syscall
-.section .data
-jsmm_message_pow:
-  .ascii "jsmm: ** requires a non-negative integer exponent\n"
-jsmm_message_pow_end:
-.set jsmm_message_pow_len, jsmm_message_pow_end - jsmm_message_pow
-)ASM";
-
 constexpr const char *int32Text = R"ASM(.section .text
 .globl jsmm_to_i32
 jsmm_to_i32:
@@ -208,24 +171,6 @@ jsmm_syscall:
   ret
 )ASM";
 
-constexpr const char *throwText = R"ASM(.section .text
-.globl jsmm_throw
-jsmm_throw:
-  mov eax, 1
-  mov edi, 2
-  lea rsi, [rip + jsmm_message_throw]
-  mov edx, offset jsmm_message_throw_len
-  syscall
-  mov edi, 1
-  mov eax, 60
-  syscall
-.section .data
-jsmm_message_throw:
-  .ascii "jsmm: uncaught exception\n"
-jsmm_message_throw_end:
-.set jsmm_message_throw_len, jsmm_message_throw_end - jsmm_message_throw
-)ASM";
-
 constexpr const char *stringEqualText = R"ASM(.section .text
 .globl jsmm_str_eq
 jsmm_str_eq:
@@ -263,6 +208,8 @@ jsmm_memcpy:
   and rcx, 7
   jz jsmm_memcpy_done
 jsmm_memcpy_tail:
+  mov rcx, rdx
+  and rcx, 7
   rep movsb
 jsmm_memcpy_done:
   ret
@@ -287,6 +234,8 @@ jsmm_memset:
   and rcx, 7
   jz jsmm_memset_done
 jsmm_memset_tail:
+  mov rcx, rdx
+  and rcx, 7
   rep stosb
 jsmm_memset_done:
   ret
@@ -733,7 +682,6 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(entryFrameSymbol), entryFrameText);
   registry.declare(std::string(allocSymbol), allocText);
   registry.declare(std::string(moduloSymbol), moduloText);
-  registry.declare(std::string(powerSymbol), powerText);
   registry.declare("int32", int32Text);
   registry.declare(std::string(boundsSymbol), boundsText);
   registry.declare("string_writer", stringWriterText);
@@ -745,7 +693,6 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("memset", memsetText);
   registry.declare("memcmp", memcmpText);
   registry.declare("syscall", syscallText);
-  registry.declare("throw", throwText);
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);
   registry.declare("number_writer", numberWriterText);
