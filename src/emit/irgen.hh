@@ -88,6 +88,10 @@ private:
   EmitValue rawValue(llvm::Value *value) const;
   llvm::Value *asRaw(EmitValue value) const;
   llvm::Value *toInt32(llvm::Value *value, bool unsignedValue = false) const;
+  llvm::Value *toSizedInteger(llvm::Value *value, llvm::IntegerType *type,
+                              bool unsignedValue) const;
+  EmitValue cellFromInteger(llvm::Value *bits, bool unsignedValue) const;
+  unsigned bitwiseWidth(types::TypePtr type) const;
   llvm::Value *toInt64(EmitValue value) const;
   llvm::Value *fpToI64(llvm::Value *fpValue) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
@@ -164,7 +168,7 @@ private:
   EmitValue generateStringConcat(const reader::BinaryExpr &binary);
   EmitValue generateBitwise(const reader::BinaryExpr &binary);
   EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right,
-                                 bool unsignedOperands = false);
+                                 types::TypePtr leftType = nullptr);
   EmitValue loadByteElement(llvm::Value *address) const;
   EmitValue loadStringByteElement(llvm::Value *address) const;
   void storeByteElement(llvm::Value *address, EmitValue value) const;

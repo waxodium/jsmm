@@ -140,6 +140,32 @@ llvm::Value *IrGenerator::toInt64(EmitValue value) const {
                                    {value.value});
 }
 
+llvm::Value *IrGenerator::toSizedInteger(llvm::Value *value, llvm::IntegerType *type,
+                                        bool unsignedValue) const {
+  llvm::Value *wide =
+      builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
+                                              : llvm::Intrinsic::fptosi_sat,
+                                {i64Type_, doubleType_}, {value});
+  return builder_->CreateTrunc(wide, type);
+}
+
+IrGenerator::EmitValue IrGenerator::cellFromInteger(llvm::Value *bits,
+                                                    bool unsignedValue) const {
+  if (unsignedValue) return EmitValue{builder_->CreateUIToFP(bits, doubleType_), true};
+  return EmitValue{builder_->CreateSIToFP(builder_->CreateSExt(bits, i64Type_), doubleType_),
+                   true};
+}
+
+unsigned IrGenerator::bitwiseWidth(types::TypePtr type) const {
+  const TypePtr resolved = resolve(std::move(type));
+  if (resolved == nullptr) return 32;
+  if (resolved->kind == TypeKind::Byte) return 8;
+  if (resolved->kind != TypeKind::Integer) return 32;
+  const types::TypeLayout layout = types::layoutOf(resolved);
+  if (!layout.defined || layout.size == 0) return 32;
+  return static_cast<unsigned>(layout.size >= 8 ? 64 : layout.size * 8);
+}
+
 llvm::Value *IrGenerator::toInt32(llvm::Value *value, bool unsignedValue) const {
   llvm::Value *wide =
       builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
@@ -1226,11 +1252,10 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
     const bool unsignedOperand = operandType != nullptr &&
                                  operandType->kind == TypeKind::Integer &&
                                  !operandType->isSigned;
-    llvm::Value *value = toInt32(operand.value, unsignedOperand);
-    llvm::Value *inverted = builder_->CreateNot(value);
-    llvm::Value *extended = unsignedOperand ? builder_->CreateZExt(inverted, i64Type_)
-                                            : builder_->CreateSExt(inverted, i64Type_);
-    return EmitValue{builder_->CreateSIToFP(extended, doubleType_), true};
+    llvm::IntegerType *operandIntType = builder_->getIntNTy(bitwiseWidth(operandType));
+    llvm::Value *inverted =
+        builder_->CreateNot(toSizedInteger(operand.value, operandIntType, unsignedOperand));
+    return cellFromInteger(inverted, unsignedOperand);
   }
   if (unary.op == "-") {
     EmitValue operand = generateExpression(unary.operand);
@@ -1327,31 +1352,33 @@ IrGenerator::EmitValue IrGenerator::generateStringConcat(const reader::BinaryExp
 }
 
 IrGenerator::EmitValue IrGenerator::generateBitwise(const reader::BinaryExpr &binary) {
-  const TypePtr leftType = resolve(typeOf(binary.left));
-  const bool unsignedOperands = leftType != nullptr && leftType->kind == TypeKind::Integer &&
-                                !leftType->isSigned;
   return emitBitwiseOperation(binary.op, generateExpression(binary.left),
-                              generateExpression(binary.right), unsignedOperands);
+                              generateExpression(binary.right), typeOf(binary.left));
 }
 
 IrGenerator::EmitValue IrGenerator::emitBitwiseOperation(const std::string &op, EmitValue left,
-                                                        EmitValue right, bool unsignedOperands) {
-  llvm::Value *leftValue = toInt32(left.value, unsignedOperands);
-  llvm::Value *rightValue = toInt32(right.value, unsignedOperands);
-  const bool shift = op == "<<" || op == ">>";
-  if (shift) rightValue = builder_->CreateAnd(rightValue, i32(31));
-  auto toResult = [&](llvm::Value *bits) -> EmitValue {
-    llvm::Value *wide = unsignedOperands ? builder_->CreateZExt(bits, i64Type_)
-                                         : builder_->CreateSExt(bits, i64Type_);
-    return EmitValue{builder_->CreateSIToFP(wide, doubleType_), true};
-  };
-  if (op == "&") return toResult(builder_->CreateAnd(leftValue, rightValue));
-  if (op == "|") return toResult(builder_->CreateOr(leftValue, rightValue));
-  if (op == "^") return toResult(builder_->CreateXor(leftValue, rightValue));
-  if (op == "<<") return toResult(builder_->CreateShl(leftValue, rightValue));
-  if (op == ">>")
-    return toResult(unsignedOperands ? builder_->CreateLShr(leftValue, rightValue)
-                                     : builder_->CreateAShr(leftValue, rightValue));
+                                                        EmitValue right,
+                                                        types::TypePtr leftType) {
+  const TypePtr operandType = resolve(leftType);
+  const bool unsignedOperands = operandType != nullptr && operandType->kind == TypeKind::Integer &&
+                                !operandType->isSigned;
+  llvm::IntegerType *operandIntType = builder_->getIntNTy(bitwiseWidth(operandType));
+  llvm::Value *leftValue = toSizedInteger(left.value, operandIntType, unsignedOperands);
+  llvm::Value *rightValue = toSizedInteger(right.value, operandIntType, unsignedOperands);
+  if (op == "<<" || op == ">>") {
+    llvm::Value *count = builder_->CreateAnd(
+        rightValue, llvm::ConstantInt::get(operandIntType, operandIntType->getBitWidth() - 1));
+    llvm::Value *shifted = op == "<<"
+                               ? builder_->CreateShl(leftValue, count)
+                               : (unsignedOperands ? builder_->CreateLShr(leftValue, count)
+                                                   : builder_->CreateAShr(leftValue, count));
+    return cellFromInteger(shifted, unsignedOperands);
+  }
+  llvm::Value *result = nullptr;
+  if (op == "&") result = builder_->CreateAnd(leftValue, rightValue);
+  else if (op == "|") result = builder_->CreateOr(leftValue, rightValue);
+  else if (op == "^") result = builder_->CreateXor(leftValue, rightValue);
+  if (result != nullptr) return cellFromInteger(result, unsignedOperands);
   throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                    op, {}}};
 }
@@ -1529,13 +1556,8 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       value = EmitValue{builder_->CreateFDiv(current.value, value.value), true};
     else if (op == "%")
       value = EmitValue{builder_->CreateCall(moduloFunction(), {current.value, value.value}), true};
-    else if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
-      const TypePtr operandType = resolve(targetType);
-      const bool unsignedOperands = operandType != nullptr &&
-                                    operandType->kind == TypeKind::Integer &&
-                                    !operandType->isSigned;
-      value = emitBitwiseOperation(op, current, value, unsignedOperands);
-    }
+    else if (op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>")
+      value = emitBitwiseOperation(op, current, value, targetType);
     else
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        assignment.op, assignment.left->range}};

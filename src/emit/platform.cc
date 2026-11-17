@@ -450,7 +450,7 @@ jsmm_number_positive:
   jae jsmm_number_scientific
   movsd xmm1, QWORD PTR [rip + jsmm_number_plain_limit]
   ucomisd xmm0, xmm1
-  jae jsmm_number_large
+  jae jsmm_number_integer
   cvttsd2si r12, xmm0
   cvtsi2sd xmm1, r12
   movsd xmm2, xmm0
@@ -481,28 +481,46 @@ jsmm_number_normal_copy:
   cmp rcx, r10
   jb jsmm_number_normal_copy
   jmp jsmm_number_emit
-jsmm_number_large:
-  xor ecx, ecx
-  movsd xmm1, QWORD PTR [rip + jsmm_number_plain_limit]
-jsmm_number_large_loop:
+jsmm_number_integer:
+  movsd xmm1, QWORD PTR [rip + jsmm_number_two63]
   ucomisd xmm0, xmm1
-  jb jsmm_number_large_ready
-  divsd xmm0, QWORD PTR [rip + jsmm_number_ten]
-  inc ecx
-  jmp jsmm_number_large_loop
-jsmm_number_large_ready:
-  cvttsd2si r12, xmm0
-  mov r13, rcx
-  mov rax, r12
+  jae jsmm_number_integer_wide
+  cvttsd2si rax, xmm0
   call jsmm_number_int
-  mov rcx, r13
-  test rcx, rcx
-  jz jsmm_number_emit
-jsmm_number_large_zero:
-  mov byte ptr [rbx + r9], 48
-  inc r9
-  dec rcx
-  jnz jsmm_number_large_zero
+  jmp jsmm_number_emit
+jsmm_number_integer_wide:
+  movsd xmm1, QWORD PTR [rip + jsmm_number_two64]
+  ucomisd xmm0, xmm1
+  jae jsmm_number_huge
+  subsd xmm0, QWORD PTR [rip + jsmm_number_two63]
+  cvttsd2si rax, xmm0
+  bts rax, 63
+  call jsmm_number_int
+  jmp jsmm_number_emit
+jsmm_number_huge:
+  movsd xmm1, QWORD PTR [rip + jsmm_number_plain_limit]
+  movsd xmm2, xmm0
+  divsd xmm2, xmm1
+  cvttsd2si rax, xmm2
+jsmm_number_huge_fix:
+  cvtsi2sd xmm3, rax
+  mulsd xmm3, xmm1
+  movsd xmm4, xmm0
+  subsd xmm4, xmm3
+  ucomisd xmm4, xmm1
+  jb jsmm_number_huge_floor
+  inc rax
+  jmp jsmm_number_huge_fix
+jsmm_number_huge_floor:
+  xorpd xmm5, xmm5
+  ucomisd xmm4, xmm5
+  jae jsmm_number_huge_ready
+  dec rax
+  jmp jsmm_number_huge_fix
+jsmm_number_huge_ready:
+  call jsmm_number_int
+  cvttsd2si rax, xmm4
+  call jsmm_number_digits18
   jmp jsmm_number_emit
 jsmm_number_scientific:
   xor r12d, r12d
@@ -632,6 +650,28 @@ jsmm_number_int_copy_loop:
   jmp jsmm_number_int_copy_loop
 jsmm_number_int_done:
   ret
+jsmm_number_digits18:
+  lea rdi, [rbx + 65]
+  mov rcx, 18
+  mov r11, 10
+jsmm_number_digits18_loop:
+  xor rdx, rdx
+  div r11
+  add dl, 48
+  mov byte ptr [rdi], dl
+  dec rdi
+  dec rcx
+  jnz jsmm_number_digits18_loop
+  lea rsi, [rbx + 48]
+  mov rcx, 18
+jsmm_number_digits18_copy:
+  mov al, byte ptr [rsi]
+  mov byte ptr [rbx + r9], al
+  inc rsi
+  inc r9
+  dec rcx
+  jnz jsmm_number_digits18_copy
+  ret
 jsmm_number_frac:
   lea rdi, [rbx + rcx + 47]
   mov r10, rcx
@@ -661,6 +701,10 @@ jsmm_number_epsilon:
   .quad 0x3eb0c6f7a0b5ed8d
 jsmm_number_plain_limit:
   .quad 0x43abc16d674ec800
+jsmm_number_two63:
+  .quad 0x43e0000000000000
+jsmm_number_two64:
+  .quad 0x43f0000000000000
 jsmm_number_large_limit:
   .quad 0x444b1ae4d6e2ef50
 jsmm_number_million:
