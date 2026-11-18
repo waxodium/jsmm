@@ -121,10 +121,15 @@ struct NullLiteralExpr {};
 struct TypeExpr {
   std::vector<std::string> names;
   std::vector<int> pointerDepth;
-  std::string floatFormat = "ieee";
   std::size_t intSize = 0;
   bool intSigned = false;
   bool isIntType = false;
+  // Float layout fields (float<totalBits, expBits, mantBits, signed>)
+  bool isFloatType = false;
+  std::size_t floatTotalBits = 0;
+  std::size_t floatExpBits = 0;
+  std::size_t floatMantBits = 0;
+  bool floatSigned = true;
   std::size_t arraySize = 0;
   bool isArray = false;
   bool isStruct = false;
@@ -152,6 +157,7 @@ struct IfStatement {
 
 struct WhileStatement {
   ExprPtr condition;
+  ExprPtr step = nullptr;
   std::vector<std::unique_ptr<Statement>> body;
   SourceRange range{};
 };
@@ -178,15 +184,6 @@ struct VariableDeclarator {
 struct VariableDeclaration {
   std::string kind;
   std::vector<VariableDeclarator> declarations;
-  SourceRange range{};
-};
-
-struct ForStatement {
-  std::unique_ptr<VariableDeclaration> init = nullptr;
-  ExprPtr initExpression = nullptr;
-  ExprPtr condition = nullptr;
-  ExprPtr update = nullptr;
-  std::vector<std::unique_ptr<Statement>> body;
   SourceRange range{};
 };
 
@@ -265,7 +262,6 @@ struct Statement {
     IfStatement,
     WhileStatement,
     SwitchStatement,
-    ForStatement,
     BreakStatement,
     ContinueStatement,
     ReturnStatement,

@@ -52,7 +52,6 @@ private:
   Statement parseIfStatement();
   Statement parseWhileStatement();
   Statement parseSwitchStatement();
-  Statement parseForStatement();
   Statement parseBreakStatement();
   Statement parseContinueStatement();
   Statement parseLabeledStatement();

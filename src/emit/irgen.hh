@@ -106,6 +106,13 @@ private:
   llvm::Type *storageType(types::TypePtr type) const;
   llvm::Type *floatStorageType(types::TypePtr type) const;
   bool isBfloat16(types::TypePtr type) const;
+
+  // Generic float bit-layout pack/unpack for user-definable float<> types.
+  // Arithmetic is performed in f64 cells; these convert between the f64 cell
+  // and the packed target layout at store/load boundaries.
+  llvm::Value *packFloatToLayout(llvm::Value *value, types::TypePtr type) const;
+  llvm::Value *unpackFloatFromLayout(llvm::Value *bits, types::TypePtr type) const;
+
   std::uint64_t elementSize(types::TypePtr type) const;
   std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 

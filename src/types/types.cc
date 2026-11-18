@@ -42,17 +42,44 @@ TypePtr TypeContext::byteType() const { return byte_; }
 
 TypePtr TypeContext::bytesType() const { return bytes_; }
 
-TypePtr TypeContext::floatType(std::size_t bits, const std::string &format) {
+TypePtr TypeContext::floatType(std::size_t totalBits, std::size_t expBits, std::size_t mantBits, bool signedVal) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Float;
   type->id = nextId_++;
-  type->length = bits;
-  type->floatFormat = format;
+  type->length = totalBits;
+  type->floatTotalBits = totalBits;
+  type->floatExpBits = expBits;
+  type->floatMantBits = mantBits;
+  type->floatSigned = signedVal;
   return type;
 }
 
-TypePtr TypeContext::floatType(std::size_t bits) {
-  return floatType(bits, "ieee");
+TypePtr TypeContext::floatType() {
+  // Default float is 64-bit IEEE 754
+  return floatType(64, 11, 52, true);
+}
+
+TypePtr TypeContext::floatTypeBasic(std::size_t bits) {
+  // Basic form: float<bits>. Derive a reasonable exponent/mantissa split
+  // from the width, mirroring common IEEE-like layouts.
+  bool signedVal = true;
+  std::size_t expBits = 0;
+  std::size_t mantBits = 0;
+  if (bits <= 8) {
+    expBits = 3;
+    mantBits = bits - 1 - expBits;
+  } else if (bits <= 16) {
+    expBits = 5;
+    mantBits = bits - 1 - expBits;
+  } else if (bits <= 32) {
+    expBits = 8;
+    mantBits = bits - 1 - expBits;
+  } else {
+    expBits = 11;
+    mantBits = bits - 1 - expBits;
+  }
+  if (mantBits < 1) mantBits = 1;
+  return floatType(bits, expBits, mantBits, signedVal);
 }
 
 TypePtr TypeContext::integerType(std::size_t bits, bool isSigned) {

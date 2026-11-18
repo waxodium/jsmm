@@ -19,7 +19,7 @@ std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t curs
       tokens[cursor + 4].lexeme == ">") {
     return cursor + 5;
   }
-  // Try float<>, float<bits>, or float<bits, "format">
+  // Try float<>, float<bits>, or float<totalBits, expBits, mantBits, signed>
   if (cursor + 1 < tokens.size() && tokens[cursor].lexeme == "<") {
     if (tokens[cursor + 1].lexeme == ">")
       return cursor + 2;  // float<>
@@ -29,10 +29,24 @@ std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t curs
         return c + 1;  // float<bits>
       if (c < tokens.size() && tokens[c].lexeme == ",") {
         ++c;
-        if (c < tokens.size() && tokens[c].kind == TokenKind::StringLiteral) {
+        // float<bits, expBits, mantBits, signed>
+        if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
           ++c;
-          if (c < tokens.size() && tokens[c].lexeme == ">")
-            return c + 1;  // float<bits, "format">
+          if (c < tokens.size() && tokens[c].lexeme == ",") {
+            ++c;
+            if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
+              ++c;
+              if (c < tokens.size() && tokens[c].lexeme == ",") {
+                ++c;
+                if (c < tokens.size() &&
+                    (tokens[c].lexeme == "true" || tokens[c].lexeme == "false")) {
+                  ++c;
+                  if (c < tokens.size() && tokens[c].lexeme == ">")
+                    return c + 1;  // advanced float layout
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -175,7 +189,6 @@ Statement Parser::parseStatement() {
       if (keyword == "return") return parseReturnStatement();
       if (keyword == "if") return parseIfStatement();
       if (keyword == "while") return parseWhileStatement();
-      if (keyword == "for") return parseForStatement();
       if (keyword == "switch") return parseSwitchStatement();
       if (keyword == "break") return parseBreakStatement();
       if (keyword == "continue") return parseContinueStatement();
@@ -422,19 +435,36 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
 void Parser::parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
   if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
   if (!eat("<")) return;
+  annotation->isFloatType = true;
   // float<> with no size means default 64-bit IEEE 754
   if (eat(">")) return;
   if (current().kind != TokenKind::NumberLiteral)
-    fail("expected float size in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
-  annotation->intSize = std::stoull(consume().lexeme);
-  annotation->isIntType = true;  // reuse isIntType to mean "has float args"
-  // Check for optional format string after comma (we parse it but don't store it long-term)
-  if (eat(",")) {
-    if (current().kind != TokenKind::StringLiteral)
-      fail("expected format string after ',' in float type");
-    annotation->floatFormat = consume().text;
+    fail("expected float total bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->floatTotalBits = std::stoull(consume().lexeme);
+  // float<bits> basic form: just width
+  if (eat(">")) return;
+  // float<totalBits, expBits, mantBits, signed> advanced form
+  if (!eat(","))
+    fail("expected ',' after float total bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected float exponent bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->floatExpBits = std::stoull(consume().lexeme);
+  if (!eat(","))
+    fail("expected ',' after float exponent bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  if (current().kind != TokenKind::NumberLiteral)
+    fail("expected float mantissa bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  annotation->floatMantBits = std::stoull(consume().lexeme);
+  if (!eat(","))
+    fail("expected ',' after float mantissa bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+  const std::string signedness = consume().lexeme;
+  if (signedness == "true") {
+    annotation->floatSigned = true;
+  } else if (signedness == "false") {
+    annotation->floatSigned = false;
+  } else {
+    fail("expected 'true' or 'false' for float signedness",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   }
-  // Default format is IEEE 754
   if (!eat(">"))
     fail("expected '>' after float type arguments",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS);
@@ -571,49 +601,15 @@ Statement Parser::parseWhileStatement() {
   if (!eat("("))
     fail("expected '(' after 'while'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_WHILE);
   auto condition = parseExpression();
-  if (!eat(")"))
-    fail("expected ')' after while condition",
-         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_CONDITION);
-  StatementList body = parseConsequent();
-  return Statement(WhileStatement{std::move(condition), std::move(body)});
-}
-
-Statement Parser::parseForStatement() {
-  consume();
-  if (!eat("("))
-    fail("expected '(' after 'for'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FOR);
-  std::unique_ptr<VariableDeclaration> init;
-  ExprPtr initExpression;
-  bool initHasSemicolon = false;
-  const bool declarationInit =
-      current().lexeme == "const" || current().lexeme == "string" ||
-      current().lexeme == "bool" || current().lexeme == "boolean" ||
-      current().lexeme == "bytes" || current().lexeme == "auto" ||
-      current().lexeme == "int" || startsVariableDeclaration();
-  if (declarationInit) {
-    Statement declaration = parseDeclaration();
-    if (auto *variable = std::get_if<VariableDeclaration>(&declaration.node)) {
-      init = std::make_unique<VariableDeclaration>(std::move(*variable));
-      initHasSemicolon = true;
-    }
-  } else if (current().lexeme != ";") {
-    initExpression = parseExpression();
+  ExprPtr step = nullptr;
+  if (eat(";")) {
+    step = parseExpression();
   }
-  if (!initHasSemicolon && !eat(";"))
-    fail("expected ';' after for-init", errors::ErrorCode::PARSE_EXPECTED_SEMICOLON_AFTER_FOR_INIT);
-  ExprPtr condition;
-  if (current().lexeme != ";") condition = parseExpression();
-  if (!eat(";"))
-    fail("expected ';' after for-condition",
-         errors::ErrorCode::PARSE_EXPECTED_SEMICOLON_AFTER_FOR_CONDITION);
-  ExprPtr update;
-  if (current().lexeme != ")") update = parseExpression();
   if (!eat(")"))
-    fail("expected ')' after for clauses",
-         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_FOR_CLAUSES);
+    fail("expected ')' after while step",
+         errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_STEP);
   StatementList body = parseConsequent();
-  return Statement(ForStatement{std::move(init), std::move(initExpression), std::move(condition),
-                                std::move(update), std::move(body)});
+  return Statement(WhileStatement{std::move(condition), std::move(step), std::move(body)});
 }
 
 Statement Parser::parseSwitchStatement() {

@@ -374,6 +374,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
           scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::WhileStatement>) {
           (void)inferExpression(node.condition);
+          if (node.step != nullptr) (void)inferExpression(node.step);
           scopes_.push_back(Scope{});
           ++loopDepth_;
           ++breakableDepth_;
@@ -389,20 +390,6 @@ void Checker::inferStatement(const reader::Statement &statement) {
             if (clause.value != nullptr) (void)inferExpression(clause.value);
             inferStatements(clause.statements);
           }
-          --breakableDepth_;
-          scopes_.pop_back();
-        } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
-          scopes_.push_back(Scope{});
-          if (node.init != nullptr) inferDeclaration(*node.init);
-          if (node.initExpression != nullptr) (void)inferExpression(node.initExpression);
-          if (node.condition != nullptr) (void)inferExpression(node.condition);
-          if (node.update != nullptr) (void)inferExpression(node.update);
-          ++breakableDepth_;
-          ++loopDepth_;
-          scopes_.push_back(Scope{});
-          inferStatements(node.body);
-          scopes_.pop_back();
-          --loopDepth_;
           --breakableDepth_;
           scopes_.pop_back();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
@@ -446,8 +433,7 @@ void Checker::inferStatement(const reader::Statement &statement) {
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
           if (node.body != nullptr) {
             const bool loopBody =
-                std::holds_alternative<reader::WhileStatement>(node.body->node) ||
-                std::holds_alternative<reader::ForStatement>(node.body->node);
+                std::holds_alternative<reader::WhileStatement>(node.body->node);
             labels_.emplace_back(node.label, loopBody);
             inferStatement(*node.body);
             labels_.pop_back();
@@ -472,7 +458,7 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
                    spelling.find('e') == std::string::npos &&
                    spelling.find('E') == std::string::npos)
             floating = false;
-          return floating ? typeContext_.floatType(64) : typeContext_.integerType(32, true);
+          return floating ? typeContext_.floatType() : typeContext_.integerType(32, true);
         } else if constexpr (std::is_same_v<T, reader::StringLiteralExpr>) {
           return stringType();
         } else if constexpr (std::is_same_v<T, reader::BytesLiteralExpr>) {
@@ -1229,13 +1215,23 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
         type = typeContext_.integerType(32, true);
     }
     else if (name == "float") {
-      // float<bits> or float<bits, "format">
-      const std::string format =
-          annotation->floatFormat.empty() ? "ieee" : annotation->floatFormat;
-      if (annotation->isIntType && annotation->intSize > 0) {
-        type = typeContext_.floatType(annotation->intSize, format);
+      if (!annotation->isFloatType) {
+        // Default 64-bit IEEE 754
+        type = typeContext_.floatType();
+      } else if (annotation->floatTotalBits > 0 &&
+                 annotation->floatExpBits > 0 &&
+                 annotation->floatMantBits > 0) {
+        // Advanced: float<totalBits, expBits, mantBits, signed>
+        type = typeContext_.floatType(annotation->floatTotalBits,
+                                      annotation->floatExpBits,
+                                      annotation->floatMantBits,
+                                      annotation->floatSigned);
+      } else if (annotation->floatTotalBits > 0) {
+        // Basic: float<bits>
+        type = typeContext_.floatTypeBasic(annotation->floatTotalBits);
       } else {
-        type = typeContext_.floatType(64, format);
+        // float<> default 64-bit IEEE 754
+        type = typeContext_.floatType();
       }
     }
     else if (name == "f64") {

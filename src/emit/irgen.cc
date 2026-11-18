@@ -220,6 +220,146 @@ std::uint64_t IrGenerator::memberOffset(types::TypePtr structType, std::size_t i
   return types::fieldOffset(structType, index);
 }
 
+// Pack an f64 cell into the target float bit-layout, returning an i64 whose low
+// totalBits bits hold the packed layout (sign | exponent | mantissa).
+llvm::Value *IrGenerator::packFloatToLayout(llvm::Value *value, types::TypePtr type) const {
+  const std::size_t expBits = type->floatExpBits;
+  const std::size_t mantBits = type->floatMantBits;
+  const bool signedVal = type->floatSigned;
+
+  // Bit representation of the IEEE double.
+  llvm::Value *bits = builder_->CreateBitCast(value, i64Type_);
+  llvm::Value *sign = builder_->CreateLShr(bits, i64(63));
+  llvm::Value *exp = builder_->CreateAnd(builder_->CreateLShr(bits, i64(52)), i64(0x7FF));
+  llvm::Value *mant = builder_->CreateAnd(bits, i64(0x000FFFFFFFFFFFFFULL));
+
+  llvm::Value *isZero = builder_->CreateICmpEQ(exp, i64(0));
+  llvm::Value *isSpecial = builder_->CreateICmpEQ(exp, i64(0x7FF)); // inf or nan
+
+  const std::uint64_t targetBias =
+      (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
+  llvm::Value *bias = i64(targetBias);
+  llvm::Value *expFieldMax = i64((std::uint64_t(1) << expBits) - 1);
+  llvm::Value *mantFieldMask = i64(((std::uint64_t(1) << mantBits) - 1));
+
+  // unbiased exponent, then add target bias
+  llvm::Value *newExp =
+      builder_->CreateAdd(builder_->CreateSub(exp, i64(1023)), bias);
+
+  // Round mantissa to mantBits (round to nearest, ties away via guard+sticky)
+  llvm::Value *newMant;
+  if (mantBits <= 52) {
+    llvm::Value *shift = i64(52 - mantBits);
+    newMant = builder_->CreateLShr(mant, shift);
+    if (mantBits < 52) {
+      llvm::Value *guard = builder_->CreateICmpNE(
+          builder_->CreateAnd(builder_->CreateLShr(mant, builder_->CreateSub(shift, i64(1))), i64(1)),
+          i64(0));
+      // Sticky: any mantissa bit below the guard bit.
+      llvm::Value *oneBelow = builder_->CreateShl(i64(1), builder_->CreateSub(shift, i64(1)));
+      llvm::Value *stickyMask = builder_->CreateSub(oneBelow, i64(1));
+      llvm::Value *sticky = builder_->CreateICmpNE(
+          builder_->CreateAnd(mant, stickyMask), i64(0));
+      llvm::Value *roundUp = builder_->CreateOr(guard, sticky);
+      newMant = builder_->CreateSelect(roundUp, builder_->CreateAdd(newMant, i64(1)), newMant);
+    }
+  } else {
+    // Wider mantissa than a double: left-shift (cannot add real precision).
+    newMant = builder_->CreateShl(mant, i64(mantBits - 52));
+  }
+
+  // Mantissa overflow into the hidden bit bumps the exponent.
+  llvm::Value *mantOverflow =
+      builder_->CreateICmpEQ(newMant, builder_->CreateShl(i64(1), i64(mantBits)));
+  newMant = builder_->CreateAnd(newMant, mantFieldMask);
+  newExp = builder_->CreateSelect(mantOverflow, builder_->CreateAdd(newExp, i64(1)), newExp);
+
+  // Exponent overflow -> infinity.
+  llvm::Value *expOverflow = builder_->CreateICmpUGE(newExp, expFieldMax);
+  newExp = builder_->CreateSelect(expOverflow, expFieldMax, newExp);
+  newMant = builder_->CreateSelect(expOverflow, i64(0), newMant);
+
+  // Exponent underflow -> zero.
+  llvm::Value *expUnderflow = builder_->CreateICmpULT(newExp, i64(0));
+  newExp = builder_->CreateSelect(expUnderflow, i64(0), newExp);
+  newMant = builder_->CreateSelect(expUnderflow, i64(0), newMant);
+
+  // Zero input -> zero output.
+  newExp = builder_->CreateSelect(isZero, i64(0), newExp);
+  newMant = builder_->CreateSelect(isZero, i64(0), newMant);
+
+  // NaN -> quiet NaN pattern (exponent all ones, mantissa nonzero).
+  if (mantBits >= 1) {
+    llvm::Value *nanMant =
+        builder_->CreateOr(builder_->CreateShl(i64(1), i64(mantBits - 1)), i64(1));
+    newExp = builder_->CreateSelect(isSpecial, expFieldMax, newExp);
+    newMant = builder_->CreateSelect(isSpecial, nanMant, newMant);
+  } else {
+    newExp = builder_->CreateSelect(isSpecial, expFieldMax, newExp);
+  }
+
+  // Pack: mantissa | (exponent << mantBits) | (sign << (mantBits + expBits))
+  llvm::Value *packed = newMant;
+  packed = builder_->CreateOr(packed, builder_->CreateShl(newExp, i64(mantBits)));
+  if (signedVal) {
+    packed = builder_->CreateOr(packed, builder_->CreateShl(sign, i64(mantBits + expBits)));
+  }
+  return packed;
+}
+
+// Unpack packed layout bits (low totalBits bits of an integer) back to an f64 cell.
+llvm::Value *IrGenerator::unpackFloatFromLayout(llvm::Value *bits, types::TypePtr type) const {
+  const std::size_t expBits = type->floatExpBits;
+  const std::size_t mantBits = type->floatMantBits;
+  const bool signedVal = type->floatSigned;
+
+  llvm::Value *b = builder_->CreateZExt(bits, i64Type_);
+
+  llvm::Value *mantMask = i64(((std::uint64_t(1) << mantBits) - 1));
+  llvm::Value *mant = builder_->CreateAnd(b, mantMask);
+  llvm::Value *exp =
+      builder_->CreateAnd(builder_->CreateLShr(b, i64(mantBits)),
+                          i64((std::uint64_t(1) << expBits) - 1));
+  llvm::Value *sign = i64(0);
+  if (signedVal) {
+    sign = builder_->CreateLShr(b, i64(mantBits + expBits));
+  }
+
+  const std::uint64_t targetBias =
+      (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
+  llvm::Value *bias = i64(targetBias);
+  llvm::Value *expFieldMax = i64((std::uint64_t(1) << expBits) - 1);
+
+  llvm::Value *isZero = builder_->CreateICmpEQ(exp, i64(0));
+  llvm::Value *isSpecial = builder_->CreateICmpEQ(exp, expFieldMax);
+
+  // unbiased = exp - targetBias; double exponent = unbiased + 1023
+  llvm::Value *dExp = builder_->CreateAdd(builder_->CreateSub(exp, bias), i64(1023));
+
+  // Mantissa into the double's 52-bit fraction field. The hidden (leading 1)
+  // bit is implicit for normal exponents and is added by the hardware, so we
+  // store only the fraction here.
+  llvm::Value *dMant;
+  if (mantBits <= 52) {
+    dMant = builder_->CreateShl(mant, i64(52 - mantBits));
+  } else {
+    dMant = builder_->CreateLShr(mant, i64(mantBits - 52));
+  }
+
+  // Special values -> exponent all ones.
+  dExp = builder_->CreateSelect(isSpecial, i64(0x7FF), dExp);
+  // Zero -> exponent and mantissa zero.
+  dExp = builder_->CreateSelect(isZero, i64(0), dExp);
+  dMant = builder_->CreateSelect(isZero, i64(0), dMant);
+
+  llvm::Value *dbits = dMant;
+  dbits = builder_->CreateOr(dbits, builder_->CreateShl(dExp, i64(52)));
+  if (signedVal) {
+    dbits = builder_->CreateOr(dbits, builder_->CreateShl(sign, i64(63)));
+  }
+  return builder_->CreateBitCast(dbits, llvm::Type::getDoubleTy(*context_));
+}
+
 IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePtr type) const {
   const TypePtr resolved = resolve(type);
   const types::TypeLayout layout = types::layoutOf(resolved);
@@ -242,27 +382,8 @@ IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePt
       resolved->kind == TypeKind::Number)
     return EmitValue{builder_->CreateBitCast(bits, doubleType_), true};
   if (resolved != nullptr && resolved->kind == TypeKind::Float) {
-    // The loaded storage is already the exact width of the float, so decode from
-    // that width rather than from the extended i64 value.
-    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
-    if (resolved->length <= 16) {
-      if (resolved->floatFormat == "bfloat16") {
-        llvm::Value *wide =
-            builder_->CreateShl(builder_->CreateZExt(loaded, i32Type_), i32(16));
-        return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(wide, singleType),
-                                               doubleType_),
-                         true};
-      }
-      llvm::Value *narrowFloat =
-          builder_->CreateBitCast(loaded, llvm::Type::getHalfTy(*context_));
-      llvm::Value *single = builder_->CreateFPExt(narrowFloat, singleType);
-      return EmitValue{builder_->CreateFPExt(single, doubleType_), true};
-    }
-    if (resolved->length <= 32)
-      return EmitValue{builder_->CreateFPExt(
-                           builder_->CreateBitCast(loaded, singleType), doubleType_),
-                       true};
-    return EmitValue{builder_->CreateBitCast(loaded, doubleType_), true};
+    // Decode the packed bit-layout back to an f64 cell.
+    return EmitValue{unpackFloatFromLayout(loaded, resolved), true};
   }
   if (!isNumber(resolved)) return EmitValue{bits, false};
   const bool signedNumber = resolved->kind == TypeKind::Byte ||
@@ -285,24 +406,10 @@ void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePt
     if (resolved != nullptr && resolved->kind == TypeKind::Number) {
       bits = builder_->CreateBitCast(value.value, i64Type_);
     } else if (resolved != nullptr && resolved->kind == TypeKind::Float) {
-      // Narrow the double to the float width and reinterpret its exact-width bits.
-      llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
-      if (resolved->length <= 16) {
-        llvm::Value *single = builder_->CreateFPTrunc(value.value, singleType);
-        if (resolved->floatFormat == "bfloat16") {
-          llvm::Value *wide = builder_->CreateBitCast(single, i32Type_);
-          bits = builder_->CreateTrunc(builder_->CreateLShr(wide, i32(16)), storageType(resolved));
-        } else {
-          llvm::Value *narrowFloat =
-              builder_->CreateFPTrunc(single, llvm::Type::getHalfTy(*context_));
-          bits = builder_->CreateBitCast(narrowFloat, storageType(resolved));
-        }
-      } else if (resolved->length <= 32) {
-        llvm::Value *narrowFloat = builder_->CreateFPTrunc(value.value, singleType);
-        bits = builder_->CreateBitCast(narrowFloat, storageType(resolved));
-      } else {
-        bits = builder_->CreateBitCast(value.value, storageType(resolved));
-      }
+      // Pack the f64 cell into the target float bit-layout.
+      bits = packFloatToLayout(value.value, resolved);
+      if (layout.size < 8)
+        bits = builder_->CreateTrunc(bits, storageType(resolved));
     } else {
       const bool signedNumber = resolved->kind == TypeKind::Byte ||
                                 (resolved->kind == TypeKind::Integer && resolved->isSigned);
@@ -785,19 +892,9 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
                       true};
   }
   if (target->kind == TypeKind::Float) {
-    // Narrow the double to the float width and extend back to a cell double.
-    // Use double -> float -> half to avoid libgcc __truncdfhf2 for half.
-    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
-    llvm::Value *narrowed = value.value;
-    if (target->length <= 16) {
-      narrowed = builder_->CreateFPTrunc(narrowed, singleType);
-      narrowed = builder_->CreateFPTrunc(narrowed, llvm::Type::getHalfTy(*context_));
-      narrowed = builder_->CreateFPExt(narrowed, singleType);
-    } else if (target->length <= 32) {
-      narrowed = builder_->CreateFPTrunc(narrowed, singleType);
-    }
-    // 64-bit: no narrowing needed
-    return EmitValue{builder_->CreateFPExt(narrowed, doubleType_), true};
+    // Narrow the f64 cell to the target float bit-layout and extend back to a cell.
+    llvm::Value *packed = packFloatToLayout(value.value, target);
+    return EmitValue{unpackFloatFromLayout(packed, target), true};
   }
   if (target->kind == TypeKind::Struct && origin->kind == TypeKind::Struct)
     return convertStruct(target, origin, value);
@@ -925,16 +1022,18 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           llvm::BasicBlock *conditionBlock = createBlock("while.cond");
           llvm::BasicBlock *bodyBlock = createBlock("while.body");
           llvm::BasicBlock *endBlock = createBlock("while.end");
+          llvm::BasicBlock *stepBlock = node.step != nullptr ? createBlock("while.step") : nullptr;
           builder_->CreateBr(conditionBlock);
           builder_->SetInsertPoint(conditionBlock);
           EmitValue condition = generateExpression(node.condition);
           builder_->CreateCondBr(emitTruthy(condition, typeOf(node.condition)), bodyBlock,
                                  endBlock);
           builder_->SetInsertPoint(bodyBlock);
-          loops_.push_back(Loop{endBlock, conditionBlock});
+          loops_.push_back(Loop{endBlock, stepBlock != nullptr ? stepBlock : conditionBlock});
           const bool labelled = !pendingLoopLabel_.empty();
           if (labelled) {
-            labels_.push_back(Label{pendingLoopLabel_, endBlock, conditionBlock});
+            labels_.push_back(Label{pendingLoopLabel_, endBlock,
+                                    stepBlock != nullptr ? stepBlock : conditionBlock});
             pendingLoopLabel_.clear();
           }
           beginScope();
@@ -942,6 +1041,11 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           endScope();
           loops_.pop_back();
           if (labelled) labels_.pop_back();
+          if (stepBlock != nullptr) {
+            if (!terminated()) builder_->CreateBr(stepBlock);
+            builder_->SetInsertPoint(stepBlock);
+            (void)generateExpression(node.step);
+          }
           if (!terminated()) builder_->CreateBr(conditionBlock);
           builder_->SetInsertPoint(endBlock);
         } else if constexpr (std::is_same_v<T, reader::SwitchStatement>) {
@@ -997,41 +1101,6 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           endScope();
           loops_.pop_back();
           builder_->SetInsertPoint(endBlock);
-        } else if constexpr (std::is_same_v<T, reader::ForStatement>) {
-          llvm::BasicBlock *conditionBlock = createBlock("for.cond");
-          llvm::BasicBlock *bodyBlock = createBlock("for.body");
-          llvm::BasicBlock *updateBlock = createBlock("for.update");
-          llvm::BasicBlock *endBlock = createBlock("for.end");
-          beginScope();
-          if (node.init != nullptr) generateDeclaration(*node.init);
-          if (node.initExpression != nullptr) (void)generateExpression(node.initExpression);
-          builder_->CreateBr(conditionBlock);
-          builder_->SetInsertPoint(conditionBlock);
-          if (node.condition != nullptr) {
-            EmitValue condition = generateExpression(node.condition);
-            builder_->CreateCondBr(emitTruthy(condition, typeOf(node.condition)), bodyBlock,
-                                   endBlock);
-          } else {
-            builder_->CreateBr(bodyBlock);
-          }
-          builder_->SetInsertPoint(bodyBlock);
-          loops_.push_back(Loop{endBlock, updateBlock});
-          const bool labelled = !pendingLoopLabel_.empty();
-          if (labelled) {
-            labels_.push_back(Label{pendingLoopLabel_, endBlock, updateBlock});
-            pendingLoopLabel_.clear();
-          }
-          beginScope();
-          generateStatements(node.body);
-          endScope();
-          loops_.pop_back();
-          if (labelled) labels_.pop_back();
-          if (!terminated()) builder_->CreateBr(updateBlock);
-          builder_->SetInsertPoint(updateBlock);
-          if (node.update != nullptr) (void)generateExpression(node.update);
-          if (!terminated()) builder_->CreateBr(conditionBlock);
-          builder_->SetInsertPoint(endBlock);
-          endScope();
         } else if constexpr (std::is_same_v<T, reader::BreakStatement>) {
           if (node.label != nullptr) {
             llvm::BasicBlock *target = nullptr;
@@ -1065,8 +1134,7 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           }
         } else if constexpr (std::is_same_v<T, reader::LabeledStatement>) {
           if (node.body == nullptr) return;
-          const bool loopBody = std::holds_alternative<reader::WhileStatement>(node.body->node) ||
-                                std::holds_alternative<reader::ForStatement>(node.body->node);
+          const bool loopBody = std::holds_alternative<reader::WhileStatement>(node.body->node);
           if (loopBody) {
             pendingLoopLabel_ = node.label;
             generateStatement(*node.body);
@@ -2120,29 +2188,8 @@ IrGenerator::EmitValue IrGenerator::coerceI64ToType(llvm::Value *i64val, types::
         true};
   }
   case TypeKind::Float: {
-    // Reinterpret the low bits of the cell as the float of the declared width.
-    llvm::Type *singleType = llvm::Type::getFloatTy(*context_);
-    if (type->length <= 16) {
-      llvm::Value *narrowBits = builder_->CreateTrunc(i64val, builder_->getInt16Ty());
-      if (type->floatFormat == "bfloat16") {
-        llvm::Value *wide =
-            builder_->CreateShl(builder_->CreateZExt(narrowBits, i32Type_), i32(16));
-        return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(wide, singleType),
-                                               doubleType_),
-                         true};
-      }
-      llvm::Value *narrowFloat =
-          builder_->CreateBitCast(narrowBits, llvm::Type::getHalfTy(*context_));
-      llvm::Value *single = builder_->CreateFPExt(narrowFloat, singleType);
-      return EmitValue{builder_->CreateFPExt(single, doubleType_), true};
-    }
-    if (type->length <= 32) {
-      llvm::Value *narrowBits = builder_->CreateTrunc(i64val, i32Type_);
-      return EmitValue{builder_->CreateFPExt(builder_->CreateBitCast(narrowBits, singleType),
-                                             doubleType_),
-                       true};
-    }
-    return EmitValue{builder_->CreateBitCast(i64val, doubleType_), true};
+    // Reinterpret the low totalBits bits of the cell as the packed float layout.
+    return EmitValue{unpackFloatFromLayout(i64val, type), true};
   }
   case TypeKind::Boolean:
     return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
