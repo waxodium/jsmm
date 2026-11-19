@@ -113,6 +113,10 @@ private:
   llvm::Value *packFloatToLayout(llvm::Value *value, types::TypePtr type) const;
   llvm::Value *unpackFloatFromLayout(llvm::Value *bits, types::TypePtr type) const;
 
+  // Round an f64 cell to the target float bit-layout (hardware-accurate
+  // rounding at the declared width).
+  llvm::Value *roundFloatToLayout(llvm::Value *value, types::TypePtr type) const;
+
   std::uint64_t elementSize(types::TypePtr type) const;
   std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 

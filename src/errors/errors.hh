@@ -55,6 +55,7 @@ enum class ErrorCode : std::uint16_t {
   TYPE_CALL_TARGET_EXPECTS_ARGUMENTS,
   TYPE_UNKNOWN_TYPE_NAME,
   TYPE_UNION_REQUIRES_SINGLE_PAYLOAD,
+  TYPE_FLOAT_LAYOUT_INVALID,
   TYPE_TYPE_OPERAND_EXPECTED,
   TYPE_TYPE_OPERAND_HAS_NO_LAYOUT,
   TYPE_TYPE_USED_AS_VALUE,
@@ -172,6 +173,8 @@ constexpr std::string_view errorMessage(ErrorCode code) {
       return "unknown type name";
     case ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD:
       return "a union may hold at most one non-nullable member";
+    case ErrorCode::TYPE_FLOAT_LAYOUT_INVALID:
+      return "invalid float bit layout";
     case ErrorCode::TYPE_TYPE_OPERAND_EXPECTED:
       return "expected a type operand";
     case ErrorCode::TYPE_TYPE_OPERAND_HAS_NO_LAYOUT:

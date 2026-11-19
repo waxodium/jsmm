@@ -19,31 +19,26 @@ std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t curs
       tokens[cursor + 4].lexeme == ">") {
     return cursor + 5;
   }
-  // Try float<>, float<bits>, or float<totalBits, expBits, mantBits, signed>
+  // Try float<>, or float<totalBits, expBits, mantBits, signed>
   if (cursor + 1 < tokens.size() && tokens[cursor].lexeme == "<") {
     if (tokens[cursor + 1].lexeme == ">")
       return cursor + 2;  // float<>
     if (tokens[cursor + 1].kind == TokenKind::NumberLiteral) {
       std::size_t c = cursor + 2;
-      if (c < tokens.size() && tokens[c].lexeme == ">")
-        return c + 1;  // float<bits>
-      if (c < tokens.size() && tokens[c].lexeme == ",") {
+      // float<totalBits, expBits, mantBits, signed>
+      if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
         ++c;
-        // float<bits, expBits, mantBits, signed>
-        if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
+        if (c < tokens.size() && tokens[c].lexeme == ",") {
           ++c;
-          if (c < tokens.size() && tokens[c].lexeme == ",") {
+          if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
             ++c;
-            if (c < tokens.size() && tokens[c].kind == TokenKind::NumberLiteral) {
+            if (c < tokens.size() && tokens[c].lexeme == ",") {
               ++c;
-              if (c < tokens.size() && tokens[c].lexeme == ",") {
+              if (c < tokens.size() &&
+                  (tokens[c].lexeme == "true" || tokens[c].lexeme == "false")) {
                 ++c;
-                if (c < tokens.size() &&
-                    (tokens[c].lexeme == "true" || tokens[c].lexeme == "false")) {
-                  ++c;
-                  if (c < tokens.size() && tokens[c].lexeme == ">")
-                    return c + 1;  // advanced float layout
-                }
+                if (c < tokens.size() && tokens[c].lexeme == ">")
+                  return c + 1;  // advanced float layout
               }
             }
           }
@@ -441,8 +436,11 @@ void Parser::parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation
   if (current().kind != TokenKind::NumberLiteral)
     fail("expected float total bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   annotation->floatTotalBits = std::stoull(consume().lexeme);
-  // float<bits> basic form: just width
-  if (eat(">")) return;
+  // float<bits> without expBits/mantBits/signed is not supported;
+  // use the advanced form float<totalBits, expBits, mantBits, signed>
+  if (eat(">"))
+    fail("float<bits> is not supported; use float<totalBits, expBits, mantBits, signed>",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   // float<totalBits, expBits, mantBits, signed> advanced form
   if (!eat(","))
     fail("expected ',' after float total bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);

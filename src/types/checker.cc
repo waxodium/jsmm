@@ -1222,13 +1222,24 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
                  annotation->floatExpBits > 0 &&
                  annotation->floatMantBits > 0) {
         // Advanced: float<totalBits, expBits, mantBits, signed>
+        const std::size_t valueBits =
+            annotation->floatExpBits + annotation->floatMantBits +
+            (annotation->floatSigned ? 1ULL : 0ULL);
+        if (annotation->floatTotalBits < valueBits) {
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_FLOAT_LAYOUT_INVALID,
+              "float<" + std::to_string(annotation->floatTotalBits) + ", " +
+                  std::to_string(annotation->floatExpBits) + ", " +
+                  std::to_string(annotation->floatMantBits) + ", " +
+                  (annotation->floatSigned ? "true" : "false") + ">: totalBits (" +
+                  std::to_string(annotation->floatTotalBits) + ") must be at least expBits + mantBits + sign (" +
+                  std::to_string(valueBits) + ")",
+              annotation->range}};
+        }
         type = typeContext_.floatType(annotation->floatTotalBits,
                                       annotation->floatExpBits,
                                       annotation->floatMantBits,
                                       annotation->floatSigned);
-      } else if (annotation->floatTotalBits > 0) {
-        // Basic: float<bits>
-        type = typeContext_.floatTypeBasic(annotation->floatTotalBits);
       } else {
         // float<> default 64-bit IEEE 754
         type = typeContext_.floatType();

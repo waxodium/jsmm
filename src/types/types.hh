@@ -47,6 +47,7 @@ struct Type {
   std::size_t floatTotalBits = 0;
   std::size_t floatExpBits = 0;
   std::size_t floatMantBits = 0;
+  std::size_t floatPadBits = 0;
   bool floatSigned = true;
 };
 
@@ -71,7 +72,6 @@ public:
   TypePtr integerType(std::size_t bits, bool isSigned);
   TypePtr floatType(std::size_t totalBits, std::size_t expBits, std::size_t mantBits, bool signedVal);
   TypePtr floatType();
-  TypePtr floatTypeBasic(std::size_t bits);
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();

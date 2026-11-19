@@ -360,6 +360,13 @@ llvm::Value *IrGenerator::unpackFloatFromLayout(llvm::Value *bits, types::TypePt
   return builder_->CreateBitCast(dbits, llvm::Type::getDoubleTy(*context_));
 }
 
+// Round an f64 cell value to the target float bit-layout, simulating hardware
+// rounding at the declared width. Returns the rounded f64 cell.
+llvm::Value *IrGenerator::roundFloatToLayout(llvm::Value *value, types::TypePtr type) const {
+  if (type == nullptr || type->kind != TypeKind::Float) return value;
+  return unpackFloatFromLayout(packFloatToLayout(value, type), type);
+}
+
 IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePtr type) const {
   const TypePtr resolved = resolve(type);
   const types::TypeLayout layout = types::layoutOf(resolved);
@@ -1401,10 +1408,30 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
     if (binary.op == "+") return rawValue(builder_->CreateAdd(asRaw(left), offset));
     if (binary.op == "-") return rawValue(builder_->CreateSub(asRaw(left), offset));
   }
-  if (binary.op == "+") return EmitValue{builder_->CreateFAdd(left.value, right.value), true};
-  if (binary.op == "-") return EmitValue{builder_->CreateFSub(left.value, right.value), true};
-  if (binary.op == "*") return EmitValue{builder_->CreateFMul(left.value, right.value), true};
-  if (binary.op == "/") return EmitValue{builder_->CreateFDiv(left.value, right.value), true};
+  if (binary.op == "+") {
+    llvm::Value *result = builder_->CreateFAdd(left.value, right.value);
+    if (leftType != nullptr && leftType->kind == TypeKind::Float)
+      result = roundFloatToLayout(result, leftType);
+    return EmitValue{result, true};
+  }
+  if (binary.op == "-") {
+    llvm::Value *result = builder_->CreateFSub(left.value, right.value);
+    if (leftType != nullptr && leftType->kind == TypeKind::Float)
+      result = roundFloatToLayout(result, leftType);
+    return EmitValue{result, true};
+  }
+  if (binary.op == "*") {
+    llvm::Value *result = builder_->CreateFMul(left.value, right.value);
+    if (leftType != nullptr && leftType->kind == TypeKind::Float)
+      result = roundFloatToLayout(result, leftType);
+    return EmitValue{result, true};
+  }
+  if (binary.op == "/") {
+    llvm::Value *result = builder_->CreateFDiv(left.value, right.value);
+    if (leftType != nullptr && leftType->kind == TypeKind::Float)
+      result = roundFloatToLayout(result, leftType);
+    return EmitValue{result, true};
+  }
   if (binary.op == "%")
     return EmitValue{builder_->CreateCall(moduloFunction(), {left.value, right.value}), true};
   throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
