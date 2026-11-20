@@ -4,6 +4,7 @@
 #include "types/substitution.hh"
 #include "types/unifier.hh"
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -11,6 +12,44 @@
 #include <vector>
 
 namespace jsmm::types {
+
+namespace {
+
+TypePtr integerLiteralType(TypeContext &context, const std::string &spelling) {
+  unsigned long long value = 0;
+  const char *text = spelling.c_str();
+  char *end = nullptr;
+  bool parsed = true;
+  if (spelling.size() > 2 && text[0] == '0' &&
+      (text[1] == 'x' || text[1] == 'X' || text[1] == 'b' || text[1] == 'B' ||
+       text[1] == 'o' || text[1] == 'O')) {
+    if (text[1] == 'x' || text[1] == 'X') {
+      value = std::strtoull(text + 2, &end, 16);
+      parsed = end == text + spelling.size();
+    } else if (text[1] == 'b' || text[1] == 'B') {
+      for (std::size_t index = 2; index < spelling.size(); ++index) {
+        if (spelling[index] != '0' && spelling[index] != '1') {
+          parsed = false;
+          break;
+        }
+        value = value * 2ULL + static_cast<unsigned long long>(spelling[index] - '0');
+      }
+    } else {
+      value = std::strtoull(text + 2, &end, 8);
+      parsed = end == text + spelling.size();
+    }
+  } else {
+    value = std::strtoull(text, &end, 10);
+    parsed = end == text + spelling.size();
+  }
+  if (!parsed) return context.integerType(32, true);
+  if (value <= 0x7FFFFFFFULL) return context.integerType(32, true);
+  if (value <= 0xFFFFFFFFULL) return context.integerType(32, false);
+  if (value <= 0x7FFFFFFFFFFFFFFFULL) return context.integerType(64, true);
+  return context.integerType(64, false);
+}
+
+} // namespace
 
 bool Checker::isNumber(TypePtr type) const {
   type = resolve(std::move(type));
@@ -458,7 +497,7 @@ TypePtr Checker::inferExpression(const reader::ExprPtr &expr) {
                    spelling.find('e') == std::string::npos &&
                    spelling.find('E') == std::string::npos)
             floating = false;
-          return floating ? typeContext_.floatType() : typeContext_.integerType(32, true);
+          return floating ? typeContext_.floatType() : integerLiteralType(typeContext_, spelling);
         } else if constexpr (std::is_same_v<T, reader::StringLiteralExpr>) {
           return stringType();
         } else if constexpr (std::is_same_v<T, reader::BytesLiteralExpr>) {
@@ -535,8 +574,12 @@ TypePtr Checker::inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr
     if (!requireNumeric(operand))
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, unary.op, expr->range}};
-    annotations_.argumentTypes.insert_or_assign(expr.get(), operand);
     const TypePtr resolved = resolve(operand);
+    if (unary.op == "~" && resolved != nullptr &&
+        (resolved->kind == TypeKind::Float || resolved->kind == TypeKind::Number))
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, unary.op, expr->range}};
+    annotations_.argumentTypes.insert_or_assign(expr.get(), operand);
     return isNumber(resolved) ? resolved : numberType();
   }
   if (unary.op == "+") {
@@ -662,26 +705,33 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
 
   if (binary.op == "&" || binary.op == "|" || binary.op == "^" || binary.op == "<<" ||
       binary.op == ">>") {
+    const TypePtr resolvedLeft = resolve(left);
+    const TypePtr resolvedRight = resolve(right);
+    const auto integerKind = [](TypeKind kind) {
+      return kind == TypeKind::Integer || kind == TypeKind::Byte;
+    };
+    if (resolvedLeft != nullptr && integerKind(resolvedLeft->kind)) {
+      if (resolvedRight != nullptr && !integerKind(resolvedRight->kind) &&
+          resolvedRight->kind != TypeKind::Variable)
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op,
+                                expr->range}};
+      return resolvedLeft;
+    }
+    if (resolvedRight != nullptr && integerKind(resolvedRight->kind)) {
+      if (resolvedLeft != nullptr && resolvedLeft->kind != TypeKind::Variable)
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op,
+                                expr->range}};
+      return numberType();
+    }
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
-    const TypePtr resolvedLeft = resolve(left);
-    const TypePtr resolvedRight = resolve(right);
     if (resolvedLeft == nullptr || resolvedRight == nullptr ||
         resolvedLeft->kind != resolvedRight->kind)
       throw errors::ErrorException{errors::ErrorStatus{
           errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
-    if (resolvedLeft->kind == TypeKind::Integer &&
-        (resolvedLeft->length != resolvedRight->length ||
-         resolvedLeft->isSigned != resolvedRight->isSigned))
-      throw errors::ErrorException{errors::ErrorStatus{
-          errors::ErrorCode::TYPE_CANNOT_UNIFY, binary.op, expr->range}};
-    if (!requireNumeric(left) || !requireNumeric(right))
-      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
-                                                        binary.op, expr->range}};
-    const TypePtr rl = resolve(left);
-    if (rl != nullptr && (rl->kind == TypeKind::Integer || rl->kind == TypeKind::Byte))
-      return rl;
     return numberType();
   }
 

@@ -94,6 +94,10 @@ private:
   EmitValue cellFromInteger(llvm::Value *bits, bool unsignedValue) const;
   unsigned bitwiseWidth(types::TypePtr type) const;
   llvm::Value *toInt64(EmitValue value) const;
+  llvm::Value *toI64(EmitValue value, bool unsignedValue) const;
+  llvm::Value *toF64(EmitValue value, types::TypePtr type) const;
+  bool isFloatValue(types::TypePtr type) const;
+  llvm::IntegerType *nativeIntType(types::TypePtr type) const;
   llvm::Value *fpToI64(llvm::Value *fpValue) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
@@ -138,6 +142,7 @@ private:
   llvm::Function *allocFunction();
   llvm::Function *stringWriter();
   llvm::Function *numberWriter();
+  llvm::Function *integerWriter();
   llvm::Function *boolWriter();
   llvm::Function *nullWriter();
   llvm::Function *lbracketWriter();

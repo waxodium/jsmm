@@ -719,6 +719,50 @@ jsmm_number_one:
   .quad 0x3ff0000000000000
 )ASM";
 
+constexpr const char *integerWriterText = R"ASM(.section .text
+.globl jsmm_write_int
+jsmm_write_int:
+  push rbx
+  push r12
+  sub rsp, 40
+  mov rbx, rsp
+  mov rax, rdi
+  mov r8, rsi
+  xor r9d, r9d
+  test r8, r8
+  jz jsmm_int_write_magnitude
+  test rax, rax
+  jns jsmm_int_write_magnitude
+  mov r9d, 1
+  neg rax
+jsmm_int_write_magnitude:
+  lea rdi, [rbx + 32]
+  mov r11, 10
+jsmm_int_write_loop:
+  xor edx, edx
+  div r11
+  add dl, 48
+  dec rdi
+  mov byte ptr [rdi], dl
+  test rax, rax
+  jnz jsmm_int_write_loop
+  test r9, r9
+  jz jsmm_int_write_emit
+  dec rdi
+  mov byte ptr [rdi], 45
+jsmm_int_write_emit:
+  lea rdx, [rbx + 32]
+  sub rdx, rdi
+  mov rsi, rdi
+  mov eax, 1
+  mov edi, 1
+  syscall
+  add rsp, 40
+  pop r12
+  pop rbx
+  ret
+)ASM";
+
 } // namespace
 
 void registerPlatformHelpers(HelperRegistry &registry) {
@@ -740,6 +784,7 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);
   registry.declare("number_writer", numberWriterText);
+  registry.declare("integer_writer", integerWriterText);
 }
 
 } // namespace jsmm::emit

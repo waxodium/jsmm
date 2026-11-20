@@ -27,6 +27,7 @@ std::unique_ptr<llvm::Module> createRuntimeModule(llvm::LLVMContext &context) {
   helpers.use("literals");
   helpers.use("literal_writers");
   helpers.use("number_writer");
+  helpers.use("integer_writer");
 
   auto module = std::make_unique<llvm::Module>("jsmm.runtime", context);
   module->setModuleInlineAsm(std::string(".intel_syntax noprefix\n") + helpers.assemble());
