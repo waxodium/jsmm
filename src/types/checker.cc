@@ -609,6 +609,12 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
+    const TypePtr rl = resolve(left);
+    const TypePtr rr = resolve(right);
+    if (rl != nullptr && (rl->kind == TypeKind::Float || rr->kind == TypeKind::Float))
+      return rl->kind == TypeKind::Float ? rl : rr;
+    if (rl != nullptr && (rl->kind == TypeKind::Integer || rl->kind == TypeKind::Byte))
+      return rl;
     return numberType();
   }
 
@@ -632,6 +638,12 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
       throw errors::ErrorException{
           errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                binary.op, expr->range}};
+    const TypePtr rl = resolve(left);
+    const TypePtr rr = resolve(right);
+    if (rl != nullptr && (rl->kind == TypeKind::Float || rr->kind == TypeKind::Float))
+      return rl->kind == TypeKind::Float ? rl : rr;
+    if (rl != nullptr && (rl->kind == TypeKind::Integer || rl->kind == TypeKind::Byte))
+      return rl;
     return numberType();
   }
 
@@ -667,6 +679,9 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                         binary.op, expr->range}};
+    const TypePtr rl = resolve(left);
+    if (rl != nullptr && (rl->kind == TypeKind::Integer || rl->kind == TypeKind::Byte))
+      return rl;
     return numberType();
   }
 

@@ -85,6 +85,7 @@ private:
   llvm::Constant *i64(std::uint64_t value) const;
   llvm::Constant *i32(std::uint64_t value) const;
   EmitValue numberValue(double value) const;
+  EmitValue integerValue(int64_t value) const;
   EmitValue rawValue(llvm::Value *value) const;
   llvm::Value *asRaw(EmitValue value) const;
   llvm::Value *toInt32(llvm::Value *value, bool unsignedValue = false) const;
@@ -127,7 +128,7 @@ private:
   Slot *lookupSlot(const std::string &name);
   long long allocateSlot();
   llvm::AllocaInst *slotAlloca(long long index, types::TypePtr type);
-  llvm::AllocaInst *createEntryAlloca();
+  llvm::AllocaInst *createEntryAlloca(types::TypePtr type);
 
   llvm::GlobalVariable *internString(const std::string &text);
   llvm::GlobalVariable *globalFor(const std::string &name, types::TypePtr type);
@@ -235,6 +236,10 @@ private:
   llvm::Value *vaCountSlot_ = nullptr;     // hidden variadic count parameter slot
   llvm::Value *vaCountValue_ = nullptr;    // direct va_count argument value
   llvm::Value *vaArraySlot_ = nullptr;     // va_array pointer (shadow array)
+  llvm::Value *fatPtrSlot_ = nullptr;      // hidden fat.ptr slot
+  llvm::Value *fatLenSlot_ = nullptr;      // hidden fat.len slot
+  llvm::Value *fatPtrValue_ = nullptr;     // fat.ptr value
+  llvm::Value *fatLenValue_ = nullptr;     // fat.len value
   std::vector<Loop> loops_;
   std::vector<Label> labels_;
   std::string pendingLoopLabel_;

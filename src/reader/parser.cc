@@ -540,8 +540,19 @@ Statement Parser::parseFunctionDeclaration() {
         fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
       const Token parameter = consume();
       if (parameter.lexeme == "...") {
+        // Check if this is "...T" fat pointer syntax (e.g., int ...nums)
+        if (index_ < tokens_.size() && tokens_[index_].kind == TokenKind::Identifier && parameterAnnotation != nullptr) {
+          // "...T" syntax: use the type from parameterAnnotation and identifier as name
+          // Mark as variadic so checker allows variable arguments
+          function.parameters.push_back(
+            {tokens_[index_].lexeme, SourceRange{parameter.start, parameter.end},
+             std::move(parameterAnnotation), true});
+          consume();  // consume the identifier token
+          break;  // exit the do-while loop
+        }
+        // Bare "..." variadic parameter - must be last
         function.parameters.push_back(
-            {"...", SourceRange{parameter.start, parameter.end}, nullptr, true});
+          {"...", SourceRange{parameter.start, parameter.end}, nullptr, true});
         if (eat(","))
           fail("a variadic parameter must be the last parameter",
                errors::ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST);
