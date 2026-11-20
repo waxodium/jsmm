@@ -50,8 +50,7 @@ bool parseInteger(const std::string &spelling, int64_t &out) {
   const char *str = spelling.c_str();
   char *end = nullptr;
   if (spelling.size() > 2 && str[0] == '0') {
-    if (str[1] == 'x' || str[1] == 'X')
-      val = std::strtoull(const_cast<char *>(str + 2), &end, 16);
+    if (str[1] == 'x' || str[1] == 'X') val = std::strtoull(const_cast<char *>(str + 2), &end, 16);
     else if (str[1] == 'b' || str[1] == 'B') {
       val = 0;
       for (std::size_t index = 2; index < spelling.size(); ++index)
@@ -64,8 +63,7 @@ bool parseInteger(const std::string &spelling, int64_t &out) {
   } else {
     val = std::strtoull(const_cast<char *>(str), &end, 10);
   }
-  if (end != str + spelling.size())
-    return false;
+  if (end != str + spelling.size()) return false;
   out = static_cast<int64_t>(val);
   return true;
 }
@@ -172,19 +170,16 @@ llvm::Value *IrGenerator::toInt64(EmitValue value) const {
 }
 
 llvm::Value *IrGenerator::toSizedInteger(llvm::Value *value, llvm::IntegerType *type,
-                                        bool unsignedValue) const {
-  llvm::Value *wide =
-      builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
-                                              : llvm::Intrinsic::fptosi_sat,
-                                {i64Type_, doubleType_}, {value});
+                                         bool unsignedValue) const {
+  llvm::Value *wide = builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
+                                                              : llvm::Intrinsic::fptosi_sat,
+                                                {i64Type_, doubleType_}, {value});
   return builder_->CreateTrunc(wide, type);
 }
 
-IrGenerator::EmitValue IrGenerator::cellFromInteger(llvm::Value *bits,
-                                                    bool unsignedValue) const {
+IrGenerator::EmitValue IrGenerator::cellFromInteger(llvm::Value *bits, bool unsignedValue) const {
   if (unsignedValue) return EmitValue{builder_->CreateUIToFP(bits, doubleType_), true};
-  return EmitValue{builder_->CreateSIToFP(builder_->CreateSExt(bits, i64Type_), doubleType_),
-                   true};
+  return EmitValue{builder_->CreateSIToFP(builder_->CreateSExt(bits, i64Type_), doubleType_), true};
 }
 
 unsigned IrGenerator::bitwiseWidth(types::TypePtr type) const {
@@ -227,13 +222,10 @@ llvm::Value *IrGenerator::toI64(EmitValue value, bool unsignedValue) const {
 }
 
 llvm::Value *IrGenerator::toInt32(llvm::Value *value, bool unsignedValue) const {
-  if (value->getType()->isIntegerTy()) {
-    return builder_->CreateTrunc(value, i32Type_);
-  }
-  llvm::Value *wide =
-      builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
-                                              : llvm::Intrinsic::fptosi_sat,
-                                {i64Type_, doubleType_}, {value});
+  if (value->getType()->isIntegerTy()) { return builder_->CreateTrunc(value, i32Type_); }
+  llvm::Value *wide = builder_->CreateIntrinsic(unsignedValue ? llvm::Intrinsic::fptoui_sat
+                                                              : llvm::Intrinsic::fptosi_sat,
+                                                {i64Type_, doubleType_}, {value});
   return builder_->CreateTrunc(wide, i32Type_);
 }
 
@@ -302,23 +294,20 @@ llvm::Value *IrGenerator::packFloatToLayout(llvm::Value *value, types::TypePtr t
   llvm::Value *isZero = builder_->CreateICmpEQ(exp, i64(0));
   llvm::Value *isSpecial = builder_->CreateICmpEQ(exp, i64(0x7FF)); // inf or nan
 
-  const std::uint64_t targetBias =
-      (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
+  const std::uint64_t targetBias = (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
   llvm::Value *bias = i64(targetBias);
   llvm::Value *expFieldMax = i64((std::uint64_t(1) << expBits) - 1);
   llvm::Value *mantFieldMask = i64(((std::uint64_t(1) << mantBits) - 1));
 
   // unbiased exponent, then add target bias
-  llvm::Value *newExp =
-      builder_->CreateAdd(builder_->CreateSub(exp, i64(1023)), bias);
+  llvm::Value *newExp = builder_->CreateAdd(builder_->CreateSub(exp, i64(1023)), bias);
 
   llvm::Value *newMant;
   if (mantBits <= 52) {
     const std::size_t shift = 52 - mantBits;
     newMant = shift == 0 ? mant : builder_->CreateLShr(mant, i64(shift));
     if (shift > 0) {
-      llvm::Value *remainder =
-          builder_->CreateAnd(mant, i64((std::uint64_t(1) << shift) - 1));
+      llvm::Value *remainder = builder_->CreateAnd(mant, i64((std::uint64_t(1) << shift) - 1));
       llvm::Value *half = i64(std::uint64_t(1) << (shift - 1));
       llvm::Value *roundUp = builder_->CreateOr(
           builder_->CreateICmpUGT(remainder, half),
@@ -356,8 +345,8 @@ llvm::Value *IrGenerator::packFloatToLayout(llvm::Value *value, types::TypePtr t
         builder_->CreateOr(builder_->CreateShl(i64(1), i64(mantBits - 1)), i64(1));
     llvm::Value *isNaN = builder_->CreateAnd(isSpecial, builder_->CreateICmpNE(mant, i64(0)));
     newExp = builder_->CreateSelect(isSpecial, expFieldMax, newExp);
-    newMant = builder_->CreateSelect(
-        isSpecial, builder_->CreateSelect(isNaN, nanMant, i64(0)), newMant);
+    newMant =
+        builder_->CreateSelect(isSpecial, builder_->CreateSelect(isNaN, nanMant, i64(0)), newMant);
   } else {
     newExp = builder_->CreateSelect(isSpecial, expFieldMax, newExp);
   }
@@ -381,16 +370,12 @@ llvm::Value *IrGenerator::unpackFloatFromLayout(llvm::Value *bits, types::TypePt
 
   llvm::Value *mantMask = i64(((std::uint64_t(1) << mantBits) - 1));
   llvm::Value *mant = builder_->CreateAnd(b, mantMask);
-  llvm::Value *exp =
-      builder_->CreateAnd(builder_->CreateLShr(b, i64(mantBits)),
-                          i64((std::uint64_t(1) << expBits) - 1));
+  llvm::Value *exp = builder_->CreateAnd(builder_->CreateLShr(b, i64(mantBits)),
+                                         i64((std::uint64_t(1) << expBits) - 1));
   llvm::Value *sign = i64(0);
-  if (signedVal) {
-    sign = builder_->CreateLShr(b, i64(mantBits + expBits));
-  }
+  if (signedVal) { sign = builder_->CreateLShr(b, i64(mantBits + expBits)); }
 
-  const std::uint64_t targetBias =
-      (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
+  const std::uint64_t targetBias = (expBits >= 1) ? ((std::uint64_t(1) << (expBits - 1)) - 1) : 0;
   llvm::Value *bias = i64(targetBias);
   llvm::Value *expFieldMax = i64((std::uint64_t(1) << expBits) - 1);
 
@@ -418,9 +403,7 @@ llvm::Value *IrGenerator::unpackFloatFromLayout(llvm::Value *bits, types::TypePt
 
   llvm::Value *dbits = dMant;
   dbits = builder_->CreateOr(dbits, builder_->CreateShl(dExp, i64(52)));
-  if (signedVal) {
-    dbits = builder_->CreateOr(dbits, builder_->CreateShl(sign, i64(63)));
-  }
+  if (signedVal) { dbits = builder_->CreateOr(dbits, builder_->CreateShl(sign, i64(63))); }
   return builder_->CreateBitCast(dbits, llvm::Type::getDoubleTy(*context_));
 }
 
@@ -457,8 +440,7 @@ IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePt
   if (resolved != nullptr && resolved->kind == TypeKind::Number)
     return EmitValue{builder_->CreateBitCast(bits, doubleType_), true};
   // Integers and bytes: return native i64 extended value (number=false).
-  if (isNumber(resolved))
-    return EmitValue{bits, false};
+  if (isNumber(resolved)) return EmitValue{bits, false};
   // Everything else: raw value.
   return EmitValue{bits, false};
 }
@@ -478,8 +460,7 @@ void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePt
     } else if (resolved != nullptr && resolved->kind == TypeKind::Float) {
       // Pack the f64 cell into the target float bit-layout.
       bits = packFloatToLayout(value.value, resolved);
-      if (layout.size < 8)
-        bits = builder_->CreateTrunc(bits, storageType(resolved));
+      if (layout.size < 8) bits = builder_->CreateTrunc(bits, storageType(resolved));
     } else {
       // Integer or Byte: value is already an i64 extended value (number=false).
       // Truncate to native storage width and store.
@@ -567,10 +548,9 @@ llvm::GlobalVariable *IrGenerator::globalFor(const std::string &name, types::Typ
   std::uint64_t alignment = layout.defined ? layout.alignment : 8;
   if (alignment > 8) alignment = 8;
   if (alignment == 0) alignment = 1;
-  auto *global = new llvm::GlobalVariable(*module_, storage, false,
-                                          llvm::GlobalValue::InternalLinkage,
-                                          llvm::ConstantInt::get(storage, 0, false),
-                                          "jsmm.g." + name);
+  auto *global =
+      new llvm::GlobalVariable(*module_, storage, false, llvm::GlobalValue::InternalLinkage,
+                               llvm::ConstantInt::get(storage, 0, false), "jsmm.g." + name);
   global->setAlignment(llvm::Align(alignment));
   global->setDSOLocal(true);
   globals_[name] = global;
@@ -756,9 +736,8 @@ llvm::Value *IrGenerator::emitUnionEquality(EmitValue left, types::TypePtr leftT
         (resolved->kind == TypeKind::Integer || resolved->kind == TypeKind::Byte) &&
         unionTagFor(resolved) == unionTagNumber) {
       const bool unsignedValue = resolved->kind == TypeKind::Integer && !resolved->isSigned;
-      llvm::Value *asDouble = unsignedValue
-                                  ? builder_->CreateUIToFP(value.value, doubleType_)
-                                  : builder_->CreateSIToFP(value.value, doubleType_);
+      llvm::Value *asDouble = unsignedValue ? builder_->CreateUIToFP(value.value, doubleType_)
+                                            : builder_->CreateSIToFP(value.value, doubleType_);
       return builder_->CreateBitCast(asDouble, i64Type_);
     }
     return asRaw(value);
@@ -953,20 +932,19 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
   if (origin->kind == TypeKind::Null) return emitZeroValue(target);
   if (origin->kind == TypeKind::Boolean && target->kind != TypeKind::Boolean) {
     llvm::Value *truthy =
-        value.number
-            ? builder_->CreateFCmpONE(value.value, llvm::ConstantFP::get(doubleType_, 0.0))
-            : builder_->CreateICmpNE(asRaw(value), i64(0));
-    return coerce(destination, types_->number(),
-                  EmitValue{builder_->CreateSIToFP(builder_->CreateZExt(truthy, i64Type_),
-                                                   doubleType_),
-                            true});
+        value.number ? builder_->CreateFCmpONE(value.value, llvm::ConstantFP::get(doubleType_, 0.0))
+                     : builder_->CreateICmpNE(asRaw(value), i64(0));
+    return coerce(
+        destination, types_->number(),
+        EmitValue{builder_->CreateSIToFP(builder_->CreateZExt(truthy, i64Type_), doubleType_),
+                  true});
   }
   if (target->kind == TypeKind::Integer || target->kind == TypeKind::Byte) {
     const bool unsignedValue = target->kind == TypeKind::Integer && !target->isSigned;
     llvm::IntegerType *narrow = nativeIntType(target);
     llvm::Value *bits = builder_->CreateTrunc(toI64(value, unsignedValue), narrow);
-    bits = unsignedValue ? builder_->CreateZExt(bits, i64Type_)
-                         : builder_->CreateSExt(bits, i64Type_);
+    bits =
+        unsignedValue ? builder_->CreateZExt(bits, i64Type_) : builder_->CreateSExt(bits, i64Type_);
     return EmitValue{bits, false};
   }
   if (target->kind == TypeKind::Number) {
@@ -1002,8 +980,7 @@ IrGenerator::EmitValue IrGenerator::convertArrayToBytes(EmitValue value, types::
   const std::uint64_t stride = elementSize(elementType);
   llvm::Value *arrayBase = asRaw(value);
   llvm::Value *length = builder_->CreateLoad(i64Type_, bytePointer(arrayBase, 0));
-  llvm::Value *base =
-      builder_->CreateCall(allocFunction(), {builder_->CreateAdd(i64(8), length)});
+  llvm::Value *base = builder_->CreateCall(allocFunction(), {builder_->CreateAdd(i64(8), length)});
   builder_->CreateStore(length, bytePointer(base, 0));
   llvm::BasicBlock *preheader = builder_->GetInsertBlock();
   llvm::BasicBlock *condition = createBlock("bytes.convert.cond");
@@ -1015,10 +992,10 @@ IrGenerator::EmitValue IrGenerator::convertArrayToBytes(EmitValue value, types::
   index->addIncoming(i64(0), preheader);
   builder_->CreateCondBr(builder_->CreateICmpULT(index, length), body, end);
   builder_->SetInsertPoint(body);
-  EmitValue element = loadSlot(
-      dynamicPointer(arrayBase,
-                     builder_->CreateAdd(i64(8), builder_->CreateMul(index, i64(stride)))),
-      elementType);
+  EmitValue element =
+      loadSlot(dynamicPointer(arrayBase,
+                              builder_->CreateAdd(i64(8), builder_->CreateMul(index, i64(stride)))),
+               elementType);
   llvm::Value *numeric = isNumber(elementType) ? toInt32(element.value) : asRaw(element);
   builder_->CreateStore(builder_->CreateTrunc(numeric, i8Type_),
                         dynamicPointer(base, builder_->CreateAdd(i64(8), index)));
@@ -1067,6 +1044,7 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           generateDeclaration(node);
         } else if constexpr (std::is_same_v<T, reader::ExpressionStatement>) {
           if (node.expression != nullptr) (void)generateExpression(node.expression);
+        } else if constexpr (std::is_same_v<T, reader::DirectiveStatement>) {
         } else if constexpr (std::is_same_v<T, reader::FunctionDeclaration>) {
         } else if constexpr (std::is_same_v<T, reader::ReturnStatement>) {
           EmitValue value = rawValue(i64(0));
@@ -1151,9 +1129,8 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
             const types::TypePtr caseType = typeOf(node.cases[clause].value);
             const bool caseText = isText(caseType);
             if (caseText != textDiscriminant)
-              throw errors::ErrorException{
-                  errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "case",
-                                      node.cases[clause].range}};
+              throw errors::ErrorException{errors::ErrorStatus{
+                  errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, "case", node.cases[clause].range}};
             llvm::Value *match = nullptr;
             if (caseText) {
               match = stringEquals(asRaw(discriminant),
@@ -1163,11 +1140,11 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
               // Compare discriminants and case values using appropriate type.
               const TypePtr discType = resolve(discriminantType);
               const TypePtr caseTypeResolved = resolve(caseType);
-              const bool discIsFloat = discType != nullptr &&
-                  (discType->kind == TypeKind::Float || discType->kind == TypeKind::Number);
-              const bool caseIsFloat = caseTypeResolved != nullptr &&
-                  (caseTypeResolved->kind == TypeKind::Float ||
-                   caseTypeResolved->kind == TypeKind::Number);
+              const bool discIsFloat = discType != nullptr && (discType->kind == TypeKind::Float ||
+                                                               discType->kind == TypeKind::Number);
+              const bool caseIsFloat =
+                  caseTypeResolved != nullptr && (caseTypeResolved->kind == TypeKind::Float ||
+                                                  caseTypeResolved->kind == TypeKind::Number);
               if (discIsFloat || caseIsFloat) {
                 // Convert both to f64 for comparison.
                 auto toF64 = [&](EmitValue v) -> llvm::Value * {
@@ -1186,15 +1163,14 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
           }
           builder_->SetInsertPoint(testBlock);
           builder_->CreateBr(defaultBlock);
-          loops_.push_back(
-              Loop{endBlock, loops_.empty() ? nullptr : loops_.back().continueBlock});
+          loops_.push_back(Loop{endBlock, loops_.empty() ? nullptr : loops_.back().continueBlock});
           beginScope();
           for (std::size_t clause = 0; clause < node.cases.size(); ++clause) {
             builder_->SetInsertPoint(clauseBlocks[clause]);
             generateStatements(node.cases[clause].statements);
             if (!terminated())
               builder_->CreateBr(clause + 1 < node.cases.size() ? clauseBlocks[clause + 1]
-                                                               : endBlock);
+                                                                : endBlock);
           }
           endScope();
           loops_.pop_back();
@@ -1270,17 +1246,14 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
                    spelling.find('e') == std::string::npos &&
                    spelling.find('E') == std::string::npos)
             floating = false;
-          if (floating)
-            return numberValue(parseNumber(spelling));
+          if (floating) return numberValue(parseNumber(spelling));
           int64_t intVal = 0;
-          if (parseInteger(spelling, intVal))
-            return integerValue(intVal);
+          if (parseInteger(spelling, intVal)) return integerValue(intVal);
           return numberValue(parseNumber(spelling));
         } else if constexpr (std::is_same_v<T, reader::StringLiteralExpr>) {
           return rawValue(builder_->CreatePtrToInt(internString(node.value), i64Type_));
         } else if constexpr (std::is_same_v<T, reader::BytesLiteralExpr>) {
-          return copyText(
-              rawValue(builder_->CreatePtrToInt(internString(node.value), i64Type_)));
+          return copyText(rawValue(builder_->CreatePtrToInt(internString(node.value), i64Type_)));
         } else if constexpr (std::is_same_v<T, reader::BooleanLiteralExpr>) {
           return rawValue(i64(node.value ? 1 : 0));
         } else if constexpr (std::is_same_v<T, reader::NullLiteralExpr>) {
@@ -1390,7 +1363,8 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
 
           // Zero-initialize all slots
           for (std::size_t index = 0; index < arraySize; ++index) {
-            EmitValue zero = emitZeroValue(elementType != nullptr ? elementType : types_->nullType());
+            EmitValue zero =
+                emitZeroValue(elementType != nullptr ? elementType : types_->nullType());
             storeSlot(bytePointer(base, 8 + stride * index), zero, elementType);
           }
 
@@ -1405,8 +1379,7 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           // Store designated initializers
           for (const auto &desig : node.designated) {
             EmitValue value = generateExpression(desig.value);
-            if (elementType != nullptr)
-              value = coerce(elementType, typeOf(desig.value), value);
+            if (elementType != nullptr) value = coerce(elementType, typeOf(desig.value), value);
             storeSlot(bytePointer(base, 8 + stride * desig.index), value, elementType);
           }
           return rawValue(base);
@@ -1434,8 +1407,7 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
     llvm::Value *operandBits =
         operand.number ? builder_->CreateBitCast(operand.value, i64Type_) : operand.value;
     llvm::IntegerType *operandIntType = nativeIntType(operandType);
-    llvm::Value *inverted =
-        builder_->CreateNot(builder_->CreateTrunc(operandBits, operandIntType));
+    llvm::Value *inverted = builder_->CreateNot(builder_->CreateTrunc(operandBits, operandIntType));
     const bool unsignedValue =
         operandType != nullptr && operandType->kind == TypeKind::Integer && !operandType->isSigned;
     llvm::Value *result = unsignedValue ? builder_->CreateZExt(inverted, i64Type_)
@@ -1445,8 +1417,8 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
   if (unary.op == "-") {
     EmitValue operand = generateExpression(unary.operand);
     const TypePtr operandType = resolve(typeOf(unary.operand));
-    if (operandType != nullptr && (operandType->kind == TypeKind::Float ||
-                                   operandType->kind == TypeKind::Number))
+    if (operandType != nullptr &&
+        (operandType->kind == TypeKind::Float || operandType->kind == TypeKind::Number))
       return EmitValue{builder_->CreateFNeg(operand.value), true};
     llvm::IntegerType *intType = nativeIntType(operandType);
     llvm::Value *negated = builder_->CreateNeg(builder_->CreateTrunc(operand.value, intType));
@@ -1459,8 +1431,8 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
   if (unary.op == "+") {
     EmitValue operand = generateExpression(unary.operand);
     const TypePtr operandType = resolve(typeOf(unary.operand));
-    if (operandType != nullptr && (operandType->kind == TypeKind::Float ||
-                                   operandType->kind == TypeKind::Number))
+    if (operandType != nullptr &&
+        (operandType->kind == TypeKind::Float || operandType->kind == TypeKind::Number))
       return EmitValue{operand.value, true};
     return operand;
   }
@@ -1478,14 +1450,14 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
 
       // Start with payload as default
       llvm::Value *result = payloadText;
-      result = builder_->CreateSelect(
-          builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), boolText, result);
-      result = builder_->CreateSelect(
-          builder_->CreateICmpEQ(tag, i64(unionTagString)), stringText, result);
-      result = builder_->CreateSelect(
-          builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numberText, result);
-      result = builder_->CreateSelect(
-          builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullText, result);
+      result = builder_->CreateSelect(builder_->CreateICmpEQ(tag, i64(unionTagBoolean)), boolText,
+                                      result);
+      result = builder_->CreateSelect(builder_->CreateICmpEQ(tag, i64(unionTagString)), stringText,
+                                      result);
+      result = builder_->CreateSelect(builder_->CreateICmpEQ(tag, i64(unionTagNumber)), numberText,
+                                      result);
+      result =
+          builder_->CreateSelect(builder_->CreateICmpEQ(tag, i64(unionTagNull)), nullText, result);
       return rawValue(result);
     }
     return rawValue(builder_->CreatePtrToInt(internString(typeofName(operandType)), i64Type_));
@@ -1499,8 +1471,7 @@ IrGenerator::EmitValue IrGenerator::generateUnary(const reader::UnaryExpr &unary
 }
 
 IrGenerator::EmitValue IrGenerator::generateBinary(const reader::BinaryExpr &binary) {
-  if (binary.op == "==" || binary.op == "!=")
-    return generateEquality(binary);
+  if (binary.op == "==" || binary.op == "!=") return generateEquality(binary);
   if (binary.op == "&&" || binary.op == "||") return generateLogical(binary);
   if (binary.op == "+") {
     const TypePtr leftType = resolve(typeOf(binary.left));
@@ -1523,10 +1494,10 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   if (leftType != nullptr && leftType->kind == TypeKind::Pointer) {
     if (rightType != nullptr && rightType->kind == TypeKind::Pointer) {
       llvm::Value *difference = builder_->CreateSub(asRaw(left), asRaw(right));
-      return EmitValue{builder_->CreateSIToFP(
-                           builder_->CreateSDiv(difference, i64(elementSize(leftType->pointed))),
-                           doubleType_),
-                       true};
+      return EmitValue{
+          builder_->CreateSIToFP(
+              builder_->CreateSDiv(difference, i64(elementSize(leftType->pointed))), doubleType_),
+          true};
     }
     llvm::Value *offset = builder_->CreateMul(toInt64(right), i64(elementSize(leftType->pointed)));
     if (binary.op == "+") return rawValue(builder_->CreateAdd(asRaw(left), offset));
@@ -1534,13 +1505,11 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   }
   if (binary.op == "+") {
     if (isFloatValue(leftType) || isFloatValue(rightType)) {
-      llvm::Value *result =
-          builder_->CreateFAdd(toF64(left, leftType), toF64(right, rightType));
-      const TypePtr floatType = leftType != nullptr && leftType->kind == TypeKind::Float
-                                    ? leftType
-                                    : (rightType != nullptr && rightType->kind == TypeKind::Float
-                                           ? rightType
-                                           : nullptr);
+      llvm::Value *result = builder_->CreateFAdd(toF64(left, leftType), toF64(right, rightType));
+      const TypePtr floatType =
+          leftType != nullptr && leftType->kind == TypeKind::Float
+              ? leftType
+              : (rightType != nullptr && rightType->kind == TypeKind::Float ? rightType : nullptr);
       if (floatType != nullptr) result = roundFloatToLayout(result, floatType);
       return EmitValue{result, true};
     }
@@ -1556,13 +1525,11 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   }
   if (binary.op == "-") {
     if (isFloatValue(leftType) || isFloatValue(rightType)) {
-      llvm::Value *result =
-          builder_->CreateFSub(toF64(left, leftType), toF64(right, rightType));
-      const TypePtr floatType = leftType != nullptr && leftType->kind == TypeKind::Float
-                                    ? leftType
-                                    : (rightType != nullptr && rightType->kind == TypeKind::Float
-                                           ? rightType
-                                           : nullptr);
+      llvm::Value *result = builder_->CreateFSub(toF64(left, leftType), toF64(right, rightType));
+      const TypePtr floatType =
+          leftType != nullptr && leftType->kind == TypeKind::Float
+              ? leftType
+              : (rightType != nullptr && rightType->kind == TypeKind::Float ? rightType : nullptr);
       if (floatType != nullptr) result = roundFloatToLayout(result, floatType);
       return EmitValue{result, true};
     }
@@ -1578,13 +1545,11 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   }
   if (binary.op == "*") {
     if (isFloatValue(leftType) || isFloatValue(rightType)) {
-      llvm::Value *result =
-          builder_->CreateFMul(toF64(left, leftType), toF64(right, rightType));
-      const TypePtr floatType = leftType != nullptr && leftType->kind == TypeKind::Float
-                                    ? leftType
-                                    : (rightType != nullptr && rightType->kind == TypeKind::Float
-                                           ? rightType
-                                           : nullptr);
+      llvm::Value *result = builder_->CreateFMul(toF64(left, leftType), toF64(right, rightType));
+      const TypePtr floatType =
+          leftType != nullptr && leftType->kind == TypeKind::Float
+              ? leftType
+              : (rightType != nullptr && rightType->kind == TypeKind::Float ? rightType : nullptr);
       if (floatType != nullptr) result = roundFloatToLayout(result, floatType);
       return EmitValue{result, true};
     }
@@ -1600,13 +1565,11 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
   }
   if (binary.op == "/") {
     if (isFloatValue(leftType) || isFloatValue(rightType)) {
-      llvm::Value *result =
-          builder_->CreateFDiv(toF64(left, leftType), toF64(right, rightType));
-      const TypePtr floatType = leftType != nullptr && leftType->kind == TypeKind::Float
-                                    ? leftType
-                                    : (rightType != nullptr && rightType->kind == TypeKind::Float
-                                           ? rightType
-                                           : nullptr);
+      llvm::Value *result = builder_->CreateFDiv(toF64(left, leftType), toF64(right, rightType));
+      const TypePtr floatType =
+          leftType != nullptr && leftType->kind == TypeKind::Float
+              ? leftType
+              : (rightType != nullptr && rightType->kind == TypeKind::Float ? rightType : nullptr);
       if (floatType != nullptr) result = roundFloatToLayout(result, floatType);
       return EmitValue{result, true};
     }
@@ -1615,21 +1578,19 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
     llvm::Value *r = builder_->CreateTrunc(right.value, intType);
     const bool unsignedValue =
         leftType != nullptr && leftType->kind == TypeKind::Integer && !leftType->isSigned;
-    llvm::Value *result = unsignedValue ? builder_->CreateUDiv(l, r)
-                                        : builder_->CreateSDiv(l, r);
+    llvm::Value *result = unsignedValue ? builder_->CreateUDiv(l, r) : builder_->CreateSDiv(l, r);
     result = unsignedValue ? builder_->CreateZExt(result, i64Type_)
                            : builder_->CreateSExt(result, i64Type_);
     return EmitValue{result, false};
   }
   if (binary.op == "%") {
     if (isFloatValue(leftType) || isFloatValue(rightType)) {
-      llvm::Value *result = builder_->CreateCall(
-          moduloFunction(), {toF64(left, leftType), toF64(right, rightType)});
-      const TypePtr floatType = leftType != nullptr && leftType->kind == TypeKind::Float
-                                    ? leftType
-                                    : (rightType != nullptr && rightType->kind == TypeKind::Float
-                                           ? rightType
-                                           : nullptr);
+      llvm::Value *result =
+          builder_->CreateCall(moduloFunction(), {toF64(left, leftType), toF64(right, rightType)});
+      const TypePtr floatType =
+          leftType != nullptr && leftType->kind == TypeKind::Float
+              ? leftType
+              : (rightType != nullptr && rightType->kind == TypeKind::Float ? rightType : nullptr);
       if (floatType != nullptr) result = roundFloatToLayout(result, floatType);
       return EmitValue{result, true};
     }
@@ -1638,21 +1599,19 @@ IrGenerator::EmitValue IrGenerator::generateArithmetic(const reader::BinaryExpr 
     llvm::Value *r = builder_->CreateTrunc(right.value, intType);
     const bool unsignedValue =
         leftType != nullptr && leftType->kind == TypeKind::Integer && !leftType->isSigned;
-    llvm::Value *result = unsignedValue ? builder_->CreateURem(l, r)
-                                        : builder_->CreateSRem(l, r);
+    llvm::Value *result = unsignedValue ? builder_->CreateURem(l, r) : builder_->CreateSRem(l, r);
     result = unsignedValue ? builder_->CreateZExt(result, i64Type_)
                            : builder_->CreateSExt(result, i64Type_);
     return EmitValue{result, false};
   }
-  throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
-                                                   binary.op, {}}};
+  throw errors::ErrorException{
+      errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, binary.op, {}}};
 }
 
 IrGenerator::EmitValue IrGenerator::generateStringConcat(const reader::BinaryExpr &binary) {
   EmitValue left = generateExpression(binary.left);
   EmitValue right = generateExpression(binary.right);
-  llvm::Value *result =
-      builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)});
+  llvm::Value *result = builder_->CreateCall(stringConcatFunction(), {asRaw(left), asRaw(right)});
   return rawValue(result);
 }
 
@@ -1662,39 +1621,38 @@ IrGenerator::EmitValue IrGenerator::generateBitwise(const reader::BinaryExpr &bi
 }
 
 IrGenerator::EmitValue IrGenerator::emitBitwiseOperation(const std::string &op, EmitValue left,
-                                                        EmitValue right,
-                                                        types::TypePtr leftType) {
+                                                         EmitValue right, types::TypePtr leftType) {
   const TypePtr operandType = resolve(leftType);
-  const bool unsignedOperands = operandType != nullptr && operandType->kind == TypeKind::Integer &&
-                                !operandType->isSigned;
+  const bool unsignedOperands =
+      operandType != nullptr && operandType->kind == TypeKind::Integer && !operandType->isSigned;
   llvm::IntegerType *operandIntType = nativeIntType(operandType);
-  llvm::Value *leftBits =
-      left.number ? builder_->CreateBitCast(left.value, i64Type_) : left.value;
+  llvm::Value *leftBits = left.number ? builder_->CreateBitCast(left.value, i64Type_) : left.value;
   llvm::Value *rightBits =
       right.number ? builder_->CreateBitCast(right.value, i64Type_) : right.value;
   llvm::Value *leftValue = builder_->CreateTrunc(leftBits, operandIntType);
   llvm::Value *rightValue = builder_->CreateTrunc(rightBits, operandIntType);
-  const bool signedResult = operandType != nullptr &&
-      (operandType->kind == TypeKind::Byte ||
-       (operandType->kind == TypeKind::Integer && operandType->isSigned));
+  const bool signedResult =
+      operandType != nullptr && (operandType->kind == TypeKind::Byte ||
+                                 (operandType->kind == TypeKind::Integer && operandType->isSigned));
   if (op == "<<" || op == ">>") {
     llvm::Value *count = builder_->CreateAnd(
         rightValue, llvm::ConstantInt::get(operandIntType, operandIntType->getBitWidth() - 1));
-    llvm::Value *shifted = op == "<<"
-                               ? builder_->CreateShl(leftValue, count)
-                               : (unsignedOperands ? builder_->CreateLShr(leftValue, count)
-                                                   : builder_->CreateAShr(leftValue, count));
+    llvm::Value *shifted = op == "<<" ? builder_->CreateShl(leftValue, count)
+                                      : (unsignedOperands ? builder_->CreateLShr(leftValue, count)
+                                                          : builder_->CreateAShr(leftValue, count));
     llvm::Value *result = signedResult ? builder_->CreateSExt(shifted, i64Type_)
                                        : builder_->CreateZExt(shifted, i64Type_);
     return EmitValue{result, false};
   }
   llvm::Value *result = nullptr;
   if (op == "&") result = builder_->CreateAnd(leftValue, rightValue);
-  else if (op == "|") result = builder_->CreateOr(leftValue, rightValue);
-  else if (op == "^") result = builder_->CreateXor(leftValue, rightValue);
+  else if (op == "|")
+    result = builder_->CreateOr(leftValue, rightValue);
+  else if (op == "^")
+    result = builder_->CreateXor(leftValue, rightValue);
   else
-    throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
-                                                     op, {}}};
+    throw errors::ErrorException{
+        errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, op, {}}};
   llvm::Value *extended = signedResult ? builder_->CreateSExt(result, i64Type_)
                                        : builder_->CreateZExt(result, i64Type_);
   return EmitValue{extended, false};
@@ -1730,22 +1688,23 @@ IrGenerator::EmitValue IrGenerator::generateRelational(const reader::BinaryExpr 
         comparison = builder_->CreateFCmpOGE(lhs, rhs);
     } else {
       // Integer comparison at native width (signed/unsigned).
-      const bool signedNum = ltype != nullptr &&
-          (ltype->kind == TypeKind::Byte ||
-           (ltype->kind == TypeKind::Integer && ltype->isSigned));
+      const bool signedNum =
+          ltype != nullptr &&
+          (ltype->kind == TypeKind::Byte || (ltype->kind == TypeKind::Integer && ltype->isSigned));
       llvm::Value *lhs = asRaw(left);
       llvm::Value *rhs = asRaw(right);
-      if (binary.op == "<") comparison = signedNum ? builder_->CreateICmpSLT(lhs, rhs)
-                                                    : builder_->CreateICmpULT(lhs, rhs);
+      if (binary.op == "<")
+        comparison =
+            signedNum ? builder_->CreateICmpSLT(lhs, rhs) : builder_->CreateICmpULT(lhs, rhs);
       else if (binary.op == ">")
-        comparison = signedNum ? builder_->CreateICmpSGT(lhs, rhs)
-                               : builder_->CreateICmpUGT(lhs, rhs);
+        comparison =
+            signedNum ? builder_->CreateICmpSGT(lhs, rhs) : builder_->CreateICmpUGT(lhs, rhs);
       else if (binary.op == "<=")
-        comparison = signedNum ? builder_->CreateICmpSLE(lhs, rhs)
-                               : builder_->CreateICmpULE(lhs, rhs);
+        comparison =
+            signedNum ? builder_->CreateICmpSLE(lhs, rhs) : builder_->CreateICmpULE(lhs, rhs);
       else
-        comparison = signedNum ? builder_->CreateICmpSGE(lhs, rhs)
-                               : builder_->CreateICmpUGE(lhs, rhs);
+        comparison =
+            signedNum ? builder_->CreateICmpSGE(lhs, rhs) : builder_->CreateICmpUGE(lhs, rhs);
     }
   } else {
     llvm::Value *lhs = asRaw(left);
@@ -1822,14 +1781,12 @@ bool IrGenerator::byteElement(const reader::ExprPtr &expression) const {
 }
 
 IrGenerator::EmitValue IrGenerator::loadByteElement(llvm::Value *address) const {
-  llvm::Value *value =
-      builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_));
+  llvm::Value *value = builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_));
   return EmitValue{builder_->CreateSExt(value, i64Type_), false};
 }
 
 IrGenerator::EmitValue IrGenerator::loadStringByteElement(llvm::Value *address) const {
-  llvm::Value *value =
-      builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_));
+  llvm::Value *value = builder_->CreateLoad(i8Type_, builder_->CreateIntToPtr(address, ptrType_));
   return EmitValue{builder_->CreateZExt(value, i64Type_), false};
 }
 
@@ -1867,14 +1824,13 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       resolvedTarget->kind == TypeKind::Pointer) {
     const std::string pointerOp = assignment.op.substr(0, assignment.op.size() - 1);
     if (pointerOp != "+" && pointerOp != "-")
-      throw errors::ErrorException{errors::ErrorStatus{
-          errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, assignment.op, assignment.left->range}};
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       assignment.op, assignment.left->range}};
     EmitValue current = loadSlot(address, targetType);
     llvm::Value *offset =
         builder_->CreateMul(toInt64(value), i64(elementSize(resolvedTarget->pointed)));
-    EmitValue result = rawValue(pointerOp == "+"
-                                    ? builder_->CreateAdd(asRaw(current), offset)
-                                    : builder_->CreateSub(asRaw(current), offset));
+    EmitValue result = rawValue(pointerOp == "+" ? builder_->CreateAdd(asRaw(current), offset)
+                                                 : builder_->CreateSub(asRaw(current), offset));
     storeSlot(address, result, targetType);
     return result;
   }
@@ -1892,20 +1848,23 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
   if (assignment.op != "=") {
     EmitValue current = byteTarget ? loadByteElement(address) : loadSlot(address, targetType);
     const std::string op = assignment.op.substr(0, assignment.op.size() - 1);
-    const bool targetIsFloat = resolvedTarget != nullptr &&
+    const bool targetIsFloat =
+        resolvedTarget != nullptr &&
         (resolvedTarget->kind == TypeKind::Float || resolvedTarget->kind == TypeKind::Number);
     const bool targetUnsigned = resolvedTarget != nullptr &&
-        resolvedTarget->kind == TypeKind::Integer && !resolvedTarget->isSigned;
+                                resolvedTarget->kind == TypeKind::Integer &&
+                                !resolvedTarget->isSigned;
     if (op == "+") {
       if (targetIsFloat)
-        value = EmitValue{
-            builder_->CreateFAdd(toF64(current, targetType), toF64(value, valueType)), true};
+        value = EmitValue{builder_->CreateFAdd(toF64(current, targetType), toF64(value, valueType)),
+                          true};
       else {
         llvm::IntegerType *intType = nativeIntType(resolvedTarget);
         llvm::Value *l = builder_->CreateTrunc(toI64(current, targetUnsigned), intType);
         llvm::Value *r = builder_->CreateTrunc(toI64(value, targetUnsigned), intType);
         llvm::Value *result = builder_->CreateAdd(l, r);
-        const bool signedNum = resolvedTarget != nullptr &&
+        const bool signedNum =
+            resolvedTarget != nullptr &&
             (resolvedTarget->kind == TypeKind::Byte ||
              (resolvedTarget->kind == TypeKind::Integer && resolvedTarget->isSigned));
         result = signedNum ? builder_->CreateSExt(result, i64Type_)
@@ -1914,14 +1873,15 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       }
     } else if (op == "-") {
       if (targetIsFloat)
-        value = EmitValue{
-            builder_->CreateFSub(toF64(current, targetType), toF64(value, valueType)), true};
+        value = EmitValue{builder_->CreateFSub(toF64(current, targetType), toF64(value, valueType)),
+                          true};
       else {
         llvm::IntegerType *intType = nativeIntType(resolvedTarget);
         llvm::Value *l = builder_->CreateTrunc(toI64(current, targetUnsigned), intType);
         llvm::Value *r = builder_->CreateTrunc(toI64(value, targetUnsigned), intType);
         llvm::Value *result = builder_->CreateSub(l, r);
-        const bool signedNum = resolvedTarget != nullptr &&
+        const bool signedNum =
+            resolvedTarget != nullptr &&
             (resolvedTarget->kind == TypeKind::Byte ||
              (resolvedTarget->kind == TypeKind::Integer && resolvedTarget->isSigned));
         result = signedNum ? builder_->CreateSExt(result, i64Type_)
@@ -1930,14 +1890,15 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       }
     } else if (op == "*") {
       if (targetIsFloat)
-        value = EmitValue{
-            builder_->CreateFMul(toF64(current, targetType), toF64(value, valueType)), true};
+        value = EmitValue{builder_->CreateFMul(toF64(current, targetType), toF64(value, valueType)),
+                          true};
       else {
         llvm::IntegerType *intType = nativeIntType(resolvedTarget);
         llvm::Value *l = builder_->CreateTrunc(toI64(current, targetUnsigned), intType);
         llvm::Value *r = builder_->CreateTrunc(toI64(value, targetUnsigned), intType);
         llvm::Value *result = builder_->CreateMul(l, r);
-        const bool signedNum = resolvedTarget != nullptr &&
+        const bool signedNum =
+            resolvedTarget != nullptr &&
             (resolvedTarget->kind == TypeKind::Byte ||
              (resolvedTarget->kind == TypeKind::Integer && resolvedTarget->isSigned));
         result = signedNum ? builder_->CreateSExt(result, i64Type_)
@@ -1946,36 +1907,35 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
       }
     } else if (op == "/") {
       if (targetIsFloat)
-        value = EmitValue{
-            builder_->CreateFDiv(toF64(current, targetType), toF64(value, valueType)), true};
+        value = EmitValue{builder_->CreateFDiv(toF64(current, targetType), toF64(value, valueType)),
+                          true};
       else {
         llvm::IntegerType *intType = nativeIntType(resolvedTarget);
         llvm::Value *l = builder_->CreateTrunc(toI64(current, targetUnsigned), intType);
         llvm::Value *r = builder_->CreateTrunc(toI64(value, targetUnsigned), intType);
-        const bool signedNum = resolvedTarget != nullptr &&
+        const bool signedNum =
+            resolvedTarget != nullptr &&
             (resolvedTarget->kind == TypeKind::Byte ||
              (resolvedTarget->kind == TypeKind::Integer && resolvedTarget->isSigned));
-        llvm::Value *result = signedNum ? builder_->CreateSDiv(l, r)
-                                        : builder_->CreateUDiv(l, r);
+        llvm::Value *result = signedNum ? builder_->CreateSDiv(l, r) : builder_->CreateUDiv(l, r);
         result = signedNum ? builder_->CreateSExt(result, i64Type_)
                            : builder_->CreateZExt(result, i64Type_);
         value = EmitValue{result, false};
       }
     } else if (op == "%") {
       if (targetIsFloat)
-        value = EmitValue{builder_->CreateCall(
-                              moduloFunction(),
-                              {toF64(current, targetType), toF64(value, valueType)}),
+        value = EmitValue{builder_->CreateCall(moduloFunction(), {toF64(current, targetType),
+                                                                  toF64(value, valueType)}),
                           true};
       else {
         llvm::IntegerType *intType = nativeIntType(resolvedTarget);
         llvm::Value *l = builder_->CreateTrunc(toI64(current, targetUnsigned), intType);
         llvm::Value *r = builder_->CreateTrunc(toI64(value, targetUnsigned), intType);
-        const bool signedNum = resolvedTarget != nullptr &&
+        const bool signedNum =
+            resolvedTarget != nullptr &&
             (resolvedTarget->kind == TypeKind::Byte ||
              (resolvedTarget->kind == TypeKind::Integer && resolvedTarget->isSigned));
-        llvm::Value *result = signedNum ? builder_->CreateSRem(l, r)
-                                        : builder_->CreateURem(l, r);
+        llvm::Value *result = signedNum ? builder_->CreateSRem(l, r) : builder_->CreateURem(l, r);
         result = signedNum ? builder_->CreateSExt(result, i64Type_)
                            : builder_->CreateZExt(result, i64Type_);
         value = EmitValue{result, false};
@@ -1991,8 +1951,7 @@ IrGenerator::EmitValue IrGenerator::generateAssignment(const reader::AssignmentE
   }
 
   value = coerce(targetType, valueType, value);
-  if (byteTarget)
-    storeByteElement(address, value);
+  if (byteTarget) storeByteElement(address, value);
   else
     storeSlot(address, value, targetType);
   return value;
@@ -2022,8 +1981,7 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
 
   if (member.computedFlag) {
     // Check if this is a range expression (slicing)
-    if (const auto *rangeExpr =
-            std::get_if<reader::RangeExpr>(&member.computed->node)) {
+    if (const auto *rangeExpr = std::get_if<reader::RangeExpr>(&member.computed->node)) {
       // String or bytes slicing: obj[start:end]
       if (objectType == nullptr ||
           (objectType->kind != TypeKind::String && objectType->kind != TypeKind::Bytes))
@@ -2046,14 +2004,14 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
       llvm::Value *startOk = builder_->CreateICmpULT(startIdx, length);
       llvm::Value *endOk = builder_->CreateICmpULE(endIdx, length);
       llvm::Value *startLeEnd = builder_->CreateICmpSLE(startIdx, endIdx);
-      llvm::Value *boundsOk =
-          builder_->CreateAnd(builder_->CreateAnd(startOk, endOk), startLeEnd);
+      llvm::Value *boundsOk = builder_->CreateAnd(builder_->CreateAnd(startOk, endOk), startLeEnd);
 
       builder_->CreateCondBr(boundsOk, okBlock, oobBlock);
 
       builder_->SetInsertPoint(oobBlock);
       builder_->CreateCall(boundsFunction());
-      builder_->CreateBr(endBlock);      builder_->SetInsertPoint(okBlock);
+      builder_->CreateBr(endBlock);
+      builder_->SetInsertPoint(okBlock);
       llvm::Value *sliceLen = builder_->CreateSub(endIdx, startIdx);
       llvm::Value *sourceBytes = builder_->CreateAdd(base, builder_->CreateAdd(i64(8), startIdx));
 
@@ -2069,8 +2027,8 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
       builder_->SetInsertPoint(endBlock);
       llvm::PHINode *ptrPhi = builder_->CreatePHI(i64Type_, 2, "slice.ptr");
       ptrPhi->addIncoming(resultDesc, okBlock);
-      ptrPhi->addIncoming(builder_->CreatePtrToInt(builder_->CreateIntToPtr(i64(0), ptrType_), i64Type_),
-                          oobBlock);
+      ptrPhi->addIncoming(
+          builder_->CreatePtrToInt(builder_->CreateIntToPtr(i64(0), ptrType_), i64Type_), oobBlock);
       return ptrPhi;
     }
 
@@ -2140,8 +2098,8 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&call.callee->node)) {
     const std::string &name = identifier->name;
     // Math builtins handled directly for inline comparison/select operations
-    if (name == "min" || name == "max" || name == "abs" || name == "floor" ||
-        name == "ceil" || name == "round") {
+    if (name == "min" || name == "max" || name == "abs" || name == "floor" || name == "ceil" ||
+        name == "round") {
       if (call.arguments.size() != 1 && call.arguments.size() != 2) {
         lastValue_ = rawValue(i64(0));
         return lastValue_;
@@ -2159,9 +2117,8 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
         llvm::Value *lv = left.value;
         llvm::Value *rv = right.value;
         llvm::Value *cmp = builder_->CreateFCmpOLT(lv, rv);
-        llvm::Value *selected = builder_->CreateSelect(cmp,
-            name == "min" ? lv : rv,
-            name == "min" ? rv : lv);
+        llvm::Value *selected =
+            builder_->CreateSelect(cmp, name == "min" ? lv : rv, name == "min" ? rv : lv);
         lastValue_ = EmitValue{selected, true};
         return lastValue_;
       } else if (name == "abs") {
@@ -2176,28 +2133,28 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
       } else if (name == "floor") {
         EmitValue arg = generateExpression(call.arguments[0]);
         llvm::Value *av = arg.value;
-        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
+        llvm::Value *trunc =
+            builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
         llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
         llvm::Value *isNeg = builder_->CreateFCmpOLT(av, llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *hasFrac = builder_->CreateFCmpONE(av, truncD);
-        llvm::Value *adjust = builder_->CreateSelect(
-            builder_->CreateAnd(isNeg, hasFrac),
-            llvm::ConstantFP::get(doubleType_, 1.0),
-            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *adjust = builder_->CreateSelect(builder_->CreateAnd(isNeg, hasFrac),
+                                                     llvm::ConstantFP::get(doubleType_, 1.0),
+                                                     llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *floored = builder_->CreateFSub(truncD, adjust);
         lastValue_ = EmitValue{floored, true};
         return lastValue_;
       } else if (name == "ceil") {
         EmitValue arg = generateExpression(call.arguments[0]);
         llvm::Value *av = arg.value;
-        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
+        llvm::Value *trunc =
+            builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {av});
         llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
         llvm::Value *isPos = builder_->CreateFCmpOGT(av, llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *hasFrac = builder_->CreateFCmpONE(av, truncD);
-        llvm::Value *adjust = builder_->CreateSelect(
-            builder_->CreateAnd(isPos, hasFrac),
-            llvm::ConstantFP::get(doubleType_, 1.0),
-            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *adjust = builder_->CreateSelect(builder_->CreateAnd(isPos, hasFrac),
+                                                     llvm::ConstantFP::get(doubleType_, 1.0),
+                                                     llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *ceiled = builder_->CreateFAdd(truncD, adjust);
         lastValue_ = EmitValue{ceiled, true};
         return lastValue_;
@@ -2205,14 +2162,14 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
         EmitValue arg = generateExpression(call.arguments[0]);
         llvm::Value *av = arg.value;
         llvm::Value *plus = builder_->CreateFAdd(av, llvm::ConstantFP::get(doubleType_, 0.5));
-        llvm::Value *trunc = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {plus});
+        llvm::Value *trunc =
+            builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_}, {plus});
         llvm::Value *truncD = builder_->CreateSIToFP(trunc, doubleType_);
         llvm::Value *isNeg = builder_->CreateFCmpOLT(plus, llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *hasFrac = builder_->CreateFCmpONE(plus, truncD);
-        llvm::Value *adjust = builder_->CreateSelect(
-            builder_->CreateAnd(isNeg, hasFrac),
-            llvm::ConstantFP::get(doubleType_, 1.0),
-            llvm::ConstantFP::get(doubleType_, 0.0));
+        llvm::Value *adjust = builder_->CreateSelect(builder_->CreateAnd(isNeg, hasFrac),
+                                                     llvm::ConstantFP::get(doubleType_, 1.0),
+                                                     llvm::ConstantFP::get(doubleType_, 0.0));
         llvm::Value *rounded = builder_->CreateFSub(truncD, adjust);
         lastValue_ = EmitValue{rounded, true};
         return lastValue_;
@@ -2276,8 +2233,8 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
     // (not bitcast) so the callee can correctly interpret via SIToFP/UIToFP.
     llvm::Value *rawArg;
     if (index >= fixedParameters && argument.number) {
-      rawArg = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat,
-                                         {i64Type_, doubleType_}, {argument.value});
+      rawArg = builder_->CreateIntrinsic(llvm::Intrinsic::fptosi_sat, {i64Type_, doubleType_},
+                                         {argument.value});
     } else {
       rawArg = asRaw(argument);
     }
@@ -2290,7 +2247,8 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
     for (std::size_t index = fixedParameters; index < call.arguments.size(); ++index) {
       TypePtr argType = typeOf(call.arguments[index]);
       if (argType && isBytes(argType)) slotCount += 2;
-      else slotCount += 1;
+      else
+        slotCount += 1;
     }
     // Allocate shadow array with slotCount entries
     llvm::Value *shadowArray = builder_->CreateAlloca(i64Type_, i64(slotCount));
@@ -2318,7 +2276,7 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
     }
     // Insert hidden params right after fixed JSmm params
     arguments.insert(arguments.begin() + fixedParameters,
-                     i64(slotCount));    // hidden va_count (slot count)
+                     i64(slotCount)); // hidden va_count (slot count)
     arguments.insert(arguments.begin() + fixedParameters + 1,
                      builder_->CreateBitCast(shadowArray, ptrType_)); // hidden va_array pointer
   }
@@ -2326,14 +2284,12 @@ IrGenerator::EmitValue IrGenerator::generateCall(const reader::ExprPtr &expressi
   // va_array pointer is ptr. Variadic args go into ... (not fixed params).
   std::vector<llvm::Type *> callParamTypes;
   callParamTypes.reserve(fixedParameters + (isVariadic ? 2 : 0));
-  for (std::size_t index = 0; index < fixedParameters; ++index)
-    callParamTypes.push_back(i64Type_);
+  for (std::size_t index = 0; index < fixedParameters; ++index) callParamTypes.push_back(i64Type_);
   if (isVariadic) {
-    callParamTypes.push_back(i64Type_);   // va_count
-    callParamTypes.push_back(ptrType_);   // va_array pointer
+    callParamTypes.push_back(i64Type_); // va_count
+    callParamTypes.push_back(ptrType_); // va_array pointer
   }
-  llvm::FunctionType *functionType = llvm::FunctionType::get(
-      i64Type_, callParamTypes, isVariadic);
+  llvm::FunctionType *functionType = llvm::FunctionType::get(i64Type_, callParamTypes, isVariadic);
   llvm::Value *callResult = builder_->CreateCall(functionType, functionPointer, arguments);
   return asTyped(callResult, target->result);
 }
@@ -2381,8 +2337,8 @@ LoweredModule IrGenerator::generate(const reader::Program &program,
         }
       }
       if (isVariadic) {
-        parameters.push_back(i64Type_);   // hidden va_count
-        parameters.push_back(ptrType_);   // hidden va_array pointer
+        parameters.push_back(i64Type_); // hidden va_count
+        parameters.push_back(ptrType_); // hidden va_array pointer
       }
       llvm::FunctionType *signature = llvm::FunctionType::get(i64Type_, parameters, isVariadic);
       llvm::Function *function = llvm::Function::Create(signature, llvm::Function::ExternalLinkage,
@@ -2477,8 +2433,7 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   if (functionType != nullptr && functionType->isVariadic) {
     auto argument = function->arg_begin();
     // Skip fixed JSmm params to reach fat_ptr and fat_len
-    for (std::size_t i = 0; i < jsmmFixedCount; ++i)
-        ++argument;
+    for (std::size_t i = 0; i < jsmmFixedCount; ++i) ++argument;
     fatPtrValue_ = &*argument;
     ++argument;
     fatLenValue_ = &*argument;
@@ -2499,10 +2454,9 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
     llvm::Value *retVal = stored;
     if (returnType_ != nullptr && returnType_->kind == TypeKind::Float) {
       retVal = builder_->CreateBitCast(unpackFloatFromLayout(stored, returnType_), i64Type_);
-    } else if (returnType_ != nullptr && (returnType_->kind == TypeKind::Integer ||
-                                          returnType_->kind == TypeKind::Byte)) {
-      const bool signedNum =
-          returnType_->kind == TypeKind::Byte || returnType_->isSigned;
+    } else if (returnType_ != nullptr &&
+               (returnType_->kind == TypeKind::Integer || returnType_->kind == TypeKind::Byte)) {
+      const bool signedNum = returnType_->kind == TypeKind::Byte || returnType_->isSigned;
       retVal = signedNum ? builder_->CreateSExt(stored, i64Type_)
                          : builder_->CreateZExt(stored, i64Type_);
     } else if (stored->getType() != i64Type_) {
@@ -2555,19 +2509,15 @@ IrGenerator::EmitValue IrGenerator::coerceI64ToType(llvm::Value *i64val, types::
   if (type == nullptr) return rawValue(i64val);
   switch (type->kind) {
   case TypeKind::Pointer: return rawValue(i64val);
-  case TypeKind::Number:
-    return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
+  case TypeKind::Number: return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
   case TypeKind::Byte:
-  case TypeKind::Integer:
-    return EmitValue{i64val, false};
+  case TypeKind::Integer: return EmitValue{i64val, false};
   case TypeKind::Float: {
     // Reinterpret the low totalBits bits of the cell as the packed float layout.
     return EmitValue{unpackFloatFromLayout(i64val, type), true};
   }
-  case TypeKind::Boolean:
-    return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
-  default:
-    return rawValue(i64val);
+  case TypeKind::Boolean: return EmitValue{builder_->CreateSIToFP(i64val, doubleType_), true};
+  default: return rawValue(i64val);
   }
 }
 
@@ -2643,8 +2593,7 @@ void IrGenerator::emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr 
   llvm::Value *total = toInt64(length);
   llvm::Value *destinationBase = asRaw(destination);
   llvm::Value *fillValue = toInt64(fill);
-  llvm::Value *result =
-      builder_->CreateCall(memsetFunction(), {destinationBase, fillValue, total});
+  llvm::Value *result = builder_->CreateCall(memsetFunction(), {destinationBase, fillValue, total});
   lastValue_ = rawValue(result);
 }
 
@@ -2656,8 +2605,7 @@ void IrGenerator::emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
   llvm::Value *total = toInt64(length);
   llvm::Value *aBase = asRaw(baseA);
   llvm::Value *bBase = asRaw(baseB);
-  llvm::Value *result =
-      builder_->CreateCall(memcmpFunction(), {aBase, bBase, total});
+  llvm::Value *result = builder_->CreateCall(memcmpFunction(), {aBase, bBase, total});
   lastValue_ = EmitValue{builder_->CreateSIToFP(result, doubleType_), true};
 }
 void IrGenerator::declareHelper(std::string, std::string) {}
@@ -2685,12 +2633,11 @@ void IrGenerator::emitFormatValue(IrGenerator::EmitValue value, types::TypePtr t
     return;
   }
   switch (type->kind) {
-  case TypeKind::Number:
-    builder_->CreateCall(numberWriter(), {value.value}); break;
+  case TypeKind::Number: builder_->CreateCall(numberWriter(), {value.value}); break;
   case TypeKind::Integer:
   case TypeKind::Byte: {
-    const bool signedNum = type->kind == TypeKind::Byte ||
-        (type->kind == TypeKind::Integer && type->isSigned);
+    const bool signedNum =
+        type->kind == TypeKind::Byte || (type->kind == TypeKind::Integer && type->isSigned);
     builder_->CreateCall(integerWriter(), {toI64(value, false), i64(signedNum ? 1 : 0)});
     break;
   }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "builtins/builtin.hh"
+#include "mode/config.hh"
+#include "mode/mode.hh"
 #include "reader/ast.hh"
 #include "types/types.hh"
 
@@ -112,6 +114,11 @@ private:
   bool isBytes(TypePtr type) const;
   bool isText(TypePtr type) const;
   bool requireNumeric(TypePtr type);
+  void requireCapability(bool enabled, std::string_view feature,
+                         const reader::SourceRange &range);
+  const mode::Capabilities &capabilities() const {
+    return mode::policyFor(mode_).capabilities;
+  }
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
   bool sameFunctionSignature(TypePtr left, TypePtr right);
   bool holdsFunctionValue(TypePtr type);
@@ -138,6 +145,7 @@ private:
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
   std::vector<std::function<void()>> deferredChecks_;
   std::vector<TypePtr> inferenceVariables_;
+  mode::Mode mode_ = mode::kDefaultMode;
   BuiltinInference builtinInference_{*this};
   TypeContext typeContext_;
   Annotations annotations_;

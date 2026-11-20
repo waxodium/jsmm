@@ -1,7 +1,10 @@
 #pragma once
 
+#include "mode/mode.hh"
+
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -229,44 +232,26 @@ struct ExpressionStatement {
   SourceRange range{};
 };
 
+struct DirectiveStatement {
+  mode::Mode mode;
+  SourceRange range{};
+};
+
 // The expression type wrapper: carries a typed node plus source range.
 struct Expression {
-  std::variant<
-    NumberLiteralExpr,
-    StringLiteralExpr,
-    BytesLiteralExpr,
-    IdentifierExpr,
-    CallExpr,
-    UnaryExpr,
-    AddressOfExpr,
-    DereferenceExpr,
-    BinaryExpr,
-    AssignmentExpr,
-    MemberExpr,
-    ObjectExpr,
-    ArrayExpr,
-    BooleanLiteralExpr,
-    NullLiteralExpr,
-    TypeOperandExpr,
-    RangeExpr
-  > node;
+  std::variant<NumberLiteralExpr, StringLiteralExpr, BytesLiteralExpr, IdentifierExpr, CallExpr,
+               UnaryExpr, AddressOfExpr, DereferenceExpr, BinaryExpr, AssignmentExpr, MemberExpr,
+               ObjectExpr, ArrayExpr, BooleanLiteralExpr, NullLiteralExpr, TypeOperandExpr,
+               RangeExpr>
+      node;
   SourceRange range{};
 };
 
 struct Statement {
-  std::variant<
-    BlockStatement,
-    VariableDeclaration,
-    FunctionDeclaration,
-    ExpressionStatement,
-    IfStatement,
-    WhileStatement,
-    SwitchStatement,
-    BreakStatement,
-    ContinueStatement,
-    ReturnStatement,
-    LabeledStatement
-  > node;
+  std::variant<BlockStatement, VariableDeclaration, FunctionDeclaration, ExpressionStatement,
+               IfStatement, WhileStatement, SwitchStatement, BreakStatement, ContinueStatement,
+               ReturnStatement, LabeledStatement, DirectiveStatement>
+      node;
   SourceRange range{};
 };
 

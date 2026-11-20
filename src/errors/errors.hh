@@ -37,6 +37,7 @@ enum class ErrorCode : std::uint16_t {
   PARSE_MISSING_SEMICOLON,
   PARSE_UNEXPECTED_TOKEN_AFTER_BREAK,
   PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE,
+  PARSE_UNKNOWN_MODE_DIRECTIVE,
 
   TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL,
   TYPE_RETURN_OUTSIDE_FUNCTION,
@@ -59,6 +60,7 @@ enum class ErrorCode : std::uint16_t {
   TYPE_TYPE_OPERAND_EXPECTED,
   TYPE_TYPE_OPERAND_HAS_NO_LAYOUT,
   TYPE_TYPE_USED_AS_VALUE,
+  TYPE_UNSAFE_MODE_REQUIRED,
 
   CODEGEN_UNKNOWN_RUNTIME_HELPER,
   CODEGEN_TARGET_UNAVAILABLE,
@@ -82,138 +84,92 @@ enum class ErrorCode : std::uint16_t {
 
 constexpr std::string_view errorMessage(ErrorCode code) {
   switch (code) {
-    case ErrorCode::PARSE_UNEXPECTED_END_OF_INPUT:
-      return "unexpected end of input";
-    case ErrorCode::PARSE_EXPECTED_BINDING_NAME:
-      return "expected binding name";
-    case ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER:
-      return "const declaration requires an initializer";
-    case ErrorCode::PARSE_EXPECTED_FUNCTION_NAME:
-      return "expected function name";
-    case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME:
-      return "expected '(' after function name";
-    case ErrorCode::PARSE_EXPECTED_PARAMETER_NAME:
-      return "expected parameter name";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS:
-      return "expected ')' after parameters";
-    case ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST:
-      return "rest parameter must be the last parameter";
-    case ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY:
-      return "expected '{' before function body";
-    case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_IF:
-      return "expected '(' after 'if'";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION:
-      return "expected ')' after if condition";
-    case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_WHILE:
-      return "expected '(' after 'while'";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_CONDITION:
-      return "expected ')' after while condition";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_STEP:
-      return "expected ')' after while step";
-    case ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK:
-      return "expected '}' to close block";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS:
-      return "expected ')' after call arguments";
-    case ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY:
-      return "expected ']' after computed property";
-    case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_EXPRESSION:
-      return "expected ')' after expression";
-    case ErrorCode::PARSE_EXPECTED_OBJECT_PROPERTY_NAME:
-      return "expected object property name";
-    case ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME:
-      return "expected ':' after object property name";
-    case ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL:
-      return "expected '}' after object literal";
-    case ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL:
-      return "expected ']' after array literal";
-    case ErrorCode::PARSE_EXPECTED_EXPRESSION:
-      return "expected expression";
-    case ErrorCode::PARSE_EXPECTED_COLON_AFTER_LABEL:
-      return "expected ':' after label";
-    case ErrorCode::PARSE_EXPECTED_TYPE_NAME:
-      return "expected a type name";
-    case ErrorCode::PARSE_MISSING_SEMICOLON:
-      return "missing semicolon before statement";
-    case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_BREAK:
-      return "unexpected token after 'break'";
-    case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE:
-      return "unexpected token after 'continue'";
+  case ErrorCode::PARSE_UNEXPECTED_END_OF_INPUT: return "unexpected end of input";
+  case ErrorCode::PARSE_EXPECTED_BINDING_NAME: return "expected binding name";
+  case ErrorCode::PARSE_CONST_REQUIRES_INITIALIZER:
+    return "const declaration requires an initializer";
+  case ErrorCode::PARSE_EXPECTED_FUNCTION_NAME: return "expected function name";
+  case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_FUNCTION_NAME:
+    return "expected '(' after function name";
+  case ErrorCode::PARSE_EXPECTED_PARAMETER_NAME: return "expected parameter name";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_PARAMETERS: return "expected ')' after parameters";
+  case ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST:
+    return "rest parameter must be the last parameter";
+  case ErrorCode::PARSE_EXPECTED_LBRACE_BEFORE_FUNCTION_BODY:
+    return "expected '{' before function body";
+  case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_IF: return "expected '(' after 'if'";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION:
+    return "expected ')' after if condition";
+  case ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_WHILE: return "expected '(' after 'while'";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_CONDITION:
+    return "expected ')' after while condition";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_STEP: return "expected ')' after while step";
+  case ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK: return "expected '}' to close block";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS:
+    return "expected ')' after call arguments";
+  case ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY:
+    return "expected ']' after computed property";
+  case ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_EXPRESSION: return "expected ')' after expression";
+  case ErrorCode::PARSE_EXPECTED_OBJECT_PROPERTY_NAME: return "expected object property name";
+  case ErrorCode::PARSE_EXPECTED_COLON_AFTER_OBJECT_PROPERTY_NAME:
+    return "expected ':' after object property name";
+  case ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL:
+    return "expected '}' after object literal";
+  case ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL:
+    return "expected ']' after array literal";
+  case ErrorCode::PARSE_EXPECTED_EXPRESSION: return "expected expression";
+  case ErrorCode::PARSE_EXPECTED_COLON_AFTER_LABEL: return "expected ':' after label";
+  case ErrorCode::PARSE_EXPECTED_TYPE_NAME: return "expected a type name";
+  case ErrorCode::PARSE_MISSING_SEMICOLON: return "missing semicolon before statement";
+  case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_BREAK: return "unexpected token after 'break'";
+  case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE: return "unexpected token after 'continue'";
+  case ErrorCode::PARSE_UNKNOWN_MODE_DIRECTIVE: return "unknown compiler mode";
 
-    case ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL:
-      return "function declarations must appear at the top level";
-    case ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION:
-      return "'return' outside of a function body";
-    case ErrorCode::TYPE_BREAK_OUTSIDE_LOOP:
-      return "'break' outside of a loop";
-    case ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP:
-      return "'continue' outside of a loop";
-    case ErrorCode::TYPE_UNDEFINED_IDENTIFIER:
-      return "undefined identifier";
-    case ErrorCode::TYPE_UNSUPPORTED_OPERATOR:
-      return "unsupported operator";
-    case ErrorCode::TYPE_CANNOT_UNIFY:
-      return "cannot unify";
-    case ErrorCode::TYPE_ARRAY_FUNCTION_SIGNATURE_MISMATCH:
-      return "array elements must have the same function signature";
-    case ErrorCode::TYPE_EXPECTED_KIND:
-      return "expected type";
-    case ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST:
-      return "cannot assign to constant binding";
-    case ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET:
-      return "invalid assignment target";
-    case ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED:
-      return "member access is not supported";
-    case ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS:
-      return "expects arguments";
-    case ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS:
-      return "expects at least arguments";
-    case ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS:
-      return "call target expects arguments";
-    case ErrorCode::TYPE_UNKNOWN_TYPE_NAME:
-      return "unknown type name";
-    case ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD:
-      return "a union may hold at most one non-nullable member";
-    case ErrorCode::TYPE_FLOAT_LAYOUT_INVALID:
-      return "invalid float bit layout";
-    case ErrorCode::TYPE_TYPE_OPERAND_EXPECTED:
-      return "expected a type operand";
-    case ErrorCode::TYPE_TYPE_OPERAND_HAS_NO_LAYOUT:
-      return "size and alignment are not defined for this type";
-    case ErrorCode::TYPE_TYPE_USED_AS_VALUE:
-      return "a type name cannot be used as a value";
+  case ErrorCode::TYPE_FUNCTION_DECLARATIONS_MUST_BE_TOP_LEVEL:
+    return "function declarations must appear at the top level";
+  case ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION: return "'return' outside of a function body";
+  case ErrorCode::TYPE_BREAK_OUTSIDE_LOOP: return "'break' outside of a loop";
+  case ErrorCode::TYPE_CONTINUE_OUTSIDE_LOOP: return "'continue' outside of a loop";
+  case ErrorCode::TYPE_UNDEFINED_IDENTIFIER: return "undefined identifier";
+  case ErrorCode::TYPE_UNSUPPORTED_OPERATOR: return "unsupported operator";
+  case ErrorCode::TYPE_CANNOT_UNIFY: return "cannot unify";
+  case ErrorCode::TYPE_ARRAY_FUNCTION_SIGNATURE_MISMATCH:
+    return "array elements must have the same function signature";
+  case ErrorCode::TYPE_EXPECTED_KIND: return "expected type";
+  case ErrorCode::TYPE_CANNOT_ASSIGN_TO_CONST: return "cannot assign to constant binding";
+  case ErrorCode::TYPE_INVALID_ASSIGNMENT_TARGET: return "invalid assignment target";
+  case ErrorCode::TYPE_MEMBER_ACCESS_NOT_SUPPORTED: return "member access is not supported";
+  case ErrorCode::TYPE_BUILTIN_EXPECTS_ARGUMENTS: return "expects arguments";
+  case ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS: return "expects at least arguments";
+  case ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS: return "call target expects arguments";
+  case ErrorCode::TYPE_UNKNOWN_TYPE_NAME: return "unknown type name";
+  case ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD:
+    return "a union may hold at most one non-nullable member";
+  case ErrorCode::TYPE_FLOAT_LAYOUT_INVALID: return "invalid float bit layout";
+  case ErrorCode::TYPE_TYPE_OPERAND_EXPECTED: return "expected a type operand";
+  case ErrorCode::TYPE_TYPE_OPERAND_HAS_NO_LAYOUT:
+    return "size and alignment are not defined for this type";
+  case ErrorCode::TYPE_TYPE_USED_AS_VALUE: return "a type name cannot be used as a value";
+  case ErrorCode::TYPE_UNSAFE_MODE_REQUIRED: return "requires 'use unsafe'";
 
-    case ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER:
-      return "unknown runtime helper";
-    case ErrorCode::CODEGEN_TARGET_UNAVAILABLE:
-      return "target unavailable";
-    case ErrorCode::CODEGEN_OBJECT_EMISSION_FAILED:
-      return "object emission failed";
-    case ErrorCode::CODEGEN_EXECUTABLE_LINK_FAILED:
-      return "executable link failed";
-    case ErrorCode::CODEGEN_LINK_FAILED:
-      return "module link failed";
+  case ErrorCode::CODEGEN_UNKNOWN_RUNTIME_HELPER: return "unknown runtime helper";
+  case ErrorCode::CODEGEN_TARGET_UNAVAILABLE: return "target unavailable";
+  case ErrorCode::CODEGEN_OBJECT_EMISSION_FAILED: return "object emission failed";
+  case ErrorCode::CODEGEN_EXECUTABLE_LINK_FAILED: return "executable link failed";
+  case ErrorCode::CODEGEN_LINK_FAILED: return "module link failed";
 
-    case ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE:
-      return "cannot open source file";
-    case ErrorCode::IO_CANNOT_OPEN_FILE_FOR_WRITING:
-      return "cannot open file for writing";
-    case ErrorCode::IO_CANNOT_WRITE_FILE:
-      return "cannot write file";
-    case ErrorCode::IO_EMPTY_COMMAND:
-      return "empty command";
-    case ErrorCode::IO_CANNOT_FORK:
-      return "cannot fork";
-    case ErrorCode::IO_COMMAND_TERMINATED_ABNORMALLY:
-      return "command terminated abnormally";
+  case ErrorCode::IO_CANNOT_OPEN_SOURCE_FILE: return "cannot open source file";
+  case ErrorCode::IO_CANNOT_OPEN_FILE_FOR_WRITING: return "cannot open file for writing";
+  case ErrorCode::IO_CANNOT_WRITE_FILE: return "cannot write file";
+  case ErrorCode::IO_EMPTY_COMMAND: return "empty command";
+  case ErrorCode::IO_CANNOT_FORK: return "cannot fork";
+  case ErrorCode::IO_COMMAND_TERMINATED_ABNORMALLY: return "command terminated abnormally";
 
-    case ErrorCode::UNIFY_TYPE_CYCLE_DETECTED:
-      return "type cycle detected";
+  case ErrorCode::UNIFY_TYPE_CYCLE_DETECTED: return "type cycle detected";
 
-    case ErrorCode::CLI_LEX_ERROR:
-      return "lex error";
+  case ErrorCode::CLI_LEX_ERROR: return "lex error";
 
-    default:
-      return "unknown error";
+  default: return "unknown error";
   }
 }
 
@@ -226,7 +182,8 @@ struct ErrorStatus {
 class ErrorException : public std::runtime_error {
 public:
   explicit ErrorException(ErrorStatus status)
-      : std::runtime_error(buildMessage(status)), status_(std::move(status)) {}
+      : std::runtime_error(buildMessage(status)),
+        status_(std::move(status)) {}
 
   const ErrorStatus &status() const noexcept { return status_; }
 

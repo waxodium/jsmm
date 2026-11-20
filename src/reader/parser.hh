@@ -56,6 +56,7 @@ private:
   Statement parseContinueStatement();
   Statement parseLabeledStatement();
   bool peekNextIsColon() const;
+  bool atDirectiveStatement() const;
   bool startsVariableDeclaration() const;
   bool startsFunctionDeclaration() const;
 

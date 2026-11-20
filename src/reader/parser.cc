@@ -13,16 +13,14 @@ namespace {
 std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t cursor) {
   // Try int<width, signed|unsigned>
   if (cursor + 4 < tokens.size() && tokens[cursor].lexeme == "<" &&
-      tokens[cursor + 1].kind == TokenKind::NumberLiteral &&
-      tokens[cursor + 2].lexeme == "," &&
+      tokens[cursor + 1].kind == TokenKind::NumberLiteral && tokens[cursor + 2].lexeme == "," &&
       (tokens[cursor + 3].lexeme == "signed" || tokens[cursor + 3].lexeme == "unsigned") &&
       tokens[cursor + 4].lexeme == ">") {
     return cursor + 5;
   }
   // Try float<>, or float<totalBits, expBits, mantBits, signed>
   if (cursor + 1 < tokens.size() && tokens[cursor].lexeme == "<") {
-    if (tokens[cursor + 1].lexeme == ">")
-      return cursor + 2;  // float<>
+    if (tokens[cursor + 1].lexeme == ">") return cursor + 2; // float<>
     if (tokens[cursor + 1].kind == TokenKind::NumberLiteral) {
       std::size_t c = cursor + 2;
       // float<totalBits, expBits, mantBits, signed>
@@ -38,7 +36,7 @@ std::size_t skipTypeArguments(const std::vector<Token> &tokens, std::size_t curs
                   (tokens[c].lexeme == "true" || tokens[c].lexeme == "false")) {
                 ++c;
                 if (c < tokens.size() && tokens[c].lexeme == ">")
-                  return c + 1;  // advanced float layout
+                  return c + 1; // advanced float layout
               }
             }
           }
@@ -104,14 +102,9 @@ const std::unordered_map<std::string, Parser::InfixParselet> &Parser::infixParse
 const std::unordered_map<std::string, Parser::PrefixParser> &Parser::prefixParselets() {
   using P = Parser;
   static const std::unordered_map<std::string, P::PrefixParser> table{
-      {"!", &P::parseUnaryPrefix},
-      {"~", &P::parseUnaryPrefix},
-      {"+", &P::parseUnaryPrefix},
-      {"-", &P::parseUnaryPrefix},
-      {"&", &P::parseUnaryPrefix},
-      {"*", &P::parseUnaryPrefix},
-      {"typeof", &P::parseUnaryPrefix},
-      {"void", &P::parseUnaryPrefix}};
+      {"!", &P::parseUnaryPrefix},      {"~", &P::parseUnaryPrefix},   {"+", &P::parseUnaryPrefix},
+      {"-", &P::parseUnaryPrefix},      {"&", &P::parseUnaryPrefix},   {"*", &P::parseUnaryPrefix},
+      {"typeof", &P::parseUnaryPrefix}, {"void", &P::parseUnaryPrefix}};
   return table;
 }
 
@@ -157,8 +150,7 @@ void Parser::ensureSemicolonOrASI() {
   if (current().kind == TokenKind::End) return;
   if (current().lexeme == "}") return;
   if (current().start.line > tokens_.at(index_ > 0 ? index_ - 1 : 0).end.line) return;
-  if (current().kind == TokenKind::Keyword ||
-      current().kind == TokenKind::Identifier ||
+  if (current().kind == TokenKind::Keyword || current().kind == TokenKind::Identifier ||
       current().lexeme == "{") {
     fail("missing semicolon before statement", errors::ErrorCode::PARSE_MISSING_SEMICOLON);
   }
@@ -166,19 +158,41 @@ void Parser::ensureSemicolonOrASI() {
 
 Program Parser::parse() {
   Program program;
-  while (current().kind != TokenKind::End) program.statements.push_back(std::make_unique<Statement>(parseStatement()));
+  while (current().kind != TokenKind::End)
+    program.statements.push_back(std::make_unique<Statement>(parseStatement()));
   return program;
+}
+
+bool Parser::atDirectiveStatement() const {
+  if (current().kind != TokenKind::StringLiteral) return false;
+  if (index_ + 1 >= tokens_.size()) return true;
+  const Token &next = tokens_[index_ + 1];
+  return next.kind == TokenKind::End || next.lexeme == ";" || next.lexeme == "}" ||
+         next.start.line > current().end.line;
 }
 
 Statement Parser::parseStatement() {
   const SourcePosition start = current().start;
   Statement statement = [&]() {
+    if (atDirectiveStatement()) {
+      const std::string &raw = current().lexeme;
+      mode::Mode declared = mode::Mode::Unsafe;
+      if (mode::directiveNamesMode(raw, declared)) {
+        consume();
+        optionalSemicolon();
+        return Statement(DirectiveStatement{declared, SourceRange{}}, SourceRange{});
+      }
+      if (mode::looksLikeDirective(raw))
+        fail(std::string(mode::directiveName(raw)) + " (available: " + mode::availableDirectives() +
+                 ")",
+             errors::ErrorCode::PARSE_UNKNOWN_MODE_DIRECTIVE);
+    }
     if (startsFunctionDeclaration()) return parseFunctionDeclaration();
     if (current().kind == TokenKind::Keyword) {
       const std::string &keyword = current().lexeme;
-      if (keyword == "const" || keyword == "string" || keyword == "bool" ||
-          keyword == "boolean" || keyword == "bytes" || keyword == "auto" ||
-          keyword == "void" || keyword == "int" || keyword == "float")
+      if (keyword == "const" || keyword == "string" || keyword == "bool" || keyword == "boolean" ||
+          keyword == "bytes" || keyword == "auto" || keyword == "void" || keyword == "int" ||
+          keyword == "float")
         return parseDeclaration();
       if (keyword == "type") return parseTypeDeclaration();
       if (keyword == "return") return parseReturnStatement();
@@ -222,8 +236,7 @@ Statement Parser::parseDeclaration() {
     // Direct type declaration: number x = 42;
     annotation->names.push_back(kind);
     annotation->pointerDepth.push_back(parsePointerStars());
-    if (kind == "float")
-      parseFloatTypeArguments(annotation);
+    if (kind == "float") parseFloatTypeArguments(annotation);
     else
       parseIntTypeArguments(annotation);
     annotation->pointerDepth.back() += parsePointerStars();
@@ -253,8 +266,7 @@ Statement Parser::parseDeclaration() {
         auto prefix = std::make_shared<TypeExpr>();
         prefix->names.push_back(consume().lexeme);
         prefix->pointerDepth.push_back(parsePointerStars());
-        if (prefix->names.back() == "float")
-          parseFloatTypeArguments(prefix);
+        if (prefix->names.back() == "float") parseFloatTypeArguments(prefix);
         else
           parseIntTypeArguments(prefix);
         prefix->pointerDepth.back() += parsePointerStars();
@@ -332,7 +344,7 @@ void Parser::parseArraySize(const std::shared_ptr<TypeExpr> &annotation) {
   if (!eat("[")) return;
   if (eat("]")) {
     annotation->isArray = true;
-    annotation->arraySize = 0;  // unsized/slice array
+    annotation->arraySize = 0; // unsized/slice array
     return;
   }
   if (current().kind != TokenKind::NumberLiteral)
@@ -354,18 +366,15 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
     if (!eat("}")) {
       do {
         if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
-          fail("expected struct field type name",
-               errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
+          fail("expected struct field type name", errors::ErrorCode::PARSE_EXPECTED_TYPE_NAME);
         std::string fieldType = consume().lexeme;
         auto fieldAnnotation = std::make_shared<TypeExpr>();
         fieldAnnotation->names.push_back(fieldType);
         fieldAnnotation->pointerDepth.push_back(parsePointerStars());
         if (current().kind != TokenKind::Identifier)
-          fail("expected struct field name",
-               errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
+          fail("expected struct field name", errors::ErrorCode::PARSE_EXPECTED_BINDING_NAME);
         std::string fieldName = consume().lexeme;
-        if (fieldType == "float")
-          parseFloatTypeArguments(fieldAnnotation);
+        if (fieldType == "float") parseFloatTypeArguments(fieldAnnotation);
         else
           parseIntTypeArguments(fieldAnnotation);
         fieldAnnotation->pointerDepth.back() += parsePointerStars();
@@ -403,7 +412,8 @@ std::shared_ptr<TypeExpr> Parser::parseTypeAnnotation() {
 
   annotation->range = SourceRange{start, tokens_.at(index_ - 1).end};
   return annotation;
-}void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
+}
+void Parser::parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation) {
   if (annotation->names.size() != 1 || annotation->pointerDepth[0] != 0) return;
   if (!eat("<")) return;
   annotation->isIntType = true;
@@ -445,12 +455,14 @@ void Parser::parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation
   if (!eat(","))
     fail("expected ',' after float total bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   if (current().kind != TokenKind::NumberLiteral)
-    fail("expected float exponent bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+    fail("expected float exponent bits in float type",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   annotation->floatExpBits = std::stoull(consume().lexeme);
   if (!eat(","))
     fail("expected ',' after float exponent bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   if (current().kind != TokenKind::NumberLiteral)
-    fail("expected float mantissa bits in float type", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
+    fail("expected float mantissa bits in float type",
+         errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
   annotation->floatMantBits = std::stoull(consume().lexeme);
   if (!eat(","))
     fail("expected ',' after float mantissa bits", errors::ErrorCode::PARSE_EXPECTED_EXPRESSION);
@@ -525,42 +537,42 @@ Statement Parser::parseFunctionDeclaration() {
   if (!eat(")")) {
     do {
       std::shared_ptr<TypeExpr> parameterAnnotation;
-      const bool firstIsTypeName = current().kind == TokenKind::Identifier ||
-                                   current().kind == TokenKind::Keyword;
+      const bool firstIsTypeName =
+          current().kind == TokenKind::Identifier || current().kind == TokenKind::Keyword;
       if (firstIsTypeName && index_ + 1 < tokens_.size() &&
           (tokens_[index_ + 1].kind == TokenKind::Identifier ||
-           tokens_[index_ + 1].kind == TokenKind::Keyword ||
-           tokens_[index_ + 1].lexeme == "*" || tokens_[index_ + 1].lexeme == "**" ||
-           tokens_[index_ + 1].lexeme == "(" || tokens_[index_ + 1].lexeme == "[" ||
-           tokens_[index_ + 1].lexeme == "<" || tokens_[index_ + 1].lexeme == "...")) {
+           tokens_[index_ + 1].kind == TokenKind::Keyword || tokens_[index_ + 1].lexeme == "*" ||
+           tokens_[index_ + 1].lexeme == "**" || tokens_[index_ + 1].lexeme == "(" ||
+           tokens_[index_ + 1].lexeme == "[" || tokens_[index_ + 1].lexeme == "<" ||
+           tokens_[index_ + 1].lexeme == "...")) {
         parameterAnnotation = parseTypeAnnotation();
       }
-      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword
-        && current().kind != TokenKind::Punctuator)
+      if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword &&
+          current().kind != TokenKind::Punctuator)
         fail("expected parameter name", errors::ErrorCode::PARSE_EXPECTED_PARAMETER_NAME);
       const Token parameter = consume();
       if (parameter.lexeme == "...") {
         // Check if this is "...T" fat pointer syntax (e.g., int ...nums)
-        if (index_ < tokens_.size() && tokens_[index_].kind == TokenKind::Identifier && parameterAnnotation != nullptr) {
+        if (index_ < tokens_.size() && tokens_[index_].kind == TokenKind::Identifier &&
+            parameterAnnotation != nullptr) {
           // "...T" syntax: use the type from parameterAnnotation and identifier as name
           // Mark as variadic so checker allows variable arguments
-          function.parameters.push_back(
-            {tokens_[index_].lexeme, SourceRange{parameter.start, parameter.end},
-             std::move(parameterAnnotation), true});
-          consume();  // consume the identifier token
-          break;  // exit the do-while loop
+          function.parameters.push_back({tokens_[index_].lexeme,
+                                         SourceRange{parameter.start, parameter.end},
+                                         std::move(parameterAnnotation), true});
+          consume(); // consume the identifier token
+          break;     // exit the do-while loop
         }
         // Bare "..." variadic parameter - must be last
         function.parameters.push_back(
-          {"...", SourceRange{parameter.start, parameter.end}, nullptr, true});
+            {"...", SourceRange{parameter.start, parameter.end}, nullptr, true});
         if (eat(","))
           fail("a variadic parameter must be the last parameter",
                errors::ErrorCode::PARSE_REST_PARAMETER_MUST_BE_LAST);
         break;
       }
-      function.parameters.push_back(
-          {parameter.lexeme, SourceRange{parameter.start, parameter.end},
-           std::move(parameterAnnotation), false});
+      function.parameters.push_back({parameter.lexeme, SourceRange{parameter.start, parameter.end},
+                                     std::move(parameterAnnotation), false});
     } while (eat(","));
     if (!eat(")"))
       fail("expected ')' after parameters",
@@ -599,9 +611,7 @@ Statement Parser::parseIfStatement() {
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_IF_CONDITION);
   StatementList consequent = parseConsequent();
   StatementList alternate;
-  if (eat("else")) {
-    alternate = parseConsequent();
-  }
+  if (eat("else")) { alternate = parseConsequent(); }
   return Statement(IfStatement{std::move(condition), std::move(consequent), std::move(alternate)});
 }
 
@@ -611,9 +621,7 @@ Statement Parser::parseWhileStatement() {
     fail("expected '(' after 'while'", errors::ErrorCode::PARSE_EXPECTED_LPAREN_AFTER_WHILE);
   auto condition = parseExpression();
   ExprPtr step = nullptr;
-  if (eat(";")) {
-    step = parseExpression();
-  }
+  if (eat(";")) { step = parseExpression(); }
   if (!eat(")"))
     fail("expected ')' after while step",
          errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_WHILE_STEP);
@@ -688,7 +696,8 @@ Statement Parser::parseContinueStatement() {
       auto label = std::make_shared<Identifier>(Identifier{consume().lexeme, {}});
       return Statement(ContinueStatement{label}, SourceRange{start, tokens_.at(index_ - 1).end});
     }
-    fail("unexpected token after 'continue'", errors::ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE);
+    fail("unexpected token after 'continue'",
+         errors::ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE);
   }
   return Statement(ContinueStatement{}, SourceRange{start, keyword.end});
 }
@@ -710,9 +719,7 @@ StatementList Parser::parseBlockBody() {
 }
 
 StatementList Parser::parseConsequent() {
-  if (eat("{")) {
-    return parseBlockBody();
-  }
+  if (eat("{")) { return parseBlockBody(); }
   StatementList list;
   list.push_back(std::make_unique<Statement>(parseStatement()));
   return list;
@@ -743,31 +750,32 @@ ExprPtr Parser::parseUnaryPrefix() {
   auto operand = parsePrefix();
   if (op == "&") {
     return std::make_shared<Expression>(AddressOfExpr{std::move(operand)},
-                                    SourceRange{start, tokens_.at(index_ - 1).end});
+                                        SourceRange{start, tokens_.at(index_ - 1).end});
   }
   if (op == "*" || op == "**") {
     const SourceRange range{start, tokens_.at(index_ - 1).end};
     auto dereference = std::make_shared<Expression>(DereferenceExpr{std::move(operand)}, range);
-    if (op == "*")
-      return dereference;
+    if (op == "*") return dereference;
     return std::make_shared<Expression>(DereferenceExpr{std::move(dereference)}, range);
   }
   return std::make_shared<Expression>(UnaryExpr{op, std::move(operand)},
-                                SourceRange{start, tokens_.at(index_ - 1).end});
+                                      SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseBinaryInfix(ExprPtr left, const std::string &op, OperatorInfo info) {
   const SourcePosition start = left->range.start;
   auto right = parseExpression(info.bindingPower + (info.rightAssociative ? 0 : 1));
   const SourceRange sourceRange{start, right->range.end};
-  return std::make_shared<Expression>(BinaryExpr{op, std::move(left), std::move(right)}, sourceRange);
+  return std::make_shared<Expression>(BinaryExpr{op, std::move(left), std::move(right)},
+                                      sourceRange);
 }
 
 ExprPtr Parser::parseAssignmentInfix(ExprPtr left, const std::string &op, OperatorInfo info) {
   const SourcePosition start = left->range.start;
   auto right = parseExpression(info.bindingPower);
   const SourceRange sourceRange{start, right->range.end};
-  return std::make_shared<Expression>(AssignmentExpr{op, std::move(left), std::move(right)}, sourceRange);
+  return std::make_shared<Expression>(AssignmentExpr{op, std::move(left), std::move(right)},
+                                      sourceRange);
 }
 
 ExprPtr Parser::parsePostfix(ExprPtr expression) {
@@ -809,7 +817,7 @@ ExprPtr Parser::parseCallPostfix(ExprPtr expression) {
            errors::ErrorCode::PARSE_EXPECTED_RPAREN_AFTER_CALL_ARGUMENTS);
   }
   return std::make_shared<Expression>(CallExpr{std::move(expression), std::move(arguments)},
-                                SourceRange{start, tokens_.at(index_ - 1).end});
+                                      SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
@@ -820,8 +828,9 @@ ExprPtr Parser::parseMemberPostfix(ExprPtr expression) {
     fail("expected property name after '.'",
          errors::ErrorCode::PARSE_EXPECTED_OBJECT_PROPERTY_NAME);
   const Token property = consume();
-  return std::make_shared<Expression>(MemberExpr{std::move(expression), property.lexeme, nullptr, false},
-                                SourceRange{start, property.end});
+  return std::make_shared<Expression>(
+      MemberExpr{std::move(expression), property.lexeme, nullptr, false},
+      SourceRange{start, property.end});
 }
 
 ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
@@ -837,14 +846,15 @@ ExprPtr Parser::parseComputedMemberPostfix(ExprPtr expression) {
            errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
     auto range = std::make_shared<Expression>(RangeExpr{std::move(startExpr), std::move(endExpr)});
     return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, range, true},
-                                    SourceRange{start, tokens_.at(index_ - 1).end});
+                                        SourceRange{start, tokens_.at(index_ - 1).end});
   }
 
   if (!eat("]"))
     fail("expected ']' after computed property",
          errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_COMPUTED_PROPERTY);
-  return std::make_shared<Expression>(MemberExpr{std::move(expression), {}, std::move(startExpr), true},
-                                SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expression>(
+      MemberExpr{std::move(expression), {}, std::move(startExpr), true},
+      SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parsePrimary() {
@@ -890,7 +900,8 @@ ExprPtr Parser::parsePrimary() {
   if (token.lexeme == "true" || token.lexeme == "false")
     return std::make_shared<Expression>(BooleanLiteralExpr{token.lexeme == "true"}, sourceRange);
   if (token.lexeme == "null") return std::make_shared<Expression>(NullLiteralExpr{}, sourceRange);
-  if (token.lexeme == "float") return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
+  if (token.lexeme == "float")
+    return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
   if (token.kind == TokenKind::Identifier || token.kind == TokenKind::Keyword) {
     // Reserved keywords that are not supported in expression position produce a clear error
     if (token.kind == TokenKind::Keyword) {
@@ -900,12 +911,12 @@ ExprPtr Parser::parsePrimary() {
     return std::make_shared<Expression>(IdentifierExpr{token.lexeme}, sourceRange);
   }
   if (token.kind == TokenKind::End)
-    throw errors::ErrorException{errors::ErrorStatus{
-        errors::ErrorCode::PARSE_EXPECTED_EXPRESSION, "expected expression, found end of input",
-        token.start}};
-  throw errors::ErrorException{errors::ErrorStatus{
-      errors::ErrorCode::PARSE_EXPECTED_EXPRESSION,
-      "expected expression, found '" + token.lexeme + "'", token.start}};
+    throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::PARSE_EXPECTED_EXPRESSION,
+                                                     "expected expression, found end of input",
+                                                     token.start}};
+  throw errors::ErrorException{
+      errors::ErrorStatus{errors::ErrorCode::PARSE_EXPECTED_EXPRESSION,
+                          "expected expression, found '" + token.lexeme + "'", token.start}};
 }
 
 ExprPtr Parser::parseObjectLiteral() {
@@ -932,7 +943,8 @@ ExprPtr Parser::parseObjectLiteral() {
       fail("expected '}' after object literal",
            errors::ErrorCode::PARSE_EXPECTED_RBRACE_AFTER_OBJECT_LITERAL);
   }
-  return std::make_shared<Expression>(std::move(object), SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expression>(std::move(object),
+                                      SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 ExprPtr Parser::parseArrayLiteral() {
@@ -956,7 +968,8 @@ ExprPtr Parser::parseArrayLiteral() {
       fail("expected ']' after array literal",
            errors::ErrorCode::PARSE_EXPECTED_RBRACKET_AFTER_ARRAY_LITERAL);
   }
-  return std::make_shared<Expression>(std::move(array), SourceRange{start, tokens_.at(index_ - 1).end});
+  return std::make_shared<Expression>(std::move(array),
+                                      SourceRange{start, tokens_.at(index_ - 1).end});
 }
 
 bool Parser::peekNextIsColon() const {
@@ -970,9 +983,9 @@ bool Parser::startsFunctionDeclaration() const {
   const Token &first = tokens_[cursor];
   const bool typeKeyword =
       first.kind == TokenKind::Keyword &&
-      (first.lexeme == "string" || first.lexeme == "bool" ||
-       first.lexeme == "boolean" || first.lexeme == "bytes" || first.lexeme == "auto" ||
-       first.lexeme == "void" || first.lexeme == "int" || first.lexeme == "float");
+      (first.lexeme == "string" || first.lexeme == "bool" || first.lexeme == "boolean" ||
+       first.lexeme == "bytes" || first.lexeme == "auto" || first.lexeme == "void" ||
+       first.lexeme == "int" || first.lexeme == "float");
   if (first.kind != TokenKind::Identifier && !typeKeyword) return false;
   ++cursor;
 
@@ -1011,14 +1024,13 @@ bool Parser::startsFunctionDeclaration() const {
          (tokens_[cursor].lexeme == "|" || tokens_[cursor].lexeme == ",")) {
     ++cursor;
     if (cursor >= tokens_.size()) return false;
-    if (tokens_[cursor].kind != TokenKind::Identifier &&
-        tokens_[cursor].kind != TokenKind::Keyword)
+    if (tokens_[cursor].kind != TokenKind::Identifier && tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
     cursor = skipTypeArguments(tokens_, cursor);
     while (cursor < tokens_.size() &&
-         (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
-    ++cursor;
+           (tokens_[cursor].lexeme == "*" || tokens_[cursor].lexeme == "**"))
+      ++cursor;
   }
 
   if (cursor + 1 >= tokens_.size()) return false;
@@ -1044,8 +1056,7 @@ bool Parser::startsFunctionDeclaration() const {
 bool Parser::startsVariableDeclaration() const {
   std::size_t cursor = index_;
   if (cursor >= tokens_.size() ||
-      (tokens_[cursor].kind != TokenKind::Identifier &&
-       tokens_[cursor].kind != TokenKind::Keyword))
+      (tokens_[cursor].kind != TokenKind::Identifier && tokens_[cursor].kind != TokenKind::Keyword))
     return false;
   ++cursor;
   cursor = skipTypeArguments(tokens_, cursor);
@@ -1065,8 +1076,7 @@ bool Parser::startsVariableDeclaration() const {
          (tokens_[cursor].lexeme == "|" || tokens_[cursor].lexeme == ",")) {
     ++cursor;
     if (cursor >= tokens_.size()) return false;
-    if (tokens_[cursor].kind != TokenKind::Identifier &&
-        tokens_[cursor].kind != TokenKind::Keyword)
+    if (tokens_[cursor].kind != TokenKind::Identifier && tokens_[cursor].kind != TokenKind::Keyword)
       return false;
     ++cursor;
     cursor = skipTypeArguments(tokens_, cursor);
