@@ -1096,6 +1096,7 @@ void IrGenerator::generateStatement(const reader::Statement &statement) {
         using T = std::decay_t<decltype(node)>;
         if constexpr (std::is_same_v<T, reader::VariableDeclaration>) {
           generateDeclaration(node);
+        } else if constexpr (std::is_same_v<T, reader::StructDeclaration>) {
         } else if constexpr (std::is_same_v<T, reader::ExpressionStatement>) {
           if (node.expression != nullptr) (void)generateExpression(node.expression);
         } else if constexpr (std::is_same_v<T, reader::DirectiveStatement>) {
@@ -1383,6 +1384,8 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           const std::uint64_t structSize =
               structured && layout.defined ? layout.size : 8 * node.properties.size();
           llvm::Value *base = allocate(structSize == 0 ? 1 : structSize);
+          if (structured && structSize != 0)
+            builder_->CreateCall(memsetFunction(), {base, i64(0), i64(structSize)});
           for (std::size_t index = 0; index < node.properties.size(); ++index) {
             std::size_t fieldIndex = index;
             TypePtr declaredField;

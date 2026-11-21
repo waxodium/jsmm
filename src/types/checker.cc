@@ -73,6 +73,16 @@ Annotations Checker::check(const reader::Program &program) {
   mode_ = mode::kDefaultMode;
   deferredChecks_.clear();
   inferenceVariables_.clear();
+  scopes_.clear();
+  functions_.clear();
+  typeAliases_.clear();
+  structTypes_.clear();
+  structDeclarations_.clear();
+  topLevelStructs_.clear();
+  collectStructs(program);
+  hoistTypeAliases(program);
+  resolveStructFields();
+  validateStructLayouts();
   scopes_.push_back(Scope{});
   hoistFunctions(program, functions_);
   inferStatements(program.statements);
@@ -131,6 +141,98 @@ void Checker::BuiltinInference::requireConcreteType(TypePtr type,
 
 void Checker::BuiltinInference::deferCheck(std::function<void()> check) {
   checker_.deferredChecks_.push_back(std::move(check));
+}
+
+void Checker::collectStructs(const reader::Program &program) {
+  for (const auto &statement : program.statements) {
+    const auto *declaration = std::get_if<reader::StructDeclaration>(&statement->node);
+    if (declaration == nullptr) continue;
+    if (structTypes_.find(declaration->name) != structTypes_.end())
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_DUPLICATE_STRUCT,
+                                                       declaration->name, statement->range}};
+    structTypes_.insert_or_assign(declaration->name,
+                                  typeContext_.structType({}, declaration->name));
+    structDeclarations_.push_back(declaration);
+    topLevelStructs_.insert(declaration);
+  }
+}
+
+void Checker::hoistTypeAliases(const reader::Program &program) {
+  std::vector<std::pair<const reader::VariableDeclarator *, TypePtr>> aliases;
+  for (const auto &statement : program.statements) {
+    const auto *declaration = std::get_if<reader::VariableDeclaration>(&statement->node);
+    if (declaration == nullptr || declaration->kind != "type") continue;
+    for (const auto &declarator : declaration->declarations) {
+      if (structTypes_.find(declarator.name) != structTypes_.end())
+        throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_DUPLICATE_STRUCT,
+                                                         declarator.name, declarator.range}};
+      TypePtr placeholder = typeContext_.variable();
+      typeAliases_.insert_or_assign(declarator.name, placeholder);
+      aliases.emplace_back(&declarator, placeholder);
+    }
+  }
+  for (const auto &[declarator, placeholder] : aliases) {
+    TypePtr resolved = resolveTypeAnnotation(declarator->annotation);
+    if (resolved != nullptr && resolved != placeholder && placeholder->link == nullptr)
+      placeholder->link = resolved;
+    typeAliases_.insert_or_assign(declarator->name, resolved);
+  }
+}
+
+void Checker::resolveStructFields() {
+  for (const reader::StructDeclaration *declaration : structDeclarations_) {
+    const auto found = structTypes_.find(declaration->name);
+    if (found == structTypes_.end()) continue;
+    std::unordered_set<std::string> names;
+    std::vector<std::pair<std::string, TypePtr>> fields;
+    fields.reserve(declaration->fields.size());
+    for (const auto &field : declaration->fields) {
+      if (!names.insert(field.name).second)
+        throw errors::ErrorException{
+            errors::ErrorStatus{errors::ErrorCode::TYPE_DUPLICATE_FIELD, field.name, field.range}};
+      TypePtr fieldType = resolveTypeAnnotation(field.annotation);
+      if (fieldType == nullptr)
+        throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNKNOWN_TYPE_NAME,
+                                                         field.name, field.range}};
+      fields.emplace_back(field.name, fieldType);
+    }
+    found->second->fields = std::move(fields);
+  }
+}
+
+void Checker::validateStructLayouts() {
+  std::unordered_set<const types::Type *> visiting;
+  std::unordered_set<const types::Type *> done;
+  std::function<void(TypePtr, const reader::SourceRange &)> visit =
+      [&](TypePtr type, const reader::SourceRange &range) {
+        type = resolve(std::move(type));
+        if (type == nullptr) return;
+        if (type->kind != TypeKind::Struct && type->kind != TypeKind::Array &&
+            type->kind != TypeKind::Union)
+          return;
+        if (done.find(type.get()) != done.end()) return;
+        if (!visiting.insert(type.get()).second)
+          throw errors::ErrorException{errors::ErrorStatus{
+              errors::ErrorCode::TYPE_RECURSIVE_STRUCT,
+              type->name.empty() ? std::string("anonymous struct") : type->name, range}};
+        if (type->kind == TypeKind::Struct) {
+          for (const auto &field : type->fields) visit(field.second, range);
+        } else if (type->kind == TypeKind::Array) {
+          visit(type->element, range);
+        } else {
+          for (const auto &member : type->members) visit(member, range);
+        }
+        visiting.erase(type.get());
+        done.insert(type.get());
+      };
+  for (const reader::StructDeclaration *declaration : structDeclarations_) {
+    const auto found = structTypes_.find(declaration->name);
+    if (found != structTypes_.end()) visit(found->second, declaration->range);
+  }
+  for (const auto &[name, alias] : typeAliases_) {
+    (void)name;
+    if (alias != nullptr) visit(alias, {});
+  }
 }
 
 void Checker::hoistFunctions(const reader::Program &program,
@@ -261,6 +363,8 @@ void Checker::inferStatements(const reader::StatementList &statements) {
 void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
   if (declaration.kind == "type") {
     for (const auto &declarator : declaration.declarations) {
+      const auto existingAlias = typeAliases_.find(declarator.name);
+      if (existingAlias != typeAliases_.end() && existingAlias->second != nullptr) continue;
       const TypePtr placeholder = typeContext_.variable();
       typeAliases_.insert_or_assign(declarator.name, placeholder);
       TypePtr resolved = resolveTypeAnnotation(declarator.annotation);
@@ -286,7 +390,9 @@ void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
     }
 
     if (declarator.initializer != nullptr) {
-      initializerType = inferExpression(declarator.initializer);
+      initializerType = declaredType != nullptr
+                            ? inferExpected(declarator.initializer, declaredType)
+                            : inferExpression(declarator.initializer);
 
       // Check array element type is not void
       if (initializerType != nullptr && initializerType->kind == TypeKind::Array &&
@@ -379,6 +485,11 @@ void Checker::inferStatement(const reader::Statement &statement) {
         using T = std::decay_t<decltype(node)>;
         if constexpr (std::is_same_v<T, reader::VariableDeclaration>) {
           inferDeclaration(node);
+        } else if constexpr (std::is_same_v<T, reader::StructDeclaration>) {
+          if (topLevelStructs_.find(&node) == topLevelStructs_.end())
+            throw errors::ErrorException{
+                errors::ErrorStatus{errors::ErrorCode::TYPE_STRUCT_DECLARATIONS_MUST_BE_TOP_LEVEL,
+                                    node.name, statement.range}};
         } else if constexpr (std::is_same_v<T, reader::ExpressionStatement>) {
           if (node.expression != nullptr) (void)inferExpression(node.expression);
         } else if constexpr (std::is_same_v<T, reader::DirectiveStatement>) {
@@ -401,7 +512,12 @@ void Checker::inferStatement(const reader::Statement &statement) {
                 errors::ErrorCode::TYPE_RETURN_OUTSIDE_FUNCTION, "return", statement.range}};
           }
           if (node.argument != nullptr) {
-            const TypePtr argument = inferExpression(node.argument);
+            TypePtr expected = nullptr;
+            if (!currentFunctions_.empty() &&
+                currentFunctions_.back()->declaration.returnAnnotation != nullptr)
+              expected =
+                  resolveTypeAnnotation(currentFunctions_.back()->declaration.returnAnnotation);
+            const TypePtr argument = inferExpected(node.argument, expected);
             returnTypeStack_.back().push_back(argument);
           } else {
             returnTypeStack_.back().push_back(nullType());
@@ -757,7 +873,6 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
 
 TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
                                  const reader::AssignmentExpr &assignment) {
-  TypePtr right = inferExpression(assignment.right);
   TypePtr target = resolve(inferExpression(assignment.left));
   const bool deferredTarget =
       target != nullptr && target->kind == TypeKind::Variable &&
@@ -799,6 +914,8 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
       }
     }
   }
+
+  TypePtr right = inferExpected(assignment.right, target);
 
   if (assignment.op != "=") {
     const TypePtr resolvedTarget = resolve(target);
@@ -1074,6 +1191,8 @@ bool Checker::unifies(TypePtr left, TypePtr right, std::string_view context) {
   if (left->kind == TypeKind::Pointer) { return unifies(left->pointed, right->pointed, context); }
   if (left->kind == TypeKind::Array) { return unifies(left->element, right->element, context); }
   if (left->kind == TypeKind::Struct) {
+    if (!left->name.empty() || !right->name.empty())
+      return !left->name.empty() && left->name == right->name;
     if (left->fields.size() != right->fields.size()) return false;
     for (const auto &field : left->fields) {
       const auto match =
@@ -1172,8 +1291,14 @@ TypePtr Checker::inferCall(const reader::ExprPtr &expr, const reader::CallExpr &
 
   std::vector<std::pair<TypePtr, reader::SourceRange>> argumentTypes;
   argumentTypes.reserve(call.arguments.size());
-  for (const auto &argument : call.arguments)
-    argumentTypes.emplace_back(inferExpression(argument), argument->range);
+  for (std::size_t index = 0; index < call.arguments.size(); ++index) {
+    TypePtr expected = nullptr;
+    if (target != nullptr && target->kind == TypeKind::Function &&
+        index < target->parameters.size())
+      expected = target->parameters[index];
+    argumentTypes.emplace_back(inferExpected(call.arguments[index], expected),
+                               call.arguments[index]->range);
+  }
 
   if (target != nullptr && target->kind == TypeKind::Function) {
     checkCallArguments(target, argumentTypes, expr->range);
@@ -1207,6 +1332,53 @@ TypePtr Checker::inferObject(const reader::ExprPtr &expr, const reader::ObjectEx
     fields.emplace_back(key, type);
   }
   return typeContext_.structType(std::move(fields));
+}
+
+TypePtr Checker::inferExpected(const reader::ExprPtr &expr, TypePtr expected) {
+  expected = resolve(std::move(expected));
+  if (expected == nullptr) return inferExpression(expr);
+  if (expected->kind == TypeKind::Struct) {
+    if (const auto *object = std::get_if<reader::ObjectExpr>(&expr->node))
+      return inferObjectExpected(expr, *object, expected);
+  }
+  if (expected->kind == TypeKind::Array) {
+    if (const auto *array = std::get_if<reader::ArrayExpr>(&expr->node)) {
+      const TypePtr element = resolve(expected->element);
+      const auto checkElement = [&](const reader::ExprPtr &value) {
+        const TypePtr actual = inferExpected(value, element);
+        if (element != nullptr && actual != nullptr && !unifies(element, actual, "array element"))
+          throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY,
+                                                           "array element", value->range}};
+      };
+      for (const auto &value : array->elements) checkElement(value);
+      for (const auto &designated : array->designated) checkElement(designated.value);
+      annotations_.expressionTypes.insert_or_assign(expr.get(), expected);
+      return expected;
+    }
+  }
+  return inferExpression(expr);
+}
+
+TypePtr Checker::inferObjectExpected(const reader::ExprPtr &expr, const reader::ObjectExpr &object,
+                                     TypePtr expected) {
+  std::unordered_set<std::string> seen;
+  for (const auto &[key, value] : object.properties) {
+    const auto field = std::find_if(expected->fields.begin(), expected->fields.end(),
+                                    [&](const auto &candidate) { return candidate.first == key; });
+    if (field == expected->fields.end())
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_UNKNOWN_FIELD, key, value->range}};
+    if (!seen.insert(key).second)
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_DUPLICATE_FIELD, key, value->range}};
+    const TypePtr fieldType = resolve(field->second);
+    const TypePtr actual = inferExpected(value, fieldType);
+    if (fieldType != nullptr && actual != nullptr && !unifies(fieldType, actual, key))
+      throw errors::ErrorException{
+          errors::ErrorStatus{errors::ErrorCode::TYPE_CANNOT_UNIFY, key, value->range}};
+  }
+  annotations_.expressionTypes.insert_or_assign(expr.get(), expected);
+  return expected;
 }
 
 bool Checker::sameFunctionSignature(TypePtr left, TypePtr right) {
@@ -1339,6 +1511,11 @@ TypePtr Checker::resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &
     if (type == nullptr) {
       const auto parameter = typeParameters_.find(name);
       if (parameter != typeParameters_.end()) type = parameter->second;
+    }
+
+    if (type == nullptr) {
+      const auto namedStruct = structTypes_.find(name);
+      if (namedStruct != structTypes_.end()) type = namedStruct->second;
     }
 
     // Check type aliases (skip for auto and void, which are intentionally null)

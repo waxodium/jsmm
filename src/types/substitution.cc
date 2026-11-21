@@ -51,7 +51,7 @@ TypePtr substitute(TypePtr type, const Substitution &mapping, TypeContext &conte
     fields.reserve(type->fields.size());
     for (const auto &field : type->fields)
       fields.emplace_back(field.first, substitute(field.second, mapping, context));
-    return context.structType(std::move(fields));
+    return context.structType(std::move(fields), type->name);
   }
   case TypeKind::Array: return context.arrayType(substitute(type->element, mapping, context));
   case TypeKind::Union: {

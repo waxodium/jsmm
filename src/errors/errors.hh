@@ -34,6 +34,10 @@ enum class ErrorCode : std::uint16_t {
   PARSE_EXPECTED_EXPRESSION,
   PARSE_EXPECTED_COLON_AFTER_LABEL,
   PARSE_EXPECTED_TYPE_NAME,
+  PARSE_EXPECTED_STRUCT_NAME,
+  PARSE_EXPECTED_STRUCT_BODY,
+  PARSE_EXPECTED_FIELD_NAME,
+  PARSE_EXPECTED_FIELD_SEMICOLON,
   PARSE_MISSING_SEMICOLON,
   PARSE_UNEXPECTED_TOKEN_AFTER_BREAK,
   PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE,
@@ -55,6 +59,11 @@ enum class ErrorCode : std::uint16_t {
   TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS,
   TYPE_CALL_TARGET_EXPECTS_ARGUMENTS,
   TYPE_UNKNOWN_TYPE_NAME,
+  TYPE_DUPLICATE_STRUCT,
+  TYPE_STRUCT_DECLARATIONS_MUST_BE_TOP_LEVEL,
+  TYPE_DUPLICATE_FIELD,
+  TYPE_UNKNOWN_FIELD,
+  TYPE_RECURSIVE_STRUCT,
   TYPE_UNION_REQUIRES_SINGLE_PAYLOAD,
   TYPE_FLOAT_LAYOUT_INVALID,
   TYPE_TYPE_OPERAND_EXPECTED,
@@ -120,6 +129,10 @@ constexpr std::string_view errorMessage(ErrorCode code) {
   case ErrorCode::PARSE_EXPECTED_EXPRESSION: return "expected expression";
   case ErrorCode::PARSE_EXPECTED_COLON_AFTER_LABEL: return "expected ':' after label";
   case ErrorCode::PARSE_EXPECTED_TYPE_NAME: return "expected a type name";
+  case ErrorCode::PARSE_EXPECTED_STRUCT_NAME: return "expected a struct name";
+  case ErrorCode::PARSE_EXPECTED_STRUCT_BODY: return "expected '{' before struct body";
+  case ErrorCode::PARSE_EXPECTED_FIELD_NAME: return "expected a struct field name";
+  case ErrorCode::PARSE_EXPECTED_FIELD_SEMICOLON: return "expected ';' after struct field";
   case ErrorCode::PARSE_MISSING_SEMICOLON: return "missing semicolon before statement";
   case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_BREAK: return "unexpected token after 'break'";
   case ErrorCode::PARSE_UNEXPECTED_TOKEN_AFTER_CONTINUE: return "unexpected token after 'continue'";
@@ -143,6 +156,12 @@ constexpr std::string_view errorMessage(ErrorCode code) {
   case ErrorCode::TYPE_BUILTIN_EXPECTS_AT_LEAST_ARGUMENTS: return "expects at least arguments";
   case ErrorCode::TYPE_CALL_TARGET_EXPECTS_ARGUMENTS: return "call target expects arguments";
   case ErrorCode::TYPE_UNKNOWN_TYPE_NAME: return "unknown type name";
+  case ErrorCode::TYPE_DUPLICATE_STRUCT: return "duplicate struct declaration";
+  case ErrorCode::TYPE_STRUCT_DECLARATIONS_MUST_BE_TOP_LEVEL:
+    return "struct declarations must appear at the top level";
+  case ErrorCode::TYPE_DUPLICATE_FIELD: return "duplicate struct field";
+  case ErrorCode::TYPE_UNKNOWN_FIELD: return "unknown struct field";
+  case ErrorCode::TYPE_RECURSIVE_STRUCT: return "recursive by-value struct field";
   case ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD:
     return "a union may hold at most one non-nullable member";
   case ErrorCode::TYPE_FLOAT_LAYOUT_INVALID: return "invalid float bit layout";

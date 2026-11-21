@@ -71,11 +71,18 @@ private:
   };
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
+  void collectStructs(const reader::Program &program);
+  void hoistTypeAliases(const reader::Program &program);
+  void resolveStructFields();
+  void validateStructLayouts();
   void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body);
   void inferStatements(const reader::StatementList &statements);
   void inferDeclaration(const reader::VariableDeclaration &declaration);
   void inferStatement(const reader::Statement &statement);
   TypePtr inferExpression(const reader::ExprPtr &expr);
+  TypePtr inferExpected(const reader::ExprPtr &expr, TypePtr expected);
+  TypePtr inferObjectExpected(const reader::ExprPtr &expr, const reader::ObjectExpr &object,
+                              TypePtr expected);
   TypePtr inferIdentifier(const reader::ExprPtr &expr, const reader::IdentifierExpr &identifier);
   TypePtr inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary);
   TypePtr inferAddressOf(const reader::ExprPtr &expr, const reader::AddressOfExpr &addrOf);
@@ -150,6 +157,9 @@ private:
   TypeContext typeContext_;
   Annotations annotations_;
   std::unordered_map<std::string, TypePtr> typeAliases_;
+  std::unordered_map<std::string, TypePtr> structTypes_;
+  std::vector<const reader::StructDeclaration *> structDeclarations_;
+  std::unordered_set<const reader::StructDeclaration *> topLevelStructs_;
   std::unordered_map<std::string, TypePtr> typeParameters_;
 };
 

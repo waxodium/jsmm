@@ -237,6 +237,18 @@ struct DirectiveStatement {
   SourceRange range{};
 };
 
+struct StructField {
+  std::string name;
+  std::shared_ptr<TypeExpr> annotation;
+  SourceRange range{};
+};
+
+struct StructDeclaration {
+  std::string name;
+  std::vector<StructField> fields;
+  SourceRange range{};
+};
+
 // The expression type wrapper: carries a typed node plus source range.
 struct Expression {
   std::variant<NumberLiteralExpr, StringLiteralExpr, BytesLiteralExpr, IdentifierExpr, CallExpr,
@@ -250,7 +262,7 @@ struct Expression {
 struct Statement {
   std::variant<BlockStatement, VariableDeclaration, FunctionDeclaration, ExpressionStatement,
                IfStatement, WhileStatement, SwitchStatement, BreakStatement, ContinueStatement,
-               ReturnStatement, LabeledStatement, DirectiveStatement>
+               ReturnStatement, LabeledStatement, DirectiveStatement, StructDeclaration>
       node;
   SourceRange range{};
 };

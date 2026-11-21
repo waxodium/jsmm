@@ -93,10 +93,12 @@ TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr resul
   return type;
 }
 
-TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
+TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields,
+                                std::string name) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Struct;
   type->id = nextId_++;
+  type->name = std::move(name);
   type->fields = std::move(fields);
   return type;
 }
@@ -175,6 +177,7 @@ std::string TypeContext::showType(TypePtr type) {
     return out;
   }
   case TypeKind::Struct: {
+    if (!type->name.empty()) return type->name;
     std::string out = "struct ObjectLiteral { ";
     for (std::size_t i = 0; i < type->fields.size(); ++i) {
       if (i != 0) out += ", ";

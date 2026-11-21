@@ -46,6 +46,7 @@ private:
   Statement parseFunctionDeclaration();
   Statement parseReturnStatement();
   Statement parseTypeDeclaration();
+  Statement parseStructDeclaration();
   Statement parseBlock();
   StatementList parseBlockBody();
   StatementList parseConsequent();

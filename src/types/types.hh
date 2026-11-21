@@ -33,6 +33,7 @@ using TypePtr = std::shared_ptr<Type>;
 struct Type {
   TypeKind kind;
   int id = 0;
+  std::string name;
   std::size_t length = 0;
   bool isSigned = true;
   bool isVariadic = false;
@@ -75,9 +76,9 @@ public:
   TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();
-  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result,
-                       bool isVariadic = false, TypePtr variadicElement = nullptr);
-  TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
+  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result, bool isVariadic = false,
+                       TypePtr variadicElement = nullptr);
+  TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields, std::string name = {});
   TypePtr arrayType(TypePtr element, std::size_t length = 0);
   TypePtr pointerType(TypePtr pointed);
   TypePtr unionType(std::vector<TypePtr> members);

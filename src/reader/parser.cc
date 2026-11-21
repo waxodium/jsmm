@@ -195,6 +195,7 @@ Statement Parser::parseStatement() {
           keyword == "float")
         return parseDeclaration();
       if (keyword == "type") return parseTypeDeclaration();
+      if (keyword == "struct") return parseStructDeclaration();
       if (keyword == "return") return parseReturnStatement();
       if (keyword == "if") return parseIfStatement();
       if (keyword == "while") return parseWhileStatement();
@@ -325,6 +326,37 @@ Statement Parser::parseTypeDeclaration() {
   auto annotation = parseTypeAnnotation();
   ensureSemicolonOrASI();
   return Statement(VariableDeclaration{"type", {{name, nullptr, annotation}}, {}});
+}
+
+Statement Parser::parseStructDeclaration() {
+  const SourcePosition start = current().start;
+  consume();
+  if (current().kind != TokenKind::Identifier)
+    fail("expected a struct name", errors::ErrorCode::PARSE_EXPECTED_STRUCT_NAME);
+  const std::string name = consume().lexeme;
+  if (!eat("{"))
+    fail("expected '{' before struct body", errors::ErrorCode::PARSE_EXPECTED_STRUCT_BODY);
+  std::vector<StructField> fields;
+  while (current().lexeme != "}") {
+    if (current().kind == TokenKind::End)
+      fail("expected '}' to close struct body",
+           errors::ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK);
+    auto annotation = parseTypeAnnotation();
+    if (current().kind != TokenKind::Identifier && current().kind != TokenKind::Keyword)
+      fail("expected a struct field name", errors::ErrorCode::PARSE_EXPECTED_FIELD_NAME);
+    const SourcePosition fieldStart = current().start;
+    const std::string fieldName = consume().lexeme;
+    const SourcePosition fieldEnd = tokens_.at(index_ - 1).end;
+    if (!eat(";"))
+      fail("expected ';' after struct field", errors::ErrorCode::PARSE_EXPECTED_FIELD_SEMICOLON);
+    fields.push_back({fieldName, std::move(annotation), SourceRange{fieldStart, fieldEnd}});
+  }
+  if (!eat("}"))
+    fail("expected '}' to close struct body",
+         errors::ErrorCode::PARSE_EXPECTED_RBRACE_TO_CLOSE_BLOCK);
+  ensureSemicolonOrASI();
+  return Statement(
+      StructDeclaration{name, std::move(fields), SourceRange{start, tokens_.at(index_ - 1).end}});
 }
 
 int Parser::parsePointerStars() {

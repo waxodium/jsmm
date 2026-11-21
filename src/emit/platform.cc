@@ -218,15 +218,24 @@ jsmm_memcpy_done:
 constexpr const char *memsetText = R"ASM(.section .text
 .globl jsmm_memset
 jsmm_memset:
-  mov rax, rdi
+  mov r9, rdi
   mov rcx, rdx
-  mov r8, rsi
-  shl r8, 8
-  add r8, rsi
-  shl r8, 8
-  add r8, rsi
-  shl r8, 8
-  add r8, rsi
+  movzx rsi, sil
+  mov rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
   shr rcx, 3
   jz jsmm_memset_tail
   rep stosq
@@ -238,6 +247,7 @@ jsmm_memset_tail:
   and rcx, 7
   rep stosb
 jsmm_memset_done:
+  mov rax, r9
   ret
 )ASM";
 
