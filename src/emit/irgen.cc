@@ -261,7 +261,24 @@ llvm::Value *IrGenerator::buildRestArray(const std::vector<EmitValue> &elements,
   return base;
 }
 
+bool IrGenerator::isReferenceValue(types::TypePtr type) const {
+  const TypePtr resolved = resolve(std::move(type));
+  return resolved != nullptr &&
+         (resolved->kind == TypeKind::Struct || resolved->kind == TypeKind::Array);
+}
+
+bool IrGenerator::isInlineAggregate(types::TypePtr type) const {
+  const TypePtr resolved = resolve(std::move(type));
+  return resolved != nullptr && resolved->kind == TypeKind::Struct;
+}
+
 llvm::Type *IrGenerator::storageType(types::TypePtr type) const {
+  if (isInlineAggregate(type)) {
+    const types::TypeLayout layout = types::layoutOf(resolve(type));
+    const std::uint64_t size = layout.defined && layout.size != 0 ? layout.size : 8;
+    return llvm::ArrayType::get(i8Type_, size);
+  }
+  if (isReferenceValue(type)) return i64Type_;
   const types::TypeLayout layout = types::layoutOf(type);
   if (!layout.defined) return i64Type_;
   if (layout.size != 1 && layout.size != 2 && layout.size != 4 && layout.size != 8) return i64Type_;
@@ -269,6 +286,12 @@ llvm::Type *IrGenerator::storageType(types::TypePtr type) const {
 }
 
 std::uint64_t IrGenerator::elementSize(types::TypePtr type) const {
+  if (isInlineAggregate(type)) {
+    const types::TypeLayout layout = types::layoutOf(resolve(std::move(type)));
+    if (layout.defined && layout.size != 0) return layout.size;
+    return 8;
+  }
+  if (isReferenceValue(type)) return 8;
   const types::TypeLayout layout = types::layoutOf(type);
   if (!layout.defined || layout.size == 0) return 8;
   return layout.size;
@@ -413,9 +436,12 @@ llvm::Value *IrGenerator::roundFloatToLayout(llvm::Value *value, types::TypePtr 
   if (type == nullptr || type->kind != TypeKind::Float) return value;
   return unpackFloatFromLayout(packFloatToLayout(value, type), type);
 }
-
 IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePtr type) const {
   const TypePtr resolved = resolve(type);
+  if (isInlineAggregate(resolved))
+    return EmitValue{
+        builder_->CreatePtrToInt(builder_->CreateIntToPtr(address, ptrType_), i64Type_), false};
+  if (isReferenceValue(resolved)) return EmitValue{builder_->CreateLoad(i64Type_, address), false};
   const types::TypeLayout layout = types::layoutOf(resolved);
   if (!layout.defined ||
       (layout.size != 1 && layout.size != 2 && layout.size != 4 && layout.size != 8)) {
@@ -445,8 +471,21 @@ IrGenerator::EmitValue IrGenerator::loadSlot(llvm::Value *address, types::TypePt
   return EmitValue{bits, false};
 }
 
-void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type) const {
+void IrGenerator::storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type) {
   const TypePtr resolved = resolve(type);
+  if (isInlineAggregate(resolved)) {
+    const types::TypeLayout layout = types::layoutOf(resolved);
+    const std::uint64_t size = layout.defined && layout.size != 0 ? layout.size : 8;
+    builder_->CreateCall(
+        memcpyFunction(),
+        {builder_->CreatePtrToInt(builder_->CreateIntToPtr(address, ptrType_), i64Type_),
+         asRaw(value), i64(size)});
+    return;
+  }
+  if (isReferenceValue(resolved)) {
+    builder_->CreateStore(asRaw(value), address);
+    return;
+  }
   const types::TypeLayout layout = types::layoutOf(resolved);
   if (!layout.defined ||
       (layout.size != 1 && layout.size != 2 && layout.size != 4 && layout.size != 8)) {
@@ -548,9 +587,10 @@ llvm::GlobalVariable *IrGenerator::globalFor(const std::string &name, types::Typ
   std::uint64_t alignment = layout.defined ? layout.alignment : 8;
   if (alignment > 8) alignment = 8;
   if (alignment == 0) alignment = 1;
-  auto *global =
-      new llvm::GlobalVariable(*module_, storage, false, llvm::GlobalValue::InternalLinkage,
-                               llvm::ConstantInt::get(storage, 0, false), "jsmm.g." + name);
+  llvm::Constant *initializer = storage->isIntegerTy() ? llvm::ConstantInt::get(storage, 0, false)
+                                                       : llvm::ConstantAggregateZero::get(storage);
+  auto *global = new llvm::GlobalVariable(
+      *module_, storage, false, llvm::GlobalValue::InternalLinkage, initializer, "jsmm.g." + name);
   global->setAlignment(llvm::Align(alignment));
   global->setDSOLocal(true);
   globals_[name] = global;
@@ -966,7 +1006,21 @@ IrGenerator::EmitValue IrGenerator::coerce(types::TypePtr destination, types::Ty
   if (target->kind == TypeKind::Bytes && origin->kind == TypeKind::Array) {
     return convertArrayToBytes(value, origin);
   }
+  if (target->kind == TypeKind::Array && origin->kind == TypeKind::Array)
+    return copyArray(value, target);
   return value;
+}
+
+IrGenerator::EmitValue IrGenerator::copyArray(EmitValue value, types::TypePtr type) {
+  const TypePtr resolved = resolve(std::move(type));
+  if (resolved == nullptr || resolved->kind != TypeKind::Array) return value;
+  llvm::Value *source = asRaw(value);
+  llvm::Value *length = builder_->CreateLoad(i64Type_, builder_->CreateIntToPtr(source, ptrType_));
+  const std::uint64_t stride = elementSize(resolved->element);
+  llvm::Value *bytes = builder_->CreateAdd(i64(8), builder_->CreateMul(length, i64(stride)));
+  llvm::Value *result = builder_->CreateCall(allocFunction(), {bytes});
+  builder_->CreateCall(memcpyFunction(), {result, source, bytes});
+  return rawValue(result);
 }
 
 IrGenerator::EmitValue IrGenerator::copyText(EmitValue value) {
@@ -1271,20 +1325,16 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
         } else if constexpr (std::is_same_v<T, reader::UnaryExpr>) {
           return generateUnary(node);
         } else if constexpr (std::is_same_v<T, reader::AddressOfExpr>) {
-          // For &member_expr, return the address directly without loading
-          if (const auto *member = std::get_if<reader::MemberExpr>(&node.operand->node)) {
-            llvm::Value *addr = generateMemberAddress(*member, node.operand->range);
-            return rawValue(builder_->CreatePtrToInt(addr, i64Type_));
-          }
+          if (const auto *member = std::get_if<reader::MemberExpr>(&node.operand->node))
+            return rawValue(generateMemberAddress(*member, node.operand->range));
           // For &*deref_expr, return the pointer value directly
           if (const auto *deref = std::get_if<reader::DereferenceExpr>(&node.operand->node)) {
             EmitValue ptrValue = generateExpression(deref->operand);
             return rawValue(asRaw(ptrValue));
           }
           if (const auto *identifier = std::get_if<reader::IdentifierExpr>(&node.operand->node)) {
-            if (Slot *slot = lookupSlot(identifier->name)) {
+            if (Slot *slot = lookupSlot(identifier->name))
               return rawValue(builder_->CreatePtrToInt(slot->address, i64Type_));
-            }
             const auto global = globals_.find(identifier->name);
             if (global != globals_.end())
               return rawValue(builder_->CreatePtrToInt(global->second, i64Type_));
@@ -1293,8 +1343,9 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           return rawValue(asRaw(operand));
         } else if constexpr (std::is_same_v<T, reader::DereferenceExpr>) {
           EmitValue ptrValue = generateExpression(node.operand);
-          llvm::Value *pointer = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
           const TypePtr pointedType = resolve(typeOf(expression));
+          if (isInlineAggregate(pointedType)) return rawValue(asRaw(ptrValue));
+          llvm::Value *pointer = builder_->CreateIntToPtr(asRaw(ptrValue), ptrType_);
           return loadSlot(pointer, pointedType);
         } else if constexpr (std::is_same_v<T, reader::BinaryExpr>) {
           return generateBinary(node);
@@ -1316,6 +1367,12 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
                   bytePointer(single, 8));
               return rawValue(single);
             }
+          }
+          if (node.computedFlag) {
+            const TypePtr objectType = resolve(typeOf(node.object));
+            if (objectType != nullptr && objectType->kind == TypeKind::Pointer &&
+                isInlineAggregate(typeOf(expression)))
+              return rawValue(address);
           }
           return loadSlot(builder_->CreateIntToPtr(address, ptrType_), typeOf(expression));
         } else if constexpr (std::is_same_v<T, reader::ObjectExpr>) {
@@ -1361,26 +1418,25 @@ IrGenerator::EmitValue IrGenerator::generateExpression(const reader::ExprPtr &ex
           llvm::Value *base = allocate(8 + stride * arraySize);
           builder_->CreateStore(i64(arraySize), bytePointer(base, 0));
 
-          // Zero-initialize all slots
-          for (std::size_t index = 0; index < arraySize; ++index) {
-            EmitValue zero =
-                emitZeroValue(elementType != nullptr ? elementType : types_->nullType());
-            storeSlot(bytePointer(base, 8 + stride * index), zero, elementType);
-          }
+          const auto storeElement = [&](std::size_t index, EmitValue value) {
+            storeSlot(bytePointer(base, 8 + stride * index), value, elementType);
+          };
 
-          // Store direct elements
+          for (std::size_t index = 0; index < arraySize; ++index)
+            storeElement(index,
+                         emitZeroValue(elementType != nullptr ? elementType : types_->nullType()));
+
           for (std::size_t index = 0; index < node.elements.size(); ++index) {
             EmitValue value = generateExpression(node.elements[index]);
             if (elementType != nullptr)
               value = coerce(elementType, typeOf(node.elements[index]), value);
-            storeSlot(bytePointer(base, 8 + stride * index), value, elementType);
+            storeElement(index, value);
           }
 
-          // Store designated initializers
           for (const auto &desig : node.designated) {
             EmitValue value = generateExpression(desig.value);
             if (elementType != nullptr) value = coerce(elementType, typeOf(desig.value), value);
-            storeSlot(bytePointer(base, 8 + stride * desig.index), value, elementType);
+            storeElement(desig.index, value);
           }
           return rawValue(base);
         } else if constexpr (std::is_same_v<T, reader::CallExpr>) {
@@ -1976,7 +2032,7 @@ llvm::Value *IrGenerator::generateMemberAddress(const reader::MemberExpr &member
   // Dereference pointer if needed - for member access, we keep the pointer
   // value as the base and add the field offset directly
   if (objectType != nullptr && objectType->kind == TypeKind::Pointer) {
-    objectType = objectType->pointed;
+    objectType = resolve(objectType->pointed);
   }
 
   if (member.computedFlag) {
@@ -2449,7 +2505,14 @@ void IrGenerator::generateFunction(const reader::FunctionDeclaration &declaratio
   generateStatements(declaration.body->statements);
   if (!terminated()) builder_->CreateBr(returnBlock_);
   builder_->SetInsertPoint(returnBlock_);
-  if (!terminated()) {
+  if (!terminated() && isInlineAggregate(returnType_)) {
+    const types::TypeLayout layout = types::layoutOf(resolve(returnType_));
+    const std::uint64_t size = layout.defined && layout.size != 0 ? layout.size : 8;
+    llvm::Value *result = allocate(size);
+    builder_->CreateCall(memcpyFunction(),
+                         {result, builder_->CreatePtrToInt(returnSlot_, i64Type_), i64(size)});
+    builder_->CreateRet(result);
+  } else if (!terminated()) {
     llvm::Value *stored = builder_->CreateLoad(storageType(returnType_), returnSlot_);
     llvm::Value *retVal = stored;
     if (returnType_ != nullptr && returnType_->kind == TypeKind::Float) {

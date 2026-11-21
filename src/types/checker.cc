@@ -261,9 +261,11 @@ void Checker::inferStatements(const reader::StatementList &statements) {
 void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
   if (declaration.kind == "type") {
     for (const auto &declarator : declaration.declarations) {
-      // Add placeholder for recursive type references (e.g., Node* next inside Node)
-      typeAliases_.insert_or_assign(declarator.name, typeContext_.variable());
+      const TypePtr placeholder = typeContext_.variable();
+      typeAliases_.insert_or_assign(declarator.name, placeholder);
       TypePtr resolved = resolveTypeAnnotation(declarator.annotation);
+      if (resolved != nullptr && resolved != placeholder && placeholder->link == nullptr)
+        placeholder->link = resolved;
       typeAliases_.insert_or_assign(declarator.name, resolved);
     }
     return;
@@ -344,6 +346,11 @@ void Checker::inferDeclaration(const reader::VariableDeclaration &declaration) {
             errors::ErrorStatus{errors::ErrorCode::TYPE_UNION_REQUIRES_SINGLE_PAYLOAD,
                                 declarator.name, declarator.range}};
     }
+
+    if (bindingType != nullptr && bindingType->kind == TypeKind::Variable &&
+        bindingType->link == nullptr && initializerType != nullptr &&
+        resolve(initializerType)->kind == TypeKind::Null)
+      bindingType->link = nullType();
 
     // Store the resolved binding type for codegen coercion and zero values
     if (bindingType != nullptr) {
@@ -650,10 +657,9 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     const TypePtr resolvedRight = resolve(right);
     if (isText(left) && isText(right)) return stringType();
     if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
-        resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer) {
-      requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
-      return numberType();
-    }
+        resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer)
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       binary.op, expr->range}};
     if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
         requireNumeric(right)) {
       requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
@@ -669,25 +675,28 @@ TypePtr Checker::inferBinary(const reader::ExprPtr &expr, const reader::BinaryEx
     if (rl != nullptr && (rl->kind == TypeKind::Integer || rl->kind == TypeKind::Byte)) return rl;
     return numberType();
   }
-
   if (binary.op == "-" || binary.op == "*" || binary.op == "/" || binary.op == "%") {
     const TypePtr resolvedLeft = resolve(left);
     const TypePtr resolvedRight = resolve(right);
-    if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
-        resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer) {
-      requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
-      return numberType();
+    const bool pointerOperand =
+        (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer) ||
+        (resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer);
+    if (binary.op == "-" && pointerOperand) {
+      if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
+          resolvedRight != nullptr && resolvedRight->kind == TypeKind::Pointer) {
+        requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
+        return numberType();
+      }
+      if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
+          requireNumeric(right)) {
+        requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
+        annotations_.argumentTypes.insert_or_assign(expr.get(), right);
+        return pointerType(resolvedLeft->pointed);
+      }
     }
-    if (resolvedLeft != nullptr && resolvedLeft->kind == TypeKind::Pointer &&
-        resolvedRight != nullptr &&
-        (resolvedRight->kind == TypeKind::Number || resolvedRight->kind == TypeKind::Byte ||
-         (resolvedRight->kind == TypeKind::Integer &&
-          resolvedRight->length == resolvedLeft->pointed->length &&
-          resolvedRight->isSigned == resolvedLeft->pointed->isSigned))) {
-      requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
-      annotations_.argumentTypes.insert_or_assign(expr.get(), right);
-      return pointerType(resolvedLeft->pointed);
-    }
+    if (pointerOperand)
+      throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
+                                                       binary.op, expr->range}};
     if (!requireNumeric(left) || !requireNumeric(right))
       throw errors::ErrorException{errors::ErrorStatus{errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR,
                                                        binary.op, expr->range}};
@@ -795,6 +804,7 @@ TypePtr Checker::inferAssignment(const reader::ExprPtr &expr,
     const TypePtr resolvedTarget = resolve(target);
     if ((assignment.op == "+=" || assignment.op == "-=") && resolvedTarget != nullptr &&
         resolvedTarget->kind == TypeKind::Pointer) {
+      requireCapability(capabilities().pointerArithmetic, "pointer arithmetic", expr->range);
       if (!requireNumeric(right))
         throw errors::ErrorException{errors::ErrorStatus{
             errors::ErrorCode::TYPE_UNSUPPORTED_OPERATOR, assignment.op, expr->range}};

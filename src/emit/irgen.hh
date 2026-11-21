@@ -107,7 +107,7 @@ private:
   llvm::Value *dynamicPointer(llvm::Value *base, llvm::Value *offset) const;
   llvm::Value *allocate(std::uint64_t bytes);
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;
-  void storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type) const;
+  void storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type);
   llvm::Type *storageType(types::TypePtr type) const;
   llvm::Type *floatStorageType(types::TypePtr type) const;
   bool isBfloat16(types::TypePtr type) const;
@@ -122,6 +122,8 @@ private:
   // rounding at the declared width).
   llvm::Value *roundFloatToLayout(llvm::Value *value, types::TypePtr type) const;
 
+  bool isReferenceValue(types::TypePtr type) const;
+  bool isInlineAggregate(types::TypePtr type) const;
   std::uint64_t elementSize(types::TypePtr type) const;
   std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 
@@ -173,6 +175,7 @@ private:
   EmitValue convertStruct(types::TypePtr destination, types::TypePtr source, EmitValue value);
   EmitValue convertArrayToBytes(EmitValue value, types::TypePtr arrayType);
   EmitValue copyText(EmitValue value);
+  EmitValue copyArray(EmitValue value, types::TypePtr type);
   bool sameLayout(types::TypePtr left, types::TypePtr right) const;
 
   void generateDeclaration(const reader::VariableDeclaration &declaration);
