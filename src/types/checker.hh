@@ -1,6 +1,8 @@
 #pragma once
 
 #include "builtins/builtin.hh"
+#include "mode/config.hh"
+#include "mode/mode.hh"
 #include "reader/ast.hh"
 #include "types/types.hh"
 
@@ -17,6 +19,7 @@ struct Annotations {
   std::unordered_map<const reader::Expression *, TypePtr> expressionTypes;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypes;
   std::unordered_map<const reader::Expression *, TypePtr> argumentTypes;
+  std::unordered_map<const reader::Expression *, reader::ExprPtr> operandValues;
   std::unordered_map<std::string, TypePtr> functionTypes;
 };
 
@@ -30,7 +33,22 @@ public:
 
 private:
   struct Scope {
+    // Ownership state per binding:
+    //  - owned: the scope owns the object and must destroy it on exit
+    //  - borrowed: a non-owning borrow (created by &lvalue)
+    //  - moved_from: the binding was moved from, no longer owns anything
     std::unordered_map<std::string, TypePtr> bindings;
+    // Track which bindings own allocated objects
+    // Key: binding name, Value: true if owned, false if borrowed/moved_from
+    std::unordered_map<std::string, bool> ownership;
+    // Track borrowed pointers and their referents for lifetime checking
+    // Key: binding name, true if this is a borrow target, false otherwise
+    std::unordered_map<std::string, bool> isBorrowTarget;
+    // Stack tracking promoted bindings and their original owners
+    // Each entry: {promoted_binding_name, original_owner_scope_index}
+    std::vector<std::pair<std::string, std::size_t>> promotionStack;
+    // Track which bindings have been moved from
+    std::unordered_set<std::string> movedFrom;
     std::unordered_set<std::string> constants;
   };
 
@@ -55,6 +73,7 @@ private:
     TypePtr undefinedType() override;
     TypePtr usizeType() override;
     TypePtr bytePointerType() override;
+    TypePtr pointerType(TypePtr pointed) override;
     TypePtr resolveType(TypePtr type) override;
     [[nodiscard]] std::string showType(TypePtr type) override;
     [[noreturn]] void report(const reader::SourceRange &range,
@@ -69,15 +88,24 @@ private:
   };
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
+  void collectStructs(const reader::Program &program);
+  void hoistTypeAliases(const reader::Program &program);
+  void resolveStructFields();
+  void validateStructLayouts();
   void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body);
   void inferStatements(const reader::StatementList &statements);
   void inferDeclaration(const reader::VariableDeclaration &declaration);
   void inferStatement(const reader::Statement &statement);
   TypePtr inferExpression(const reader::ExprPtr &expr);
+  TypePtr inferExpected(const reader::ExprPtr &expr, TypePtr expected);
+  TypePtr inferObjectExpected(const reader::ExprPtr &expr, const reader::ObjectExpr &object,
+                              TypePtr expected);
   TypePtr inferIdentifier(const reader::ExprPtr &expr, const reader::IdentifierExpr &identifier);
   TypePtr inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary);
   TypePtr inferAddressOf(const reader::ExprPtr &expr, const reader::AddressOfExpr &addrOf);
   TypePtr inferDereference(const reader::ExprPtr &expr, const reader::DereferenceExpr &deref);
+  TypePtr inferCast(const reader::ExprPtr &expr, const reader::CastExpr &cast);
+  TypePtr callableType(TypePtr type);
   TypePtr inferBinary(const reader::ExprPtr &expr, const reader::BinaryExpr &binary);
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
   TypePtr targetType(const reader::ExprPtr &target);
@@ -89,6 +117,13 @@ private:
   void resolvePendingMembers();
   void recordTopLevelTypes();
   void finalize();
+  void destroyScopeObjects(std::size_t scopeIndex);
+  void markMovedFrom(Scope &scope, const std::string &name);
+  void destroyAllScopes();
+
+  // Safe mode helpers
+  bool inSafeMode() const { return mode_ == mode::Mode::Safe; }
+  bool inUnsafeMode() const { return mode_ == mode::Mode::Unsafe; }
 
   TypePtr numberType() const { return typeContext_.number(); }
   TypePtr stringType() const { return typeContext_.string(); }
@@ -112,6 +147,11 @@ private:
   bool isBytes(TypePtr type) const;
   bool isText(TypePtr type) const;
   bool requireNumeric(TypePtr type);
+  void requireCapability(bool enabled, std::string_view feature,
+                         const reader::SourceRange &range);
+  const mode::Capabilities &capabilities() const {
+    return mode::policyFor(mode_).capabilities;
+  }
   bool unifies(TypePtr left, TypePtr right, std::string_view context);
   bool sameFunctionSignature(TypePtr left, TypePtr right);
   bool holdsFunctionValue(TypePtr type);
@@ -126,6 +166,8 @@ private:
   TypePtr inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object);
   TypePtr inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array);
   TypePtr resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation);
+  TypePtr fieldStorageType(TypePtr type, const std::string &name,
+                           const reader::SourceRange &range);
 
   std::vector<FunctionEntry> functions_;
   std::vector<Scope> scopes_;
@@ -138,10 +180,14 @@ private:
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
   std::vector<std::function<void()>> deferredChecks_;
   std::vector<TypePtr> inferenceVariables_;
+  mode::Mode mode_ = mode::kDefaultMode;
   BuiltinInference builtinInference_{*this};
   TypeContext typeContext_;
   Annotations annotations_;
   std::unordered_map<std::string, TypePtr> typeAliases_;
+  std::unordered_map<std::string, TypePtr> structTypes_;
+  std::vector<const reader::StructDeclaration *> structDeclarations_;
+  std::unordered_set<const reader::StructDeclaration *> topLevelStructs_;
   std::unordered_map<std::string, TypePtr> typeParameters_;
 };
 

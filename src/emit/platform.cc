@@ -18,18 +18,52 @@ _start:
 constexpr const char *allocText = R"ASM(.section .text
 .globl jsmm_alloc
 jsmm_alloc:
-  mov rax, QWORD PTR [rip + jsmm_arena_pointer]
-  lea rcx, [rax + rdi + 15]
-  and rcx, -16
-  lea rdx, [rip + jsmm_arena_end]
-  cmp rcx, QWORD PTR [rdx]
-  jbe jsmm_alloc_commit
-  mov rsi, 67108864
-  cmp rdi, rsi
-  jbe jsmm_alloc_size
-  lea rsi, [rdi + 32]
-jsmm_alloc_size:
-  push rdi
+  mov rax, rdi
+  add rax, 15
+  and rax, -16
+  cmp rax, 16
+  jae jsmm_alloc_need
+  mov eax, 16
+jsmm_alloc_need:
+  mov r11, rax
+  mov r9, QWORD PTR [rip + jsmm_freelist]
+  xor r10d, r10d
+jsmm_alloc_scan:
+  test r9, r9
+  je jsmm_alloc_bump
+  cmp QWORD PTR [r9], r11
+  jae jsmm_alloc_take
+  mov r10, r9
+  mov r9, QWORD PTR [r9 + 8]
+  jmp jsmm_alloc_scan
+jsmm_alloc_take:
+  mov r8, QWORD PTR [r9 + 8]
+  test r10, r10
+  jne jsmm_alloc_unlink
+  mov QWORD PTR [rip + jsmm_freelist], r8
+  jmp jsmm_alloc_take_done
+jsmm_alloc_unlink:
+  mov QWORD PTR [r10 + 8], r8
+jsmm_alloc_take_done:
+  lea rax, [r9 + 16]
+  ret
+jsmm_alloc_bump:
+  mov rcx, QWORD PTR [rip + jsmm_arena_pointer]
+  lea rax, [rcx + r11 + 16]
+  cmp rax, QWORD PTR [rip + jsmm_arena_end]
+  ja jsmm_alloc_grow
+  mov QWORD PTR [rcx], r11
+  mov QWORD PTR [rip + jsmm_arena_pointer], rax
+  lea rax, [rcx + 16]
+  ret
+jsmm_alloc_grow:
+  push r11
+  lea rsi, [r11 + 48]
+  mov edx, 67108864
+  cmp rsi, rdx
+  jae jsmm_alloc_grow_size
+  mov rsi, rdx
+jsmm_alloc_grow_size:
   xor edi, edi
   mov edx, 3
   mov r10d, 34
@@ -37,18 +71,16 @@ jsmm_alloc_size:
   xor r9d, r9d
   mov eax, 9
   syscall
-  pop rdi
+  pop r11
   cmp rax, -4095
   jae jsmm_alloc_oom
-  mov rdx, rax
-  lea rcx, [rax + rdi + 15]
-  and rcx, -16
-  add rdx, rsi
-  mov QWORD PTR [rip + jsmm_arena_pointer], rcx
-  mov QWORD PTR [rip + jsmm_arena_end], rdx
-  ret
-jsmm_alloc_commit:
-  mov QWORD PTR [rip + jsmm_arena_pointer], rcx
+  mov rcx, rax
+  mov QWORD PTR [rcx], r11
+  lea rdx, [rcx + r11 + 16]
+  mov QWORD PTR [rip + jsmm_arena_pointer], rdx
+  add rax, rsi
+  mov QWORD PTR [rip + jsmm_arena_end], rax
+  lea rax, [rcx + 16]
   ret
 jsmm_alloc_oom:
   xor eax, eax
@@ -59,6 +91,8 @@ jsmm_arena_pointer:
   .quad jsmm_arena
 jsmm_arena_end:
   .quad jsmm_arena + 65536
+jsmm_freelist:
+  .quad 0
 .section .rodata
 jsmm_message_oom:
   .ascii "jsmm: out of memory\n"
@@ -68,6 +102,19 @@ jsmm_message_oom_end:
 .align 16
 jsmm_arena:
   .zero 65536
+)ASM";
+
+constexpr const char *freeText = R"ASM(.section .text
+.globl jsmm_free
+jsmm_free:
+  test rdi, rdi
+  je jsmm_free_done
+  sub rdi, 16
+  mov rax, QWORD PTR [rip + jsmm_freelist]
+  mov QWORD PTR [rdi + 8], rax
+  mov QWORD PTR [rip + jsmm_freelist], rdi
+jsmm_free_done:
+  ret
 )ASM";
 
 constexpr const char *moduloText = R"ASM(.section .text
@@ -218,15 +265,24 @@ jsmm_memcpy_done:
 constexpr const char *memsetText = R"ASM(.section .text
 .globl jsmm_memset
 jsmm_memset:
-  mov rax, rdi
+  mov r9, rdi
   mov rcx, rdx
-  mov r8, rsi
-  shl r8, 8
-  add r8, rsi
-  shl r8, 8
-  add r8, rsi
-  shl r8, 8
-  add r8, rsi
+  movzx rsi, sil
+  mov rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
+  shl rax, 8
+  add rax, rsi
   shr rcx, 3
   jz jsmm_memset_tail
   rep stosq
@@ -238,6 +294,7 @@ jsmm_memset_tail:
   and rcx, 7
   rep stosb
 jsmm_memset_done:
+  mov rax, r9
   ret
 )ASM";
 
@@ -719,12 +776,57 @@ jsmm_number_one:
   .quad 0x3ff0000000000000
 )ASM";
 
+constexpr const char *integerWriterText = R"ASM(.section .text
+.globl jsmm_write_int
+jsmm_write_int:
+  push rbx
+  push r12
+  sub rsp, 40
+  mov rbx, rsp
+  mov rax, rdi
+  mov r8, rsi
+  xor r9d, r9d
+  test r8, r8
+  jz jsmm_int_write_magnitude
+  test rax, rax
+  jns jsmm_int_write_magnitude
+  mov r9d, 1
+  neg rax
+jsmm_int_write_magnitude:
+  lea rdi, [rbx + 32]
+  mov r11, 10
+jsmm_int_write_loop:
+  xor edx, edx
+  div r11
+  add dl, 48
+  dec rdi
+  mov byte ptr [rdi], dl
+  test rax, rax
+  jnz jsmm_int_write_loop
+  test r9, r9
+  jz jsmm_int_write_emit
+  dec rdi
+  mov byte ptr [rdi], 45
+jsmm_int_write_emit:
+  lea rdx, [rbx + 32]
+  sub rdx, rdi
+  mov rsi, rdi
+  mov eax, 1
+  mov edi, 1
+  syscall
+  add rsp, 40
+  pop r12
+  pop rbx
+  ret
+)ASM";
+
 } // namespace
 
 void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare(std::string(startSymbol), startText);
   registry.declare(std::string(entryFrameSymbol), entryFrameText);
   registry.declare(std::string(allocSymbol), allocText);
+  registry.declare(std::string(freeSymbol), freeText);
   registry.declare(std::string(moduloSymbol), moduloText);
   registry.declare("int32", int32Text);
   registry.declare(std::string(boundsSymbol), boundsText);
@@ -740,6 +842,7 @@ void registerPlatformHelpers(HelperRegistry &registry) {
   registry.declare("literals", literalText);
   registry.declare("literal_writers", literalWriterText);
   registry.declare("number_writer", numberWriterText);
+  registry.declare("integer_writer", integerWriterText);
 }
 
 } // namespace jsmm::emit

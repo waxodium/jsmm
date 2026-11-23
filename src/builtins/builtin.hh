@@ -26,6 +26,7 @@ public:
   virtual TypePtr undefinedType() = 0;
   virtual TypePtr usizeType() = 0;
   virtual TypePtr bytePointerType() = 0;
+  virtual TypePtr pointerType(TypePtr pointed) = 0;
   virtual TypePtr resolveType(TypePtr type) = 0;
   [[nodiscard]] virtual std::string showType(TypePtr type) = 0;
   [[noreturn]] virtual void report(const SourceRange &range, const std::string &message) = 0;
@@ -58,20 +59,15 @@ public:
   virtual void emitMemcmp(const ExprPtr &a, const ExprPtr &b,
                           const ExprPtr &count) = 0;
   virtual void emitLength(const ExprPtr &operand) = 0;
-  virtual void emitVaCount() = 0;
-  virtual void emitVaArg(const CallExpr &call) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
 };
 
-enum class OperandKind { Value, Type };
-
 struct BuiltinSpec {
   std::string name;
   bool variadic = false;
   std::size_t minimumArguments = 0;
-  std::vector<OperandKind> operands;
   std::function<TypePtr(InferContext &, const std::vector<TypePtr> &, const SourceRange &)> infer;
   std::function<void(EmitContext &, const CallExpr &)> emit;
 };
@@ -99,7 +95,5 @@ void declareMemcpy(BuiltinRegistry &registry);
 void declareMemset(BuiltinRegistry &registry);
 void declareMemcmp(BuiltinRegistry &registry);
 void declareLength(BuiltinRegistry &registry);
-void declareVaCount(BuiltinRegistry &registry);
-void declareVaArg(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

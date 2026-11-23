@@ -46,6 +46,7 @@ private:
   Statement parseFunctionDeclaration();
   Statement parseReturnStatement();
   Statement parseTypeDeclaration();
+  Statement parseStructDeclaration();
   Statement parseBlock();
   StatementList parseBlockBody();
   StatementList parseConsequent();
@@ -56,12 +57,15 @@ private:
   Statement parseContinueStatement();
   Statement parseLabeledStatement();
   bool peekNextIsColon() const;
+  bool atDirectiveStatement() const;
   bool startsVariableDeclaration() const;
   bool startsFunctionDeclaration() const;
 
   ExprPtr parseExpression(int minimumBindingPower = 1);
   ExprPtr parsePrefix();
   ExprPtr parseUnaryPrefix();
+  bool looksLikeCast() const;
+  ExprPtr parseCast();
   ExprPtr parsePostfix(ExprPtr expression);
   ExprPtr parseCallPostfix(ExprPtr expression);
   ExprPtr parseMemberPostfix(ExprPtr expression);
@@ -72,7 +76,7 @@ private:
   ExprPtr parseObjectLiteral();
   ExprPtr parseArrayLiteral();
   std::shared_ptr<TypeExpr> parseTypeAnnotation();
-  std::shared_ptr<TypeExpr> parseTypeOperandAnnotation();
+  bool looksLikeTypeAt(std::size_t start, std::size_t &end) const;
   void parseIntTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
   void parseFloatTypeArguments(const std::shared_ptr<TypeExpr> &annotation);
   void parseArraySize(const std::shared_ptr<TypeExpr> &annotation);

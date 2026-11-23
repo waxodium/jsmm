@@ -93,10 +93,12 @@ TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr resul
   return type;
 }
 
-TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
+TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields,
+                                std::string name) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Struct;
   type->id = nextId_++;
+  type->name = std::move(name);
   type->fields = std::move(fields);
   return type;
 }
@@ -107,6 +109,12 @@ TypePtr TypeContext::arrayType(TypePtr element, std::size_t length) {
   type->id = nextId_++;
   type->length = length;
   type->element = std::move(element);
+  return type;
+}
+
+TypePtr TypeContext::inlineArrayType(TypePtr element, std::size_t length) {
+  TypePtr type = arrayType(std::move(element), length);
+  type->inlineStorage = true;
   return type;
 }
 
@@ -175,6 +183,7 @@ std::string TypeContext::showType(TypePtr type) {
     return out;
   }
   case TypeKind::Struct: {
+    if (!type->name.empty()) return type->name;
     std::string out = "struct ObjectLiteral { ";
     for (std::size_t i = 0; i < type->fields.size(); ++i) {
       if (i != 0) out += ", ";
@@ -254,6 +263,10 @@ TypeLayout layoutOf(TypePtr type) {
     if (type->length == 0) return {};
     const TypeLayout element = layoutOf(type->element);
     if (!element.defined) return {};
+    if (type->inlineStorage) {
+      const std::uint64_t alignment = element.alignment > 8 ? element.alignment : 8;
+      return knownLayout(alignUp(8 + element.size * type->length, alignment), alignment);
+    }
     return knownLayout(element.size * type->length, element.alignment);
   }
   case TypeKind::Struct: {

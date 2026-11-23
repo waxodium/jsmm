@@ -12,6 +12,7 @@ inline constexpr std::string_view entrySymbol = "jsmm_entry";
 inline constexpr std::string_view startSymbol = "_start";
 inline constexpr std::string_view entryFrameSymbol = "jsmm_entry_frame";
 inline constexpr std::string_view allocSymbol = "jsmm_alloc";
+inline constexpr std::string_view freeSymbol = "jsmm_free";
 inline constexpr std::string_view moduloSymbol = "jsmm_mod";
 inline constexpr std::string_view boundsSymbol = "jsmm_oob";
 inline constexpr std::string_view arenaSymbol = "jsmm_arena";

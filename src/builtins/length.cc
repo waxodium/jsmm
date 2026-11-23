@@ -42,7 +42,7 @@ void emitLength(EmitContext &context, const CallExpr &call) {
 } // namespace
 
 void declareLength(BuiltinRegistry &registry) {
-  registry.declare({"length", false, 1, {}, inferLength, emitLength});
+  registry.declare({"length", false, 1, inferLength, emitLength});
 }
 
 } // namespace jsmm::builtins

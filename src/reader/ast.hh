@@ -1,7 +1,10 @@
 #pragma once
 
+#include "mode/mode.hh"
+
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -133,12 +136,21 @@ struct TypeExpr {
   std::size_t arraySize = 0;
   bool isArray = false;
   bool isStruct = false;
+  bool isFunctionType = false;
+  std::shared_ptr<TypeExpr> returnType;
+  std::vector<std::shared_ptr<TypeExpr>> parameterTypes;
   std::vector<std::pair<std::string, std::shared_ptr<TypeExpr>>> fields;
   SourceRange range{};
 };
 
-struct TypeOperandExpr {
+struct CastExpr {
   std::shared_ptr<TypeExpr> annotation;
+  ExprPtr operand;
+};
+
+struct OperandExpr {
+  std::shared_ptr<TypeExpr> annotation;
+  ExprPtr value;
 };
 
 struct Statement;
@@ -229,44 +241,38 @@ struct ExpressionStatement {
   SourceRange range{};
 };
 
+struct DirectiveStatement {
+  mode::Mode mode;
+  SourceRange range{};
+};
+
+struct StructField {
+  std::string name;
+  std::shared_ptr<TypeExpr> annotation;
+  SourceRange range{};
+};
+
+struct StructDeclaration {
+  std::string name;
+  std::vector<StructField> fields;
+  SourceRange range{};
+};
+
 // The expression type wrapper: carries a typed node plus source range.
 struct Expression {
-  std::variant<
-    NumberLiteralExpr,
-    StringLiteralExpr,
-    BytesLiteralExpr,
-    IdentifierExpr,
-    CallExpr,
-    UnaryExpr,
-    AddressOfExpr,
-    DereferenceExpr,
-    BinaryExpr,
-    AssignmentExpr,
-    MemberExpr,
-    ObjectExpr,
-    ArrayExpr,
-    BooleanLiteralExpr,
-    NullLiteralExpr,
-    TypeOperandExpr,
-    RangeExpr
-  > node;
+  std::variant<NumberLiteralExpr, StringLiteralExpr, BytesLiteralExpr, IdentifierExpr, CallExpr,
+               UnaryExpr, AddressOfExpr, DereferenceExpr, BinaryExpr, AssignmentExpr, MemberExpr,
+               ObjectExpr, ArrayExpr, BooleanLiteralExpr, NullLiteralExpr, CastExpr, OperandExpr,
+               RangeExpr>
+      node;
   SourceRange range{};
 };
 
 struct Statement {
-  std::variant<
-    BlockStatement,
-    VariableDeclaration,
-    FunctionDeclaration,
-    ExpressionStatement,
-    IfStatement,
-    WhileStatement,
-    SwitchStatement,
-    BreakStatement,
-    ContinueStatement,
-    ReturnStatement,
-    LabeledStatement
-  > node;
+  std::variant<BlockStatement, VariableDeclaration, FunctionDeclaration, ExpressionStatement,
+               IfStatement, WhileStatement, SwitchStatement, BreakStatement, ContinueStatement,
+               ReturnStatement, LabeledStatement, DirectiveStatement, StructDeclaration>
+      node;
   SourceRange range{};
 };
 

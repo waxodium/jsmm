@@ -7,13 +7,13 @@ namespace jsmm::reader {
 namespace {
 
 const std::unordered_set<std::string> keywords = {
-    "break",   "case",  "const",  "continue", "default", "else", "false",   "float", "for",
-    "if",      "import", "int",   "null",     "return",  "signed", "switch", "typeof",
-    "true",    "unsigned", "void", "while",  "bytes",   "type",   "auto",  "string",
-    "bool",    "boolean"};
+    "break",  "case",   "const",  "continue", "default",  "else",    "false",
+    "float",  "for",    "if",     "import",   "int",      "null",    "return",
+    "signed", "switch", "typeof", "true",     "unsigned", "void",    "while",
+    "bytes",  "type",   "auto",   "string",   "bool",     "boolean", "struct"};
 
 const std::vector<std::string_view> punctuators = {
-    "<<=", ">>=", "&&=", "&&", "||=", "||",
+    "<<=", ">>=", "&&=", "&&", "||=", "||", "->",
     "<=", ">=", "==", "!=", ">>", "<<",
     "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
     "...",  "{", "}", "(", ")", "[", "]", ".", ";", ",", "<", ">", "+", "-", "*", "/", "%", "=", "!", "~", "^", "&", "|", ":",

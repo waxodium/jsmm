@@ -76,15 +76,15 @@ void emitSyscallExpression(EmitContext &context, const CallExpr &call) {
 } // namespace
 
 void declareSyscall(BuiltinRegistry &registry) {
-  registry.declare({"syscall", true, 1, {}, inferSyscall, emitSyscallExpression});
+  registry.declare({"syscall", true, 1, inferSyscall, emitSyscallExpression});
 }
 
 void declareSizeof(BuiltinRegistry &registry) {
-  registry.declare({"sizeof", false, 1, {OperandKind::Type}, inferSizeof, emitSizeof});
+  registry.declare({"sizeof", false, 1, inferSizeof, emitSizeof});
 }
 
 void declareAlignof(BuiltinRegistry &registry) {
-  registry.declare({"alignof", false, 1, {OperandKind::Type}, inferAlignof, emitAlignof});
+  registry.declare({"alignof", false, 1, inferAlignof, emitAlignof});
 }
 
 } // namespace jsmm::builtins

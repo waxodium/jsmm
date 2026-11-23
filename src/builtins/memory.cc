@@ -25,12 +25,15 @@ bool pointer(InferContext &context, const types::TypePtr &type) {
 TypePtr inferAlloc(InferContext &context, const std::vector<types::TypePtr> &arguments,
                    const SourceRange &range) {
   if (arguments.size() != 1)
-    context.report(range, "alloc() requires exactly 1 argument (number of bytes)");
-  if (!numeric(context, arguments[0]))
-    context.report(range, "alloc() argument must be a number, got `" +
-                              context.showType(arguments[0]) + "'");
+    context.report(range, "alloc() requires exactly 1 argument (a type or a byte count)");
+  const types::TypePtr resolved = context.resolveType(arguments[0]);
+  const bool byteCount =
+      resolved == nullptr || resolved->kind == TypeKind::Number ||
+      resolved->kind == TypeKind::Integer || resolved->kind == TypeKind::Byte ||
+      resolved->kind == TypeKind::Float || resolved->kind == TypeKind::Boolean;
   context.requireConcreteType(arguments[0], range);
-  return context.bytePointerType();
+  if (byteCount) return context.bytePointerType();
+  return context.pointerType(arguments[0]);
 }
 
 TypePtr inferFree(InferContext &context, const std::vector<types::TypePtr> &arguments,
@@ -99,7 +102,13 @@ void emitAlloc(EmitContext &context, const CallExpr &call) {
   context.emitAllocation(call.arguments[0]);
 }
 
-void emitFree(EmitContext &context, const CallExpr &) { context.emitVoidResult(); }
+void emitFree(EmitContext &context, const CallExpr &call) {
+  if (call.arguments.size() != 1) {
+    context.clearResult();
+    return;
+  }
+  context.emitFree(call.arguments[0]);
+}
 
 void emitMemcpy(EmitContext &context, const CallExpr &call) {
   if (call.arguments.size() != 3) {
@@ -128,23 +137,23 @@ void emitMemcmp(EmitContext &context, const CallExpr &call) {
 } // namespace
 
 void declareAlloc(BuiltinRegistry &registry) {
-  registry.declare({"alloc", false, 1, {}, inferAlloc, emitAlloc});
+  registry.declare({"alloc", false, 1, inferAlloc, emitAlloc});
 }
 
 void declareFree(BuiltinRegistry &registry) {
-  registry.declare({"free", false, 1, {}, inferFree, emitFree});
+  registry.declare({"free", false, 1, inferFree, emitFree});
 }
 
 void declareMemcpy(BuiltinRegistry &registry) {
-  registry.declare({"memcpy", false, 3, {}, inferMemcpy, emitMemcpy});
+  registry.declare({"memcpy", false, 3, inferMemcpy, emitMemcpy});
 }
 
 void declareMemset(BuiltinRegistry &registry) {
-  registry.declare({"memset", false, 3, {}, inferMemset, emitMemset});
+  registry.declare({"memset", false, 3, inferMemset, emitMemset});
 }
 
 void declareMemcmp(BuiltinRegistry &registry) {
-  registry.declare({"memcmp", false, 3, {}, inferMemcmp, emitMemcmp});
+  registry.declare({"memcmp", false, 3, inferMemcmp, emitMemcmp});
 }
 
 } // namespace jsmm::builtins
