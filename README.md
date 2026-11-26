@@ -13,6 +13,8 @@ Contribution is NOT ACCEPTED.
 ## About
 **JSmm or JSDecremented** is a small and clever system programming language. Compiles to executables, WebASM and browser JavaScript.
 
+Language is in stage 0.
+
 ## Build
 Make JavaScript-decrement compiler as CLI program:
 
