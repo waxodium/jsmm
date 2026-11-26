@@ -12,6 +12,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
+#include <llvm/TargetParser/Host.h>
 #include <llvm/TargetParser/Triple.h>
 
 #include <sys/stat.h>
@@ -35,11 +36,18 @@ std::unique_ptr<llvm::TargetMachine> createTargetMachine(const llvm::Module &mod
     fail(errors::ErrorCode::CODEGEN_TARGET_UNAVAILABLE,
          "no native target for '" + triple.str() + "': " + message);
 
+  std::string features;
+  for (const auto &feature : llvm::sys::getHostCPUFeatures()) {
+    if (!features.empty()) features += ",";
+    features += feature.second ? "+" : "-";
+    features += feature.first();
+  }
+
   llvm::TargetOptions options;
   options.ExceptionModel = llvm::ExceptionHandling::None;
   std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
-      triple, "generic", "", options, llvm::Reloc::Static, llvm::CodeModel::Small,
-      llvm::CodeGenOptLevel::None));
+      triple, llvm::sys::getHostCPUName().str(), features, options, llvm::Reloc::Static,
+      llvm::CodeModel::Small, llvm::CodeGenOptLevel::Default));
   if (machine == nullptr)
     fail(errors::ErrorCode::CODEGEN_TARGET_UNAVAILABLE,
          "cannot create a target machine for '" + triple.str() + "'");

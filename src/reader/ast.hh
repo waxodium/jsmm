@@ -1,7 +1,10 @@
 #pragma once
 
+#include "mode/mode.hh"
+
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -39,12 +42,15 @@ struct Expression;
 
 using ExprPtr = std::shared_ptr<Expression>;
 
-// Expression node kinds.
 struct NumberLiteralExpr {
   std::string spelling;
 };
 
 struct StringLiteralExpr {
+  std::string value;
+};
+
+struct BytesLiteralExpr {
   std::string value;
 };
 
@@ -62,16 +68,23 @@ struct UnaryExpr {
   ExprPtr operand;
 };
 
+struct AddressOfExpr {
+  ExprPtr operand;
+};
+
+struct DereferenceExpr {
+  ExprPtr operand;
+};
+
+struct RangeExpr {
+  ExprPtr start;
+  ExprPtr end;
+};
+
 struct BinaryExpr {
   std::string op;
   ExprPtr left;
   ExprPtr right;
-};
-
-struct UpdateExpr {
-  std::string op;
-  bool prefix;
-  ExprPtr operand;
 };
 
 struct AssignmentExpr {
@@ -91,8 +104,15 @@ struct ObjectExpr {
   std::vector<std::pair<std::string, ExprPtr>> properties;
 };
 
+struct DesignatedInitializer {
+  std::size_t index;
+  ExprPtr value;
+};
+
 struct ArrayExpr {
   std::vector<ExprPtr> elements;
+  std::vector<DesignatedInitializer> designated;
+  bool hasDesignated = false;
 };
 
 struct BooleanLiteralExpr {
@@ -101,14 +121,38 @@ struct BooleanLiteralExpr {
 
 struct NullLiteralExpr {};
 
-struct UndefinedLiteralExpr {};
-
 struct TypeExpr {
   std::vector<std::string> names;
+  std::vector<int> pointerDepth;
+  std::size_t intSize = 0;
+  bool intSigned = false;
+  bool isIntType = false;
+  // Float layout fields (float<totalBits, expBits, mantBits, signed>)
+  bool isFloatType = false;
+  std::size_t floatTotalBits = 0;
+  std::size_t floatExpBits = 0;
+  std::size_t floatMantBits = 0;
+  bool floatSigned = true;
+  std::size_t arraySize = 0;
+  bool isArray = false;
+  bool isStruct = false;
+  bool isFunctionType = false;
+  std::shared_ptr<TypeExpr> returnType;
+  std::vector<std::shared_ptr<TypeExpr>> parameterTypes;
+  std::vector<std::pair<std::string, std::shared_ptr<TypeExpr>>> fields;
   SourceRange range{};
 };
 
-// Statements.
+struct CastExpr {
+  std::shared_ptr<TypeExpr> annotation;
+  ExprPtr operand;
+};
+
+struct OperandExpr {
+  std::shared_ptr<TypeExpr> annotation;
+  ExprPtr value;
+};
+
 struct Statement;
 
 struct BlockStatement {
@@ -125,7 +169,20 @@ struct IfStatement {
 
 struct WhileStatement {
   ExprPtr condition;
+  ExprPtr step = nullptr;
   std::vector<std::unique_ptr<Statement>> body;
+  SourceRange range{};
+};
+
+struct SwitchCase {
+  ExprPtr value = nullptr;
+  std::vector<std::unique_ptr<Statement>> statements;
+  SourceRange range{};
+};
+
+struct SwitchStatement {
+  ExprPtr discriminant;
+  std::vector<SwitchCase> cases;
   SourceRange range{};
 };
 
@@ -142,24 +199,19 @@ struct VariableDeclaration {
   SourceRange range{};
 };
 
-struct ForStatement {
-  std::unique_ptr<VariableDeclaration> init = nullptr;
-  ExprPtr initExpression = nullptr;
-  ExprPtr condition = nullptr;
-  ExprPtr update = nullptr;
-  std::vector<std::unique_ptr<Statement>> body;
-  SourceRange range{};
-};
-
 struct FunctionParameter {
   std::string name;
   SourceRange range{};
+  std::shared_ptr<TypeExpr> annotation = nullptr;
+  bool isVariadic = false;
 };
 
 struct FunctionDeclaration {
   std::string name;
   std::vector<FunctionParameter> parameters;
   std::unique_ptr<BlockStatement> body;
+  std::shared_ptr<TypeExpr> returnAnnotation = nullptr;
+  std::vector<std::string> typeParameters;
   SourceRange range{};
 };
 
@@ -178,11 +230,6 @@ struct ReturnStatement {
   SourceRange range{};
 };
 
-struct ThrowStatement {
-  ExprPtr argument = nullptr;
-  SourceRange range{};
-};
-
 struct LabeledStatement {
   std::string label;
   std::unique_ptr<Statement> body;
@@ -194,43 +241,38 @@ struct ExpressionStatement {
   SourceRange range{};
 };
 
-// The expression type wrapper: carries a typed node plus source range.
-struct Expression {
-  std::variant<
-    NumberLiteralExpr,
-    StringLiteralExpr,
-    IdentifierExpr,
-    CallExpr,
-    UnaryExpr,
-    BinaryExpr,
-    UpdateExpr,
-    AssignmentExpr,
-    MemberExpr,
-    ObjectExpr,
-    ArrayExpr,
-    BooleanLiteralExpr,
-    NullLiteralExpr,
-    UndefinedLiteralExpr
-  > node;
+struct DirectiveStatement {
+  mode::Mode mode;
   SourceRange range{};
 };
 
-// Statement is the wrapper carrying source range.
+struct StructField {
+  std::string name;
+  std::shared_ptr<TypeExpr> annotation;
+  SourceRange range{};
+};
+
+struct StructDeclaration {
+  std::string name;
+  std::vector<StructField> fields;
+  SourceRange range{};
+};
+
+// The expression type wrapper: carries a typed node plus source range.
+struct Expression {
+  std::variant<NumberLiteralExpr, StringLiteralExpr, BytesLiteralExpr, IdentifierExpr, CallExpr,
+               UnaryExpr, AddressOfExpr, DereferenceExpr, BinaryExpr, AssignmentExpr, MemberExpr,
+               ObjectExpr, ArrayExpr, BooleanLiteralExpr, NullLiteralExpr, CastExpr, OperandExpr,
+               RangeExpr>
+      node;
+  SourceRange range{};
+};
+
 struct Statement {
-  std::variant<
-    BlockStatement,
-    VariableDeclaration,
-    FunctionDeclaration,
-    ExpressionStatement,
-    IfStatement,
-    WhileStatement,
-    ForStatement,
-    BreakStatement,
-    ContinueStatement,
-    ReturnStatement,
-    ThrowStatement,
-    LabeledStatement
-  > node;
+  std::variant<BlockStatement, VariableDeclaration, FunctionDeclaration, ExpressionStatement,
+               IfStatement, WhileStatement, SwitchStatement, BreakStatement, ContinueStatement,
+               ReturnStatement, LabeledStatement, DirectiveStatement, StructDeclaration>
+      node;
   SourceRange range{};
 };
 

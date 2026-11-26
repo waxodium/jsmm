@@ -7,7 +7,18 @@ BuiltinRegistry &BuiltinRegistry::instance() {
   return registry;
 }
 
-void BuiltinRegistry::registerAll() { declareCat(instance()); }
+void BuiltinRegistry::registerAll() {
+  declareCat(instance());
+  declareSyscall(instance());
+  declareSizeof(instance());
+  declareAlignof(instance());
+  declareAlloc(instance());
+  declareFree(instance());
+  declareMemcpy(instance());
+  declareMemset(instance());
+  declareMemcmp(instance());
+  declareLength(instance());
+}
 
 void BuiltinRegistry::declare(BuiltinSpec spec) { builtins_.push_back(std::move(spec)); }
 

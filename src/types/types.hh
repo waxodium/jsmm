@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -11,13 +13,17 @@ enum class TypeKind {
   Number,
   String,
   Boolean,
+  Byte,
+  Bytes,
+  Integer,
+  Float,
   Null,
-  Undefined,
   Never,
   Variable,
   Function,
   Struct,
   Array,
+  Pointer,
   Union
 };
 
@@ -27,13 +33,34 @@ using TypePtr = std::shared_ptr<Type>;
 struct Type {
   TypeKind kind;
   int id = 0;
+  std::string name;
+  std::size_t length = 0;
+  bool inlineStorage = false;
+  bool isSigned = true;
+  bool isVariadic = false;
+  TypePtr variadicElement;
   TypePtr link;
   std::vector<TypePtr> parameters;
   TypePtr result;
   std::vector<std::pair<std::string, TypePtr>> fields;
   TypePtr element;
+  TypePtr pointed;
   std::vector<TypePtr> members;
+  std::size_t floatTotalBits = 0;
+  std::size_t floatExpBits = 0;
+  std::size_t floatMantBits = 0;
+  std::size_t floatPadBits = 0;
+  bool floatSigned = true;
 };
+
+struct TypeLayout {
+  std::uint64_t size = 0;
+  std::uint64_t alignment = 1;
+  bool defined = false;
+};
+
+TypeLayout layoutOf(TypePtr type);
+std::uint64_t fieldOffset(TypePtr type, std::size_t index);
 
 class TypeContext final {
 public:
@@ -42,13 +69,20 @@ public:
   TypePtr number() const;
   TypePtr string() const;
   TypePtr boolean() const;
-  TypePtr null() const;
-  TypePtr undefined() const;
+  TypePtr byteType() const;
+  TypePtr bytesType() const;
+  TypePtr integerType(std::size_t bits, bool isSigned);
+  TypePtr floatType(std::size_t totalBits, std::size_t expBits, std::size_t mantBits, bool signedVal);
+  TypePtr floatType();
+  TypePtr nullType() const;
   TypePtr never() const;
   TypePtr variable();
-  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result);
-  TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields);
-  TypePtr arrayType(TypePtr element);
+  TypePtr functionType(std::vector<TypePtr> parameters, TypePtr result, bool isVariadic = false,
+                       TypePtr variadicElement = nullptr);
+  TypePtr structType(std::vector<std::pair<std::string, TypePtr>> fields, std::string name = {});
+  TypePtr arrayType(TypePtr element, std::size_t length = 0);
+  TypePtr inlineArrayType(TypePtr element, std::size_t length);
+  TypePtr pointerType(TypePtr pointed);
   TypePtr unionType(std::vector<TypePtr> members);
 
   TypePtr resolve(TypePtr type) const;
@@ -62,8 +96,9 @@ private:
   TypePtr number_;
   TypePtr string_;
   TypePtr boolean_;
+  TypePtr byte_;
+  TypePtr bytes_;
   TypePtr null_;
-  TypePtr undefined_;
   TypePtr never_;
 };
 

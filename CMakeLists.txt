@@ -42,3 +42,4 @@ target_link_libraries(jsd PRIVATE ${LLVM_LIB})
 set_target_properties(jsd PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build"
 )
+

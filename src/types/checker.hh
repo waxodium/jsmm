@@ -1,5 +1,8 @@
 #pragma once
 
+#include "builtins/builtin.hh"
+#include "mode/config.hh"
+#include "mode/mode.hh"
 #include "reader/ast.hh"
 #include "types/types.hh"
 
@@ -16,6 +19,8 @@ struct Annotations {
   std::unordered_map<const reader::Expression *, TypePtr> expressionTypes;
   std::unordered_map<const reader::VariableDeclarator *, TypePtr> declarationTypes;
   std::unordered_map<const reader::Expression *, TypePtr> argumentTypes;
+  std::unordered_map<const reader::Expression *, reader::ExprPtr> operandValues;
+  std::unordered_map<std::string, TypePtr> functionTypes;
 };
 
 class Checker {
@@ -28,67 +33,162 @@ public:
 
 private:
   struct Scope {
+    // Ownership state per binding:
+    //  - owned: the scope owns the object and must destroy it on exit
+    //  - borrowed: a non-owning borrow (created by &lvalue)
+    //  - moved_from: the binding was moved from, no longer owns anything
     std::unordered_map<std::string, TypePtr> bindings;
+    // Track which bindings own allocated objects
+    // Key: binding name, Value: true if owned, false if borrowed/moved_from
+    std::unordered_map<std::string, bool> ownership;
+    // Track borrowed pointers and their referents for lifetime checking
+    // Key: binding name, true if this is a borrow target, false otherwise
+    std::unordered_map<std::string, bool> isBorrowTarget;
+    // Stack tracking promoted bindings and their original owners
+    // Each entry: {promoted_binding_name, original_owner_scope_index}
+    std::vector<std::pair<std::string, std::size_t>> promotionStack;
+    // Track which bindings have been moved from
+    std::unordered_set<std::string> movedFrom;
+    std::unordered_set<std::string> constants;
   };
 
   struct FunctionEntry {
     reader::FunctionDeclaration declaration;
     TypePtr returnType;
+    std::vector<TypePtr> parameterTypes;
     Scope *parentScope = nullptr;
+    bool isVariadic = false;
+    TypePtr variadicElement;
+    std::vector<std::pair<std::string, TypePtr>> typeParameters;
+  };
+
+  class BuiltinInference final : public builtins::InferContext {
+  public:
+    explicit BuiltinInference(Checker &checker) : checker_(checker) {}
+
+    TypePtr freshVariable() override;
+    TypePtr stringType() override;
+    TypePtr numberType() override;
+    TypePtr booleanType() override;
+    TypePtr undefinedType() override;
+    TypePtr usizeType() override;
+    TypePtr bytePointerType() override;
+    TypePtr pointerType(TypePtr pointed) override;
+    TypePtr resolveType(TypePtr type) override;
+    [[nodiscard]] std::string showType(TypePtr type) override;
+    [[noreturn]] void report(const reader::SourceRange &range,
+                             const std::string &message) override;
+    void requireUnify(TypePtr left, TypePtr right, const reader::SourceRange &range,
+                      const std::string &what) override;
+    void requireConcreteType(TypePtr type, const reader::SourceRange &range) override;
+    void deferCheck(std::function<void()> check) override;
+
+  private:
+    Checker &checker_;
   };
 
   void hoistFunctions(const reader::Program &program, std::vector<FunctionEntry> &functions);
-  void hoistVarDeclarations(const reader::StatementList &statements, Scope *scope);
-  void hoistVarDeclarations(const std::unique_ptr<reader::Statement> &stmt, Scope *scope);
-  void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body, Scope *parentScope);
+  void collectStructs(const reader::Program &program);
+  void hoistTypeAliases(const reader::Program &program);
+  void resolveStructFields();
+  void validateStructLayouts();
+  void inferFunctionBody(FunctionEntry &entry, reader::BlockStatement *body);
   void inferStatements(const reader::StatementList &statements);
   void inferDeclaration(const reader::VariableDeclaration &declaration);
   void inferStatement(const reader::Statement &statement);
   TypePtr inferExpression(const reader::ExprPtr &expr);
+  TypePtr inferExpected(const reader::ExprPtr &expr, TypePtr expected);
+  TypePtr inferObjectExpected(const reader::ExprPtr &expr, const reader::ObjectExpr &object,
+                              TypePtr expected);
   TypePtr inferIdentifier(const reader::ExprPtr &expr, const reader::IdentifierExpr &identifier);
   TypePtr inferUnary(const reader::ExprPtr &expr, const reader::UnaryExpr &unary);
+  TypePtr inferAddressOf(const reader::ExprPtr &expr, const reader::AddressOfExpr &addrOf);
+  TypePtr inferDereference(const reader::ExprPtr &expr, const reader::DereferenceExpr &deref);
+  TypePtr inferCast(const reader::ExprPtr &expr, const reader::CastExpr &cast);
+  TypePtr callableType(TypePtr type);
   TypePtr inferBinary(const reader::ExprPtr &expr, const reader::BinaryExpr &binary);
-  TypePtr inferUpdate(const reader::ExprPtr &expr, const reader::UpdateExpr &update);
   TypePtr inferAssignment(const reader::ExprPtr &expr, const reader::AssignmentExpr &assignment);
   TypePtr targetType(const reader::ExprPtr &target);
   TypePtr inferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member);
+  TypePtr memberResultType(const reader::MemberExpr &member, const reader::Expression &expression,
+                           TypePtr objectType);
   void deferMember(const reader::ExprPtr &expr, const reader::MemberExpr &member,
                    TypePtr objectType, TypePtr result);
   void resolvePendingMembers();
-  void bindUnresolvedTypes(bool excludeMemberResults);
   void recordTopLevelTypes();
   void finalize();
+  void destroyScopeObjects(std::size_t scopeIndex);
+  void markMovedFrom(Scope &scope, const std::string &name);
+  void destroyAllScopes();
+
+  // Safe mode helpers
+  bool inSafeMode() const { return mode_ == mode::Mode::Safe; }
+  bool inUnsafeMode() const { return mode_ == mode::Mode::Unsafe; }
 
   TypePtr numberType() const { return typeContext_.number(); }
   TypePtr stringType() const { return typeContext_.string(); }
   TypePtr booleanType() const { return typeContext_.boolean(); }
-  TypePtr nullType() const { return typeContext_.null(); }
-  TypePtr undefinedType() const { return typeContext_.undefined(); }
+  TypePtr byteType() const { return typeContext_.byteType(); }
+  TypePtr bytesType() const { return typeContext_.bytesType(); }
+  TypePtr nullType() const { return typeContext_.nullType(); }
   TypePtr neverType() const { return typeContext_.never(); }
-  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes) {
-    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType));
+  TypePtr pointerType(TypePtr pointed) { return typeContext_.pointerType(std::move(pointed)); }
+  TypePtr makeFunctionType(TypePtr returnType, std::vector<TypePtr> argumentTypes,
+                           bool isVariadic = false, TypePtr variadicElement = nullptr) {
+    return typeContext_.functionType(std::move(argumentTypes), std::move(returnType), isVariadic,
+                                     std::move(variadicElement));
   }
+  TypePtr freshVariable();
 
   void insertDeclaredType(const reader::VariableDeclarator *declarator, TypePtr type);
   TypePtr resolve(TypePtr type) const { return typeContext_.resolve(type); }
-  TypePtr unionPayload(TypePtr type) const;
   bool isNumber(TypePtr type) const;
-  bool unifies(TypePtr left, TypePtr right, std::string_view context) const;
-  bool definitelyReturns(const reader::StatementList &statements) const;
+  bool isString(TypePtr type) const;
+  bool isBytes(TypePtr type) const;
+  bool isText(TypePtr type) const;
+  bool requireNumeric(TypePtr type);
+  void requireCapability(bool enabled, std::string_view feature,
+                         const reader::SourceRange &range);
+  const mode::Capabilities &capabilities() const {
+    return mode::policyFor(mode_).capabilities;
+  }
+  bool unifies(TypePtr left, TypePtr right, std::string_view context);
+  bool sameFunctionSignature(TypePtr left, TypePtr right);
+  bool holdsFunctionValue(TypePtr type);
+  bool isAddressable(const reader::ExprPtr &expr) const;
+  bool isReadOnlyLength(const reader::ExprPtr &target) const;
 
   TypePtr inferCall(const reader::ExprPtr &expr, const reader::CallExpr &call);
+  void checkCallArguments(
+      const TypePtr &function,
+      const std::vector<std::pair<TypePtr, reader::SourceRange>> &arguments,
+      const reader::SourceRange &range);
   TypePtr inferObject(const reader::ExprPtr &expr, const reader::ObjectExpr &object);
   TypePtr inferArray(const reader::ExprPtr &expr, const reader::ArrayExpr &array);
+  TypePtr resolveTypeAnnotation(const std::shared_ptr<reader::TypeExpr> &annotation);
+  TypePtr fieldStorageType(TypePtr type, const std::string &name,
+                           const reader::SourceRange &range);
 
   std::vector<FunctionEntry> functions_;
   std::vector<Scope> scopes_;
   std::vector<FunctionEntry *> currentFunctions_;
+  std::vector<std::pair<std::string, bool>> labels_;
   int loopDepth_ = 0;
+  int breakableDepth_ = 0;
   std::vector<std::vector<TypePtr>> returnTypeStack_;
   std::vector<std::pair<const reader::Expression *, reader::MemberExpr>> pendingMembers_;
   std::unordered_map<const reader::Expression *, TypePtr> pendingTypeResolutions_;
+  std::vector<std::function<void()>> deferredChecks_;
+  std::vector<TypePtr> inferenceVariables_;
+  mode::Mode mode_ = mode::kDefaultMode;
+  BuiltinInference builtinInference_{*this};
   TypeContext typeContext_;
   Annotations annotations_;
+  std::unordered_map<std::string, TypePtr> typeAliases_;
+  std::unordered_map<std::string, TypePtr> structTypes_;
+  std::vector<const reader::StructDeclaration *> structDeclarations_;
+  std::unordered_set<const reader::StructDeclaration *> topLevelStructs_;
+  std::unordered_map<std::string, TypePtr> typeParameters_;
 };
 
 } // namespace jsmm::types

@@ -24,6 +24,9 @@ public:
   virtual TypePtr numberType() = 0;
   virtual TypePtr booleanType() = 0;
   virtual TypePtr undefinedType() = 0;
+  virtual TypePtr usizeType() = 0;
+  virtual TypePtr bytePointerType() = 0;
+  virtual TypePtr pointerType(TypePtr pointed) = 0;
   virtual TypePtr resolveType(TypePtr type) = 0;
   [[nodiscard]] virtual std::string showType(TypePtr type) = 0;
   [[noreturn]] virtual void report(const SourceRange &range, const std::string &message) = 0;
@@ -43,6 +46,19 @@ public:
   virtual void declareHelper(std::string symbol, std::string text) = 0;
   virtual void useHelper(const std::string &symbol) = 0;
   virtual void callHelper(const std::string &symbol) = 0;
+  virtual void emitSyscall(const CallExpr &call) = 0;
+  virtual TypePtr operandType(const ExprPtr &operand) = 0;
+  virtual void emitNumberResult(double value) = 0;
+  virtual void emitAllocation(const ExprPtr &size) = 0;
+  virtual void emitVoidResult() = 0;
+  virtual void emitFree(const ExprPtr &ptr) = 0;
+  virtual void emitMemcpy(const ExprPtr &dest, const ExprPtr &src,
+                          const ExprPtr &count) = 0;
+  virtual void emitMemset(const ExprPtr &dest, const ExprPtr &value,
+                          const ExprPtr &count) = 0;
+  virtual void emitMemcmp(const ExprPtr &a, const ExprPtr &b,
+                          const ExprPtr &count) = 0;
+  virtual void emitLength(const ExprPtr &operand) = 0;
   virtual void formatValue(const ExprPtr &expression) = 0;
   virtual void formatArray(const ExprPtr &expression) = 0;
   virtual void formatNewline() = 0;
@@ -70,5 +86,14 @@ private:
 };
 
 void declareCat(BuiltinRegistry &registry);
+void declareSyscall(BuiltinRegistry &registry);
+void declareSizeof(BuiltinRegistry &registry);
+void declareAlignof(BuiltinRegistry &registry);
+void declareAlloc(BuiltinRegistry &registry);
+void declareFree(BuiltinRegistry &registry);
+void declareMemcpy(BuiltinRegistry &registry);
+void declareMemset(BuiltinRegistry &registry);
+void declareMemcmp(BuiltinRegistry &registry);
+void declareLength(BuiltinRegistry &registry);
 
 } // namespace jsmm::builtins

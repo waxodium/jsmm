@@ -32,6 +32,19 @@ public:
   void declareHelper(std::string, std::string) override;
   void useHelper(const std::string &) override;
   void callHelper(const std::string &) override;
+  void emitSyscall(const reader::CallExpr &call) override;
+  types::TypePtr operandType(const reader::ExprPtr &operand) override;
+  void emitNumberResult(double value) override;
+  void emitAllocation(const reader::ExprPtr &size) override;
+  void emitVoidResult() override;
+  void emitFree(const reader::ExprPtr &ptr) override;
+  void emitMemcpy(const reader::ExprPtr &dest, const reader::ExprPtr &src,
+                  const reader::ExprPtr &count) override;
+  void emitMemset(const reader::ExprPtr &dest, const reader::ExprPtr &value,
+                  const reader::ExprPtr &count) override;
+  void emitMemcmp(const reader::ExprPtr &a, const reader::ExprPtr &b,
+                  const reader::ExprPtr &count) override;
+  void emitLength(const reader::ExprPtr &operand) override;
   void formatValue(const reader::ExprPtr &expression) override;
   void formatArray(const reader::ExprPtr &expression) override;
   void formatNewline() override;
@@ -44,11 +57,15 @@ private:
 
   struct Slot {
     llvm::Value *address = nullptr;
-    bool isConst = false;
   };
 
   struct Scope {
     std::unordered_map<std::string, Slot> slots;
+    // Ownership tracking:
+    //  - owned: the scope owns the object and must destroy it on exit
+    //  - borrowed: a non-owning borrow
+    //  - moved_from: the binding was moved from
+    std::unordered_map<std::string, bool> ownership;
   };
 
   struct Loop {
@@ -56,24 +73,64 @@ private:
     llvm::BasicBlock *continueBlock = nullptr;
   };
 
+  struct Label {
+    std::string name;
+    llvm::BasicBlock *breakBlock = nullptr;
+    llvm::BasicBlock *continueBlock = nullptr;
+  };
+
   types::TypePtr typeOf(const reader::ExprPtr &expression) const;
   types::TypePtr resolve(types::TypePtr type) const;
   bool isNumber(types::TypePtr type) const;
+  bool isString(types::TypePtr type) const;
+  bool isBytes(types::TypePtr type) const;
+  bool isText(types::TypePtr type) const;
   types::TypePtr unionPayload(types::TypePtr type) const;
 
   llvm::Constant *i64(std::uint64_t value) const;
   llvm::Constant *i32(std::uint64_t value) const;
   EmitValue numberValue(double value) const;
+  EmitValue integerValue(int64_t value) const;
   EmitValue rawValue(llvm::Value *value) const;
   llvm::Value *asRaw(EmitValue value) const;
-  llvm::Value *toInt32(llvm::Value *value) const;
+  llvm::Value *toInt32(llvm::Value *value, bool unsignedValue = false) const;
+  llvm::Value *toSizedInteger(llvm::Value *value, llvm::IntegerType *type,
+                              bool unsignedValue) const;
+  EmitValue cellFromInteger(llvm::Value *bits, bool unsignedValue) const;
+  unsigned bitwiseWidth(types::TypePtr type) const;
+  llvm::Value *toInt64(EmitValue value) const;
+  llvm::Value *toI64(EmitValue value, bool unsignedValue) const;
+  llvm::Value *toF64(EmitValue value, types::TypePtr type) const;
+  bool isFloatValue(types::TypePtr type) const;
+  llvm::IntegerType *nativeIntType(types::TypePtr type) const;
+  llvm::Value *fpToI64(llvm::Value *fpValue) const;
   EmitValue asTyped(llvm::Value *bits, types::TypePtr type) const;
 
   llvm::Value *bytePointer(llvm::Value *base, std::uint64_t offset) const;
+  llvm::Value *buildRestArray(const std::vector<EmitValue> &elements,
+                              types::TypePtr elementType);
   llvm::Value *dynamicPointer(llvm::Value *base, llvm::Value *offset) const;
   llvm::Value *allocate(std::uint64_t bytes);
   EmitValue loadSlot(llvm::Value *address, types::TypePtr type) const;
-  void storeSlot(llvm::Value *address, EmitValue value) const;
+  void storeSlot(llvm::Value *address, EmitValue value, types::TypePtr type);
+  llvm::Type *storageType(types::TypePtr type) const;
+  llvm::Type *floatStorageType(types::TypePtr type) const;
+  bool isBfloat16(types::TypePtr type) const;
+
+  // Generic float bit-layout pack/unpack for user-definable float<> types.
+  // Arithmetic is performed in f64 cells; these convert between the f64 cell
+  // and the packed target layout at store/load boundaries.
+  llvm::Value *packFloatToLayout(llvm::Value *value, types::TypePtr type) const;
+  llvm::Value *unpackFloatFromLayout(llvm::Value *bits, types::TypePtr type) const;
+
+  // Round an f64 cell to the target float bit-layout (hardware-accurate
+  // rounding at the declared width).
+  llvm::Value *roundFloatToLayout(llvm::Value *value, types::TypePtr type) const;
+
+  bool isReferenceValue(types::TypePtr type) const;
+  bool isInlineAggregate(types::TypePtr type) const;
+  std::uint64_t elementSize(types::TypePtr type) const;
+  std::uint64_t memberOffset(types::TypePtr structType, std::size_t index) const;
 
   bool terminated() const;
   llvm::BasicBlock *createBlock(const llvm::Twine &name);
@@ -81,56 +138,82 @@ private:
   void endScope();
   Slot *lookupSlot(const std::string &name);
   long long allocateSlot();
-  void releaseSlot(long long index);
-  long long pushTemp();
-  void popTemp();
-  llvm::AllocaInst *slotAlloca(long long index);
-  llvm::AllocaInst *createEntryAlloca();
+  llvm::AllocaInst *slotAlloca(long long index, types::TypePtr type);
+  llvm::AllocaInst *createEntryAlloca(types::TypePtr type);
 
   llvm::GlobalVariable *internString(const std::string &text);
-  llvm::GlobalVariable *globalFor(const std::string &name);
+  llvm::GlobalVariable *globalFor(const std::string &name, types::TypePtr type);
 
   llvm::Function *runtimeFunction(llvm::StringRef name, llvm::Type *result,
                                   llvm::ArrayRef<llvm::Type *> parameters);
   llvm::Function *allocFunction();
+  llvm::Function *freeFunction();
   llvm::Function *stringWriter();
   llvm::Function *numberWriter();
+  llvm::Function *integerWriter();
   llvm::Function *boolWriter();
   llvm::Function *nullWriter();
-  llvm::Function *undefinedWriter();
   llvm::Function *lbracketWriter();
   llvm::Function *separatorWriter();
   llvm::Function *rbracketWriter();
   llvm::Function *moduloFunction();
-  llvm::Function *powerFunction();
   llvm::Function *boundsFunction();
+  llvm::Function *stringEqualFunction();
+  llvm::Function *stringConcatFunction();
+  llvm::Function *stringCompareFunction();
+  llvm::Function *bytesCopyFunction();
+  llvm::Function *memcpyFunction();
+  llvm::Function *memsetFunction();
+  llvm::Function *memcmpFunction();
+  llvm::Function *syscallFunction();
 
+  llvm::Value *stringEquals(llvm::Value *left, llvm::Value *right);
+  llvm::Value *emitTruthy(EmitValue value, types::TypePtr type);
+  llvm::Value *emitNullish(EmitValue value, types::TypePtr type);
+  llvm::Value *emitUnionEquality(EmitValue left, types::TypePtr leftType, EmitValue right,
+                                 types::TypePtr rightType);
+  long long unionTagFor(types::TypePtr type) const;
+
+  llvm::Value *addressBits(llvm::Value *address) const;
+  void zeroSlot(llvm::Value *address, types::TypePtr type);
+  bool emitLiteralInto(const reader::ExprPtr &expression, llvm::Value *destination,
+                       types::TypePtr type);
   EmitValue emitZeroValue(types::TypePtr type);
   EmitValue emitNullishCell(long long tag);
   EmitValue emitBox(types::TypePtr payloadType, EmitValue value);
   EmitValue coerce(types::TypePtr destination, types::TypePtr source, EmitValue value);
   EmitValue convertStruct(types::TypePtr destination, types::TypePtr source, EmitValue value);
+  EmitValue convertInlineArray(types::TypePtr destination, types::TypePtr source, EmitValue value);
+  EmitValue convertArrayToBytes(EmitValue value, types::TypePtr arrayType);
+  EmitValue copyText(EmitValue value);
+  EmitValue copyArray(EmitValue value, types::TypePtr type);
   bool sameLayout(types::TypePtr left, types::TypePtr right) const;
 
-  void collectVarDeclarations(const reader::StatementList &statements,
-                              std::vector<const reader::VariableDeclarator *> &out) const;
-  void collectVarDeclarations(const std::unique_ptr<reader::Statement> &stmt,
-                              std::vector<const reader::VariableDeclarator *> &out) const;
-  void hoistVarSlots(const reader::StatementList &statements);
   void generateDeclaration(const reader::VariableDeclaration &declaration);
   void generateStatements(const reader::StatementList &statements);
   void generateStatement(const reader::Statement &statement);
   EmitValue generateExpression(const reader::ExprPtr &expression);
   EmitValue generateUnary(const reader::UnaryExpr &unary);
+  EmitValue generateCast(const reader::ExprPtr &expression, const reader::CastExpr &cast);
   EmitValue generateBinary(const reader::BinaryExpr &binary);
   EmitValue generateArithmetic(const reader::BinaryExpr &binary);
+  EmitValue generateStringConcat(const reader::BinaryExpr &binary);
   EmitValue generateBitwise(const reader::BinaryExpr &binary);
+  EmitValue emitBitwiseOperation(const std::string &op, EmitValue left, EmitValue right,
+                                 types::TypePtr leftType = nullptr);
+  EmitValue loadByteElement(llvm::Value *address) const;
+  EmitValue loadStringByteElement(llvm::Value *address) const;
+  void storeByteElement(llvm::Value *address, EmitValue value) const;
+  bool byteElement(const reader::ExprPtr &expression) const;
   EmitValue generateRelational(const reader::BinaryExpr &binary);
   EmitValue generateEquality(const reader::BinaryExpr &binary);
+  llvm::Value *emitStorageEquality(llvm::Value *left, llvm::Value *right,
+                                   types::TypePtr type);
   EmitValue generateLogical(const reader::BinaryExpr &binary);
-  EmitValue generateUpdate(const reader::UpdateExpr &update);
   EmitValue generateAssignment(const reader::AssignmentExpr &assignment);
-  llvm::Value *generateMemberAddress(const reader::MemberExpr &member);
+  llvm::Value *generateLValueAddress(const reader::ExprPtr &target);
+  llvm::Value *generateMemberAddress(const reader::MemberExpr &member,
+                                     const reader::SourceRange &range = {});
   EmitValue generateCall(const reader::ExprPtr &expression, const reader::CallExpr &call);
 
   void emitFormatValue(EmitValue value, types::TypePtr type);
@@ -160,19 +243,23 @@ private:
   llvm::GlobalVariable *emptyString_ = nullptr;
 
   std::vector<Scope> scopes_;
-  int varTargetScopeIndex_ = -1;
   long long slotCount_ = 0;
-  std::vector<long long> freeSlots_;
-  std::vector<long long> temps_;
   std::vector<llvm::AllocaInst *> slotAllocas_;
 
   llvm::Function *currentFunction_ = nullptr;
   llvm::BasicBlock *returnBlock_ = nullptr;
-  llvm::AllocaInst *returnSlot_ = nullptr;
+  llvm::Value *returnSlot_ = nullptr;
   types::TypePtr returnType_;
+  llvm::Value *fatPtrSlot_ = nullptr;      // hidden fat.ptr slot
+  llvm::Value *fatLenSlot_ = nullptr;      // hidden fat.len slot
+  llvm::Value *fatPtrValue_ = nullptr;     // fat.ptr value
+  llvm::Value *fatLenValue_ = nullptr;     // fat.len value
   std::vector<Loop> loops_;
+  std::vector<Label> labels_;
+  std::string pendingLoopLabel_;
   bool generatingEntry_ = false;
   EmitValue lastValue_;
+  int unionBlockCounter_ = 0;
 };
 
 } // namespace jsmm::emit

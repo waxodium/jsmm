@@ -18,40 +18,61 @@ TypeContext::TypeContext() : nextId_(0) {
   boolean_ = std::make_shared<Type>();
   boolean_->kind = TypeKind::Boolean;
   boolean_->id = nextId_++;
+  byte_ = std::make_shared<Type>();
+  byte_->kind = TypeKind::Byte;
+  byte_->id = nextId_++;
+  bytes_ = std::make_shared<Type>();
+  bytes_->kind = TypeKind::Bytes;
+  bytes_->id = nextId_++;
   null_ = std::make_shared<Type>();
   null_->kind = TypeKind::Null;
   null_->id = nextId_++;
-  undefined_ = std::make_shared<Type>();
-  undefined_->kind = TypeKind::Undefined;
-  undefined_->id = nextId_++;
   never_ = std::make_shared<Type>();
   never_->kind = TypeKind::Never;
   never_->id = nextId_++;
 }
 
-TypePtr TypeContext::number() const {
-  return number_;
+TypePtr TypeContext::number() const { return number_; }
+
+TypePtr TypeContext::string() const { return string_; }
+
+TypePtr TypeContext::boolean() const { return boolean_; }
+
+TypePtr TypeContext::byteType() const { return byte_; }
+
+TypePtr TypeContext::bytesType() const { return bytes_; }
+
+TypePtr TypeContext::floatType(std::size_t totalBits, std::size_t expBits, std::size_t mantBits, bool signedVal) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Float;
+  type->id = nextId_++;
+  type->length = totalBits;
+  type->floatTotalBits = totalBits;
+  type->floatExpBits = expBits;
+  type->floatMantBits = mantBits;
+  type->floatSigned = signedVal;
+  type->floatPadBits = totalBits > (expBits + mantBits + (signedVal ? 1ULL : 0ULL))
+      ? totalBits - (expBits + mantBits + (signedVal ? 1ULL : 0ULL))
+      : 0ULL;
+  return type;
 }
 
-TypePtr TypeContext::string() const {
-  return string_;
+TypePtr TypeContext::floatType() {
+  // Default float is 64-bit IEEE 754
+  return floatType(64, 11, 52, true);
 }
 
-TypePtr TypeContext::boolean() const {
-  return boolean_;
+TypePtr TypeContext::integerType(std::size_t bits, bool isSigned) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Integer;
+  type->id = nextId_++;
+  type->length = bits;
+  type->isSigned = isSigned;
+  return type;
 }
 
-TypePtr TypeContext::null() const {
-  return null_;
-}
-
-TypePtr TypeContext::undefined() const {
-  return undefined_;
-}
-
-TypePtr TypeContext::never() const {
-  return never_;
-}
+TypePtr TypeContext::nullType() const { return null_; }
+TypePtr TypeContext::never() const { return never_; }
 
 TypePtr TypeContext::variable() {
   auto type = std::make_shared<Type>();
@@ -60,30 +81,40 @@ TypePtr TypeContext::variable() {
   return type;
 }
 
-TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr result) {
+TypePtr TypeContext::functionType(std::vector<TypePtr> parameters, TypePtr result,
+                                  bool isVariadic, TypePtr variadicElement) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Function;
   type->id = nextId_++;
   type->parameters = std::move(parameters);
   type->result = std::move(result);
+  type->isVariadic = isVariadic;
+  type->variadicElement = std::move(variadicElement);
   return type;
 }
 
-TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields) {
-  std::sort(fields.begin(), fields.end(),
-            [](const auto &left, const auto &right) { return left.first < right.first; });
+TypePtr TypeContext::structType(std::vector<std::pair<std::string, TypePtr>> fields,
+                                std::string name) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Struct;
   type->id = nextId_++;
+  type->name = std::move(name);
   type->fields = std::move(fields);
   return type;
 }
 
-TypePtr TypeContext::arrayType(TypePtr element) {
+TypePtr TypeContext::arrayType(TypePtr element, std::size_t length) {
   auto type = std::make_shared<Type>();
   type->kind = TypeKind::Array;
   type->id = nextId_++;
+  type->length = length;
   type->element = std::move(element);
+  return type;
+}
+
+TypePtr TypeContext::inlineArrayType(TypePtr element, std::size_t length) {
+  TypePtr type = arrayType(std::move(element), length);
+  type->inlineStorage = true;
   return type;
 }
 
@@ -92,6 +123,14 @@ TypePtr TypeContext::unionType(std::vector<TypePtr> members) {
   type->kind = TypeKind::Union;
   type->id = nextId_++;
   type->members = std::move(members);
+  return type;
+}
+
+TypePtr TypeContext::pointerType(TypePtr pointed) {
+  auto type = std::make_shared<Type>();
+  type->kind = TypeKind::Pointer;
+  type->id = nextId_++;
+  type->pointed = std::move(pointed);
   return type;
 }
 
@@ -115,11 +154,17 @@ std::string TypeContext::showType(TypePtr type) {
   type = resolve(type);
   if (type == nullptr) return "?";
   switch (type->kind) {
-  case TypeKind::Number: return "number";
+  case TypeKind::Number: return "f64";
   case TypeKind::String: return "string";
   case TypeKind::Boolean: return "boolean";
+  case TypeKind::Byte: return "byte";
+  case TypeKind::Bytes: return "bytes";
+  case TypeKind::Integer:
+    return "int(" + std::to_string(type->length) + ", " +
+           (type->isSigned ? "signed" : "unsigned") + ")";
+  case TypeKind::Float:
+    return "float(" + std::to_string(type->length) + ")";
   case TypeKind::Null: return "null";
-  case TypeKind::Undefined: return "undefined";
   case TypeKind::Never: return "never";
   case TypeKind::Variable: return "t" + std::to_string(++showCounter_);
   case TypeKind::Function: {
@@ -128,11 +173,17 @@ std::string TypeContext::showType(TypePtr type) {
       if (i != 0) out += ", ";
       out += showType(type->parameters[i]);
     }
+    if (type->isVariadic) {
+      if (!type->parameters.empty()) out += ", ";
+      out += "...";
+      if (type->variadicElement != nullptr) out += showType(type->variadicElement);
+    }
     out += ") -> ";
     out += showType(type->result);
     return out;
   }
   case TypeKind::Struct: {
+    if (!type->name.empty()) return type->name;
     std::string out = "struct ObjectLiteral { ";
     for (std::size_t i = 0; i < type->fields.size(); ++i) {
       if (i != 0) out += ", ";
@@ -144,6 +195,7 @@ std::string TypeContext::showType(TypePtr type) {
     return out;
   }
   case TypeKind::Array: return showType(type->element) + "[]";
+  case TypeKind::Pointer: return showType(type->pointed) + "*";
   case TypeKind::Union: {
     std::string out;
     for (std::size_t i = 0; i < type->members.size(); ++i) {
@@ -154,6 +206,107 @@ std::string TypeContext::showType(TypePtr type) {
   }
   }
   return "?";
+}
+
+namespace {
+
+std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment) {
+  if (alignment <= 1) return value;
+  return (value + alignment - 1) / alignment * alignment;
+}
+
+std::uint64_t floorPowerOfTwo(std::uint64_t value) {
+  std::uint64_t result = 1;
+  while (result * 2 <= value) result *= 2;
+  return result;
+}
+
+TypeLayout knownLayout(std::uint64_t size, std::uint64_t alignment) {
+  return TypeLayout{size, alignment, true};
+}
+
+TypePtr followLinks(TypePtr type) {
+  while (type != nullptr && type->kind == TypeKind::Variable && type->link != nullptr)
+    type = type->link;
+  return type;
+}
+
+} // namespace
+
+TypeLayout layoutOf(TypePtr type) {
+  type = followLinks(std::move(type));
+  if (type == nullptr) return {};
+  switch (type->kind) {
+  case TypeKind::Byte:
+  case TypeKind::Boolean: return knownLayout(1, 1);
+  case TypeKind::Integer: {
+    if (type->length == 0) return {};
+    std::uint64_t size = (type->length + 7) / 8;  // round up to whole bytes
+    if (size > 8) size = 8;                       // widths above 64 bits use 64-bit cells
+    return knownLayout(size, size < 8 ? floorPowerOfTwo(size) : 8);
+  }
+  case TypeKind::Float: {
+    if (type->length == 0) return {};
+    if (type->length <= 16) return knownLayout(2, 2);
+    if (type->length <= 32) return knownLayout(4, 4);
+    return knownLayout(8, 8);
+  }
+  case TypeKind::Number:
+  case TypeKind::Pointer:
+  case TypeKind::Function: return knownLayout(8, 8);
+  case TypeKind::String:
+  case TypeKind::Bytes: return knownLayout(16, 8);
+  case TypeKind::Null: return knownLayout(0, 0);
+  case TypeKind::Never: return knownLayout(0, 0);
+  case TypeKind::Variable: return {};
+  case TypeKind::Array: {
+    if (type->length == 0) return {};
+    const TypeLayout element = layoutOf(type->element);
+    if (!element.defined) return {};
+    if (type->inlineStorage) {
+      const std::uint64_t alignment = element.alignment > 8 ? element.alignment : 8;
+      return knownLayout(alignUp(8 + element.size * type->length, alignment), alignment);
+    }
+    return knownLayout(element.size * type->length, element.alignment);
+  }
+  case TypeKind::Struct: {
+    std::uint64_t offset = 0;
+    std::uint64_t alignment = 1;
+    for (const auto &field : type->fields) {
+      const TypeLayout fieldLayout = layoutOf(field.second);
+      if (!fieldLayout.defined) return {};
+      offset = alignUp(offset, fieldLayout.alignment) + fieldLayout.size;
+      if (fieldLayout.alignment > alignment) alignment = fieldLayout.alignment;
+    }
+    return knownLayout(alignUp(offset, alignment), alignment);
+  }
+  case TypeKind::Union: {
+    std::uint64_t maxSize = 0;
+    std::uint64_t maxAlign = 1;
+    for (const auto &member : type->members) {
+      const TypeLayout memberLayout = layoutOf(member);
+      if (!memberLayout.defined) return {};
+      if (memberLayout.size > maxSize) maxSize = memberLayout.size;
+      if (memberLayout.alignment > maxAlign) maxAlign = memberLayout.alignment;
+    }
+    return knownLayout(alignUp(maxSize, maxAlign), maxAlign);
+  }
+  default: return {};
+  }
+}
+
+std::uint64_t fieldOffset(TypePtr type, std::size_t index) {
+  type = followLinks(std::move(type));
+  if (type == nullptr || type->kind != TypeKind::Struct) return 0;
+  std::uint64_t offset = 0;
+  for (std::size_t position = 0; position < type->fields.size(); ++position) {
+    const TypeLayout fieldLayout = layoutOf(type->fields[position].second);
+    if (!fieldLayout.defined) return 0;
+    offset = alignUp(offset, fieldLayout.alignment);
+    if (position == index) return offset;
+    offset += fieldLayout.size;
+  }
+  return 0;
 }
 
 } // namespace jsmm::types

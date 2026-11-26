@@ -1,3 +1,6 @@
 build/
 test/
 tests/
+kcp/
+spec.md
+docig/
